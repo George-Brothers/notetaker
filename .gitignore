@@ -26,4 +26,4 @@ dist-ssr
 # Superpowers / lavish tooling state, local models
 .superpowers/
 .lavish/
-models/
+/models/
