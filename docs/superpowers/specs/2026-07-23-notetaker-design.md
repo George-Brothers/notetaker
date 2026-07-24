@@ -180,6 +180,15 @@ rescanning the folder.
 
 ## 8. To verify during build (assumptions, not facts)
 - Meetily's current Rust capture code quality vs a thin Swift SCK sidecar.
+  — *Deferred to Plan B (Mac capture layer).*
 - sherpa-onnx diarization model availability/licensing for bundling.
+  — **Resolved:** pyannote-3.0 segmentation + 3D-Speaker eres2net embedding,
+  both Apache-2.0, verified building and running (`diarize.rs`). Diarization
+  is correct on real human audio; synthetic TTS voices don't separate (see
+  `fixtures/README.md`).
 - Whisper large-v3-turbo vs SenseVoice on real code-switched EN/ZH audio.
-- Ollama silent-install UX on macOS.
+  — **Partly resolved:** at the small tier SenseVoice beats Whisper-tiny
+  decisively on Chinese (9% vs 53% CER). See
+  `docs/superpowers/specs/bakeoff-result.md`. Default engine = SenseVoice;
+  re-run vs large-v3-turbo on the Mac before locking.
+- Ollama silent-install UX on macOS. — *Deferred to Plan B.*
