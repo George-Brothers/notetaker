@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 //! Local model registry, hardware-tier detection, and resumable
 //! checksum-verified downloads.
 //!
@@ -355,8 +354,3 @@ mod tests {
         assert_eq!(fs::read(&result).unwrap(), body);
     }
 }
-=======
-//! Local model management: hardware tiers and resumable, verified downloads.
-
-pub mod registry;
->>>>>>> t6

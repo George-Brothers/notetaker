@@ -35,6 +35,7 @@ const RECORDINGS: Array<RecordingRow & { error?: string | null }> = [
     mode: "in_person",
     status: "ready",
     suggestedTask: "Accounting 302",
+    error: null,
   },
   {
     id: "rec-2",
@@ -45,6 +46,7 @@ const RECORDINGS: Array<RecordingRow & { error?: string | null }> = [
     mode: "meeting",
     status: "processing",
     suggestedTask: null,
+    error: null,
   },
   {
     id: "rec-3",
