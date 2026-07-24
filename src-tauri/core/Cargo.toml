@@ -1,0 +1,13 @@
+[package]
+name = "notetaker-core"
+version = "0.1.0"
+description = "Notetaker core logic: storage, index, pipeline, queue (no Tauri/UI deps)"
+authors = ["George Brothers"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "notetaker_core"
+
+[dependencies]

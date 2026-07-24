@@ -20,6 +20,16 @@
 - Conventional commits (`feat:`, `test:`, `chore:`). Commit at the end of every task minimum.
 - Storage root is configurable; every module takes it as a parameter. Tests use `tempfile::tempdir()`, never the real `~/Notetaker`.
 
+### Plan amendment — 2026-07-23 (WSL2 has no sudo; webkit/gtk dev libs uninstallable)
+
+Verified twice (implementer + controller `sudo -n`): system packages cannot be installed this week. Amendments, which every task brief inherits:
+
+1. **Workspace split.** `src-tauri/Cargo.toml` becomes a workspace (`members = [".", "core"]`). A new library crate **`notetaker-core`** lives at `src-tauri/core/` and carries ALL Rust logic. Wherever a task says `src-tauri/src/<module>`, write **`src-tauri/core/src/<module>`**; `crate::X` paths in task code remain valid inside core. The app crate (`src-tauri/src/`) holds only Tauri glue.
+2. **Test command.** "cargo test" in any task means **`cargo test -p notetaker-core`** (run from `src-tauri/`). The app crate does not compile on this Linux box (missing webkit system libs); its compile check + `pnpm tauri dev` are registered as Plan B items on the Mac.
+3. **Task 5.** espeak-ng and sox are unavailable. Generate the fixture with **piper-tts** (pip, local ONNX voices: one `en_US` medium voice + one `zh_CN` voice) and **ffmpeg** (present) for resample/concat. Output contract unchanged: `fixtures/bilingual.wav`, 16 kHz mono, two clearly different voices, EN + ZH content.
+4. **Task 12.** Command handler logic goes in `notetaker-core` as `core/src/api.rs` (fully tested on Linux). The `#[tauri::command]` wrappers in the app crate are thin one-liners delegating to core; their compile check is a Plan B Mac item.
+5. **No pkg-config on this box:** core crates must avoid native-lib discovery — rusqlite stays on `bundled`, HTTP stays on `ureq` (rustls). This was already the plan; it is now a hard constraint.
+
 ---
 
 ### Task 1: Scaffold Tauri app + test harnesses
