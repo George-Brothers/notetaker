@@ -67,15 +67,34 @@ fn desegment_cjk(s: &str) -> String {
     out
 }
 
-/// Builds an FTS5 MATCH expression that treats the (CJK-segmented) query as
-/// a single literal phrase. Wrapping in double quotes means FTS5 operator
-/// characters the user typed (`OR`, `-`, `*`, ...) are just literal text,
-/// not syntax; any literal `"` in the query is escaped by doubling, same as
-/// a SQLite string literal, so it can never break out of the phrase.
+/// Builds an FTS5 MATCH expression from a user's query.
+///
+/// Each whitespace-separated word becomes its own quoted phrase and the
+/// phrases are ANDed, so "budget hiring" finds a transcript containing both
+/// words anywhere — not only next to each other. Quoting each phrase means
+/// FTS5 operator characters the user typed (`OR`, `-`, `*`, ...) are literal
+/// text rather than syntax; a literal `"` is escaped by doubling so it can
+/// never break out of its phrase.
+///
+/// A CJK word stays one phrase after segmentation: `预算` indexes as `预 算`
+/// and must match as the phrase `"预 算"`, not as two independent characters,
+/// or it would also match any text containing both characters far apart.
 fn fts_phrase(query: &str) -> String {
-    let segmented = segment_cjk(query);
-    let escaped = segmented.replace('"', "\"\"");
-    format!("\"{escaped}\"")
+    let phrases: Vec<String> = query
+        .split_whitespace()
+        .map(|word| {
+            let escaped = segment_cjk(word).replace('"', "\"\"");
+            format!("\"{}\"", escaped.trim())
+        })
+        .filter(|p| p != "\"\"")
+        .collect();
+
+    if phrases.is_empty() {
+        // An all-whitespace or empty query matches nothing rather than
+        // erroring out on an empty MATCH expression.
+        return "\"\"".to_string();
+    }
+    phrases.join(" AND ")
 }
 
 fn mode_str(m: Mode) -> &'static str {
@@ -199,6 +218,40 @@ mod tests {
     use super::*;
     use crate::storage::Mode;
     use chrono::TimeZone;
+
+    #[test]
+    fn multi_word_query_matches_words_that_are_not_adjacent() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path().join("root"));
+        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let r = s.create_recording("Budget sync", Mode::Meeting, created).unwrap();
+        std::fs::write(
+            r.dir.join("transcript.md"),
+            "George: the budget is late\nSpeaker 1: and the hiring plan slipped too",
+        )
+        .unwrap();
+        let mut ix = Index::open(&dir.path().join("ix.sqlite")).unwrap();
+        ix.rebuild(&s).unwrap();
+
+        // The words are lines apart; a phrase-only query would find nothing.
+        assert_eq!(ix.search("budget hiring").unwrap().len(), 1);
+        // A word that is absent must still exclude the recording.
+        assert_eq!(ix.search("budget parking").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cjk_word_stays_one_phrase_and_is_not_split_into_loose_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path().join("root"));
+        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let r = s.create_recording("Lecture", Mode::InPerson, created).unwrap();
+        // Contains 预 and 算 far apart, but never the word 预算.
+        std::fs::write(r.dir.join("transcript.md"), "Speaker 1: 预计的方案还要再算一次").unwrap();
+        let mut ix = Index::open(&dir.path().join("ix.sqlite")).unwrap();
+        ix.rebuild(&s).unwrap();
+
+        assert_eq!(ix.search("预算").unwrap().len(), 0);
+    }
 
     #[test]
     fn rebuild_indexes_transcripts_and_survives_db_delete() {
