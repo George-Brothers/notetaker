@@ -37,6 +37,9 @@ pub struct RecordingRow {
     pub mode: Mode,
     pub status: Status,
     pub suggested_task: Option<String>,
+    /// Why processing failed, so a failed row can explain itself in the list
+    /// without the user having to open it.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -50,10 +53,10 @@ pub struct RecordingDetail {
     pub mode: Mode,
     pub status: Status,
     pub suggested_task: Option<String>,
+    pub error: Option<String>,
     pub transcript_md: String,
     pub summary_md: String,
     pub speakers: BTreeMap<String, String>,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,11 +121,20 @@ pub fn get_recording(store: &Store, id: &str) -> Result<RecordingDetail> {
         mode: row.mode,
         status: row.status,
         suggested_task: row.suggested_task,
+        error: row.error,
         transcript_md: fs::read_to_string(rec.dir.join(TRANSCRIPT_FILE)).unwrap_or_default(),
         summary_md: fs::read_to_string(rec.dir.join(SUMMARY_FILE)).unwrap_or_default(),
         speakers: rec.meta.speakers.clone(),
-        error: rec.meta.error.clone(),
     })
+}
+
+/// Persists a user's edit to the AI-written summary back to `summary.md`, so
+/// the change survives closing the app and re-appears on next open.
+pub fn update_summary(store: &Store, id: &str, summary_md: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    fs::write(rec.dir.join(SUMMARY_FILE), summary_md)
+        .with_context(|| format!("writing summary for {id}"))?;
+    Ok(())
 }
 
 pub fn search(index: &Index, query: &str) -> Result<Vec<SearchHit>> {
@@ -234,6 +246,7 @@ fn to_row(rec: &RecordingRef) -> RecordingRow {
         mode: rec.meta.mode,
         status: rec.meta.status,
         suggested_task: read_suggested_task(&rec.dir),
+        error: rec.meta.error.clone(),
     }
 }
 
@@ -401,6 +414,19 @@ mod tests {
         assert_eq!(detail.summary_md, "");
         assert_eq!(detail.id, rec.meta.id);
         assert_eq!(detail.error, None);
+    }
+
+    #[test]
+    fn update_summary_persists_edited_text_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let rec = create(&s, "Lecture");
+        fs::write(rec.dir.join("summary.md"), "## TL;DR\noriginal").unwrap();
+
+        update_summary(&s, &rec.meta.id, "## TL;DR\nedited by hand").unwrap();
+
+        let detail = get_recording(&s, &rec.meta.id).unwrap();
+        assert_eq!(detail.summary_md, "## TL;DR\nedited by hand");
     }
 
     #[test]

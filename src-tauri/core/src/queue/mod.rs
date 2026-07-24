@@ -63,6 +63,10 @@ impl<'a> Queue<'a> {
         match rec.meta.status {
             Status::Recorded | Status::Failed => {
                 rec.meta.status = Status::Queued;
+                // Clear any error from a previous failed attempt so the UI
+                // does not show a stale "download interrupted" on a
+                // recording that is now queued to run again.
+                rec.meta.error = None;
                 self.store.save_meta(rec)?;
             }
             Status::Queued | Status::Processing | Status::Ready => {}
@@ -241,6 +245,29 @@ mod tests {
         assert_eq!(on_disk[0].meta.status, Status::Failed);
         assert_eq!(on_disk[0].meta.attempts, 3);
         assert!(on_disk[0].meta.error.as_deref().unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn re_enqueueing_a_failed_recording_clears_its_stale_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let queue = Queue { store: &store };
+
+        // Drive a recording all the way to Failed with an error set.
+        let mut rec = recorded(&store, "Standup", 2026, 8, 4, 9, 0);
+        queue.enqueue(&mut rec).unwrap();
+        for _ in 0..3 {
+            queue.run_one(&AlwaysIdle, |_r| Err(anyhow!("boom"))).unwrap();
+        }
+        let mut failed = store.scan().unwrap().into_iter().next().unwrap();
+        assert_eq!(failed.meta.status, Status::Failed);
+        assert!(failed.meta.error.is_some());
+
+        // Re-queuing it must not carry the old error forward.
+        queue.enqueue(&mut failed).unwrap();
+        let on_disk = store.scan().unwrap();
+        assert_eq!(on_disk[0].meta.status, Status::Queued);
+        assert_eq!(on_disk[0].meta.error, None);
     }
 
     #[test]
