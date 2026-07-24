@@ -1,50 +1,74 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import { useMemo } from "react";
+import { useLibrary } from "./hooks/useLibrary";
+import type { LibraryView } from "./hooks/useLibrary";
+import { Sidebar } from "./components/Sidebar";
+import { RecordingList } from "./components/RecordingList";
+import { RecordingDetail } from "./components/RecordingDetail";
+import { SearchBar } from "./components/SearchBar";
+import type { SearchHit } from "./lib/ipc";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+function viewTitle(view: LibraryView): string {
+  switch (view.kind) {
+    case "all":
+      return "All recordings";
+    case "unsorted":
+      return "Unsorted";
+    case "recent":
+      return "Recently processed";
+    case "task":
+      return view.name;
   }
+}
+
+function SearchResults({ hits, onSelect }: { hits: SearchHit[]; onSelect: (id: string) => void }) {
+  if (hits.length === 0) {
+    return <p className="empty-state">No matches. Try a different word or phrase.</p>;
+  }
+  return (
+    <ul className="search-results" aria-label="Search results">
+      {hits.map((hit) => (
+        <li key={hit.id}>
+          <button type="button" className="search-result" onClick={() => onSelect(hit.id)}>
+            <span className="search-result__title">{hit.title}</span>
+            <span className="search-result__task">{hit.task ?? "Unsorted"}</span>
+            <span className="search-result__snippet">{hit.snippet}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function App() {
+  const lib = useLibrary();
+  const isSearching = useMemo(() => lib.query.trim().length > 0, [lib.query]);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="app-shell">
+      <Sidebar tasks={lib.tasks} activeView={lib.view} onSelectView={lib.setView} onCreateTask={lib.createTask} />
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <div className="library-pane">
+        <SearchBar query={lib.query} onSearch={lib.search} />
+
+        {isSearching ? (
+          <SearchResults hits={lib.searchResults ?? []} onSelect={lib.selectRecording} />
+        ) : (
+          <>
+            <h2 className="library-pane__title">{viewTitle(lib.view)}</h2>
+            <RecordingList
+              recordings={lib.recordings}
+              tasks={lib.tasks}
+              selectedId={lib.selectedId}
+              onSelect={lib.selectRecording}
+              onAssignTask={lib.assignTask}
+            />
+          </>
+        )}
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      <RecordingDetail detail={lib.detail} loading={lib.detailLoading} onRenameSpeaker={lib.renameSpeaker} />
+    </div>
   );
 }
 
