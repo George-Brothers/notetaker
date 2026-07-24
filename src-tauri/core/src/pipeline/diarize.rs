@@ -13,9 +13,9 @@ pub trait Diarizer {
     fn diarize(&self, samples: &[f32]) -> anyhow::Result<Vec<SpeakerSpan>>;
 }
 
-/// Offline speaker diarization backed by sherpa-onnx (pyannote segmentation
-/// + a speaker-embedding model, clustered by cosine-distance threshold since
-/// the true speaker count is not known ahead of time).
+/// Offline speaker diarization backed by sherpa-onnx: pyannote segmentation
+/// plus a speaker-embedding model, clustered by cosine-distance threshold
+/// since the true speaker count is not known ahead of time.
 pub struct SherpaDiarizer {
     inner: std::sync::Mutex<sherpa_rs::diarize::Diarize>,
 }
