@@ -280,7 +280,9 @@ State rules (test each): `enqueue` only from `Recorded`/`Failed`; `run_one` sets
 - [ ] **Step 4: Verify** — `cargo test queue` → 4 passed.
 - [ ] **Step 5: Commit** — `git commit -am "feat: crash-safe processing queue with 3x retry"`
 
----### Task 5: Bilingual test fixture (generated, committed)
+---
+
+### Task 5: Bilingual test fixture (generated, committed)
 
 **Files:**
 - Create: `fixtures/make_fixture.sh`, `fixtures/bilingual.wav` (committed output), `fixtures/README.md`
