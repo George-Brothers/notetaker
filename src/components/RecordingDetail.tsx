@@ -7,6 +7,7 @@ export interface RecordingDetailProps {
   detail: RecordingDetailData | null;
   loading: boolean;
   onRenameSpeaker: (id: string, key: string, name: string) => void;
+  onSaveSummary: (id: string, summaryMd: string) => void;
 }
 
 interface TranscriptLine {
@@ -33,7 +34,7 @@ function formatDetailDate(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function RecordingDetail({ detail, loading, onRenameSpeaker }: RecordingDetailProps) {
+export function RecordingDetail({ detail, loading, onRenameSpeaker, onSaveSummary }: RecordingDetailProps) {
   const [summaryDraft, setSummaryDraft] = useState("");
   const [renaming, setRenaming] = useState<{ lineIndex: number; key: string; original: string } | null>(
     null
@@ -97,13 +98,18 @@ export function RecordingDetail({ detail, loading, onRenameSpeaker }: RecordingD
       <section className="detail-pane__section">
         <h3>Summary</h3>
         <p className="detail-pane__hint">
-          Editing here is a local draft — saving a synced summary back to disk isn't wired up yet.
+          Edits save automatically when you click away.
         </p>
         <textarea
           className="summary-editor"
           aria-label="Summary"
           value={summaryDraft}
           onChange={(e) => setSummaryDraft(e.target.value)}
+          onBlur={() => {
+            if (detail && summaryDraft !== detail.summaryMd) {
+              onSaveSummary(detail.id, summaryDraft);
+            }
+          }}
           rows={8}
         />
       </section>

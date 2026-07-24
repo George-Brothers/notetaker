@@ -130,6 +130,17 @@ export function useLibrary() {
     [selectedId]
   );
 
+  const saveSummary = useCallback(
+    async (id: string, summaryMd: string) => {
+      try {
+        await api.updateSummary(id, summaryMd);
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    []
+  );
+
   const search = useCallback((q: string) => {
     setQuery(q);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -167,6 +178,7 @@ export function useLibrary() {
     createTask,
     assignTask,
     renameSpeaker,
+    saveSummary,
     query,
     search,
     searchResults,

@@ -172,6 +172,10 @@ pub fn process_now(store: &Store, id: &str) -> Result<()> {
 pub fn assign_task(store: &Store, index: &mut Index, id: &str, task: &str) -> Result<()> {
     let rec = find_by_id(store, id)?;
     let moved = store.assign_task(&rec, task)?;
+    // The suggestion is resolved once the recording is filed; drop the
+    // sidecar so the "Suggested: …" banner doesn't keep showing on a
+    // recording that already lives in that task.
+    let _ = fs::remove_file(moved.dir.join(SUGGESTED_TASK_FILE));
     let transcript = fs::read_to_string(moved.dir.join(TRANSCRIPT_FILE)).unwrap_or_default();
     let summary = fs::read_to_string(moved.dir.join(SUMMARY_FILE)).unwrap_or_default();
     index.upsert(&moved, &transcript, &summary)?;

@@ -118,6 +118,28 @@ describe("library UI", () => {
     await waitFor(() => expect(api.assignTask).toHaveBeenCalledWith("rec-1", "Accounting 302"));
   });
 
+  it("hides the suggestion banner once a recording is filed under a task", async () => {
+    // A recording that already has a task must not keep nagging with a
+    // suggestion, even if the suggestion field is still populated.
+    vi.mocked(api.listRecordings).mockResolvedValue([
+      {
+        id: "rec-filed",
+        title: "Already filed",
+        task: "Accounting 302",
+        created: "2026-07-22T09:00:00Z",
+        durationS: 100,
+        mode: "in_person",
+        status: "ready",
+        suggestedTask: "Accounting 302",
+        error: null,
+      },
+    ] as RecordingRow[]);
+
+    render(<App />);
+    await screen.findByText("Already filed");
+    expect(screen.queryByText(/Suggested:/)).not.toBeInTheDocument();
+  });
+
   it("shows the error text on a failed row", async () => {
     render(<App />);
     expect(

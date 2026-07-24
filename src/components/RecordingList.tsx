@@ -54,14 +54,6 @@ function ModeGlyph({ mode }: { mode: Mode }) {
   );
 }
 
-/** RecordingRow doesn't declare `error` in the ipc.ts contract, but a
- * failed row must surface its reason (brief requirement); read it
- * defensively in case the Rust side includes it on the list endpoint. */
-function rowError(row: RecordingRow): string | null {
-  const withError = row as RecordingRow & { error?: string | null };
-  return withError.error ?? null;
-}
-
 export function RecordingList({ recordings, tasks, selectedId, onSelect, onAssignTask }: RecordingListProps) {
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [choosingFor, setChoosingFor] = useState<string | null>(null);
@@ -105,7 +97,10 @@ export function RecordingList({ recordings, tasks, selectedId, onSelect, onAssig
     // keyboard-operable without that conflict.
     <ul className="rec-list" aria-label="Recordings" onKeyDown={handleKeyDown}>
       {recordings.map((row, index) => {
-        const error = rowError(row);
+        const error = row.error ?? null;
+        // Only offer the AI's suggestion while the recording is still
+        // unfiled; once it has a task the banner is resolved.
+        const showSuggestion = row.task === null && row.suggestedTask !== null;
         return (
           <li
             key={row.id}
@@ -132,7 +127,7 @@ export function RecordingList({ recordings, tasks, selectedId, onSelect, onAssig
               <StatusChip status={row.status} error={error} />
             </div>
 
-            {row.suggestedTask && (
+            {showSuggestion && (
               <div className="suggestion-banner" onKeyDown={(e) => e.stopPropagation()}>
                 <span className="suggestion-banner__text">Suggested: {row.suggestedTask}</span>
                 <button

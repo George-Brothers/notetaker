@@ -50,3 +50,17 @@ Capture engine (dual-track FLAC via ScreenCaptureKit), meeting watcher +
 "Record this?", menu bar, real idle/power detection, Metal model builds +
 tier auto-detect, Ollama install flow, compile the app crate, DMG packaging,
 and re-run the bake-off vs large-v3-turbo.
+
+### Carry-over from the Plan A final review (must wire in Plan B)
+- **Index refresh on completion (review I3):** the scheduler's success path must
+  `index.upsert(&rec, transcript, summary)` after a run — otherwise a freshly
+  processed recording isn't searchable until a full rebuild. The app owns the
+  `Index`, so this wiring belongs in the app layer.
+- **Scheduler thread + Waker (review I4):** `scheduler::run_loop` is ready; the
+  app must `std::thread::spawn` it with `'static` model handles and build a
+  `Waker` from that thread so "Process now" cuts the sleep short.
+- **Tauri command arg names (review M4):** the `#[tauri::command]` wrappers must
+  use `rename_all = "camelCase"` (or matching names) — `ipc.ts` sends camelCase,
+  `api.rs` uses snake_case params; a mismatch fails invokes silently.
+- **`duration_s` (review M5):** always 0 until the capture layer records length.
+- Full review: `.superpowers/sdd/final-review.md`.

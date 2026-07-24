@@ -42,6 +42,17 @@ pub struct Meta {
     pub speakers: BTreeMap<String, String>, // "spk1" -> display name
     pub error: Option<String>,
     pub attempts: u32,
+    /// Per-stage processing timings, filled by the pipeline. A real `Meta`
+    /// field (not a loose JSON key) so it survives every `save_meta`.
+    #[serde(default)]
+    pub stages: Vec<StageTiming>,
+}
+
+/// How long one pipeline stage took, for diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageTiming {
+    pub stage: String,
+    pub ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +121,7 @@ impl Store {
             speakers: BTreeMap::new(),
             error: None,
             attempts: 0,
+            stages: Vec::new(),
         };
 
         let rec = RecordingRef {
@@ -170,14 +182,16 @@ impl Store {
     }
 
     pub fn create_task(&self, name: &str) -> Result<()> {
-        let dir = self.root.join(TASKS_DIR).join(name);
+        let name = safe_task_name(name)?;
+        let dir = self.root.join(TASKS_DIR).join(&name);
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))
     }
 
     /// Moves the recording's folder into `Tasks/<task>/`, then re-derives
     /// its `RecordingRef` from the new location.
     pub fn assign_task(&self, rec: &RecordingRef, task: &str) -> Result<RecordingRef> {
-        let task_dir = self.root.join(TASKS_DIR).join(task);
+        let task = safe_task_name(task)?;
+        let task_dir = self.root.join(TASKS_DIR).join(&task);
         fs::create_dir_all(&task_dir)
             .with_context(|| format!("creating {}", task_dir.display()))?;
 
@@ -189,8 +203,27 @@ impl Store {
         fs::rename(&rec.dir, &dest)
             .with_context(|| format!("moving {} to {}", rec.dir.display(), dest.display()))?;
 
-        load_ref(&dest, Some(task.to_string()))
+        load_ref(&dest, Some(task))
     }
+
+    /// Re-reads a recording's `meta.json` from disk. Used after a stage has
+    /// enriched the file (e.g. the pipeline writing `speakers`/`stages`) so a
+    /// caller holding a pre-enrichment copy doesn't overwrite it.
+    pub fn reload(&self, rec: &RecordingRef) -> Result<RecordingRef> {
+        load_ref(&rec.dir, rec.task.clone())
+    }
+}
+
+/// Validates a user-supplied task name and returns a filesystem-safe form.
+/// Rejects names that would escape or restructure the `Tasks/` tree — the
+/// on-disk layout is a public contract and `scan()` only walks one level
+/// deep, so a `/` in a name would hide every recording filed under it.
+fn safe_task_name(name: &str) -> Result<String> {
+    let cleaned = sanitize(name);
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        anyhow::bail!("invalid task name: {name:?}");
+    }
+    Ok(cleaned)
 }
 
 /// List immediate subdirectories of `parent`. An absent `parent` yields an
@@ -257,5 +290,41 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].meta.title, "Lecture 3");
         assert_eq!(s.list_tasks().unwrap(), vec!["Accounting 302"]);
+    }
+
+    #[test]
+    fn task_names_with_separators_are_flattened_and_dotdot_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path());
+        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+
+        // A "/" in a task name must not create a nested Tasks/CS/Fall that
+        // scan() (one level deep) would miss — the recording must stay findable.
+        let r = s.create_recording("Lecture", Mode::InPerson, created).unwrap();
+        let moved = s.assign_task(&r, "CS/Fall").unwrap();
+        assert_eq!(moved.task.as_deref(), Some("CSFall"));
+        assert!(moved.dir.starts_with(dir.path().join("Tasks")));
+        assert_eq!(s.scan().unwrap().len(), 1, "recording must remain findable");
+
+        // Traversal attempts are rejected outright.
+        assert!(s.create_task("..").is_err());
+        assert!(s.create_task("").is_err());
+    }
+
+    #[test]
+    fn stages_field_round_trips_through_save_and_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path());
+        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let mut r = s.create_recording("Lecture", Mode::InPerson, created).unwrap();
+        r.meta.stages.push(StageTiming {
+            stage: "transcribe".to_string(),
+            ms: 42,
+        });
+        s.save_meta(&r).unwrap();
+
+        let reloaded = s.reload(&r).unwrap();
+        assert_eq!(reloaded.meta.stages.len(), 1);
+        assert_eq!(reloaded.meta.stages[0].ms, 42);
     }
 }

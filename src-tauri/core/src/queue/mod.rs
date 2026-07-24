@@ -110,7 +110,16 @@ impl<'a> Queue<'a> {
         rec.meta.status = Status::Processing;
         self.store.save_meta(&rec)?;
 
-        match process(&rec) {
+        let result = process(&rec);
+
+        // `process` may enrich meta.json on disk (the pipeline writes
+        // `speakers` and `stages`). Reload before flipping status so this
+        // status-only write builds on the enriched copy instead of clobbering
+        // it with the stale pre-processing snapshot. Reload can fail if the
+        // recording folder vanished mid-run; fall back to the in-memory copy.
+        let mut rec = self.store.reload(&rec).unwrap_or(rec);
+
+        match result {
             Ok(()) => {
                 rec.meta.status = Status::Ready;
                 self.store.save_meta(&rec)?;
@@ -146,9 +155,53 @@ fn created_key(rec: &RecordingRef) -> DateTime<FixedOffset> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Mode;
+    use crate::storage::{Mode, StageTiming};
     use anyhow::anyhow;
     use chrono::TimeZone;
+
+    #[test]
+    fn successful_run_preserves_pipeline_enriched_meta() {
+        // Regression for the bug where run_one re-saved its stale pre-run
+        // snapshot after the pipeline had enriched meta.json, wiping speakers
+        // and stage timings on every successful run.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let queue = Queue { store: &store };
+        let mut rec = recorded(&store, "Lecture", 2026, 8, 4, 9, 0);
+        queue.enqueue(&mut rec).unwrap();
+
+        // The closure stands in for process_recording: it enriches meta.json
+        // on disk (speakers + stages) without touching status.
+        let outcome = queue
+            .run_one(&AlwaysIdle, |r| {
+                let mut enriched = store.reload(r).unwrap();
+                enriched
+                    .meta
+                    .speakers
+                    .insert("spk1".to_string(), "Speaker 1".to_string());
+                enriched.meta.stages.push(StageTiming {
+                    stage: "diarize".to_string(),
+                    ms: 12,
+                });
+                store.save_meta(&enriched).unwrap();
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(outcome, RunOutcome::Ran);
+        let on_disk = store.scan().unwrap();
+        assert_eq!(on_disk[0].meta.status, Status::Ready);
+        assert_eq!(
+            on_disk[0].meta.speakers.get("spk1").map(String::as_str),
+            Some("Speaker 1"),
+            "speakers written by the pipeline must survive the status flip"
+        );
+        assert_eq!(
+            on_disk[0].meta.stages.len(),
+            1,
+            "stage timings must survive the status flip"
+        );
+    }
 
     /// Creates a fresh `Recorded` recording with an explicit timestamp, so
     /// tests can control ordering.

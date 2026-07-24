@@ -67,7 +67,12 @@ function App() {
         )}
       </div>
 
-      <RecordingDetail detail={lib.detail} loading={lib.detailLoading} onRenameSpeaker={lib.renameSpeaker} />
+      <RecordingDetail
+        detail={lib.detail}
+        loading={lib.detailLoading}
+        onRenameSpeaker={lib.renameSpeaker}
+        onSaveSummary={lib.saveSummary}
+      />
     </div>
   );
 }

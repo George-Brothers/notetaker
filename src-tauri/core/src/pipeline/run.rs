@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use serde_json::json;
 
 use crate::pipeline::audio::load_mono_16k;
 use crate::pipeline::diarize::{Diarizer, SpeakerSpan};
@@ -22,7 +21,7 @@ use crate::pipeline::suggest::{suggest_task, Suggestion};
 use crate::pipeline::summarize::summarize;
 use crate::pipeline::transcribe::Transcriber;
 use crate::pipeline::Utterance;
-use crate::storage::{Meta, Mode, RecordingRef, Status, Store};
+use crate::storage::{Mode, RecordingRef, StageTiming, Status, Store};
 
 const SUGGESTED_TASK_FILE: &str = "suggested_task.txt";
 
@@ -57,7 +56,7 @@ pub fn process_recording(
     deps: &PipelineDeps,
     rec: &RecordingRef,
 ) -> Result<ProcessOutput> {
-    let mut stages: Vec<(String, u128)> = Vec::new();
+    let mut stages: Vec<StageTiming> = Vec::new();
     let mut speakers: BTreeMap<String, String> = BTreeMap::new();
 
     let utterances = match rec.meta.mode {
@@ -131,10 +130,12 @@ pub fn process_recording(
     write_file(&rec.dir.join("summary.md"), &summary_md)?;
     write_suggestion(&rec.dir, &suggestion)?;
 
-    // Record speakers and stage timings without touching status.
-    let mut meta = rec.meta.clone();
-    meta.speakers = speakers;
-    persist_meta_with_stages(store, rec, &meta, &stages)?;
+    // Record speakers and stage timings without touching status. Both are
+    // real `Meta` fields now, so a plain save_meta persists them durably.
+    let mut updated = rec.clone();
+    updated.meta.speakers = speakers;
+    updated.meta.stages = stages;
+    store.save_meta(&updated)?;
 
     Ok(ProcessOutput {
         transcript_md,
@@ -194,47 +195,18 @@ fn write_file(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Rewrites `meta.json` with updated speakers and a `stages` timing array,
-/// leaving `status` and everything else as the caller set it.
-fn persist_meta_with_stages(
-    store: &Store,
-    rec: &RecordingRef,
-    meta: &Meta,
-    stages: &[(String, u128)],
-) -> Result<()> {
-    let updated = RecordingRef {
-        meta: meta.clone(),
-        dir: rec.dir.clone(),
-        task: rec.task.clone(),
-    };
-    store.save_meta(&updated)?;
-
-    // save_meta owns the canonical Meta fields; stages are extra diagnostic
-    // data, so merge them into the on-disk JSON object afterwards.
-    let path = rec.dir.join("meta.json");
-    let raw =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-    if let Some(obj) = value.as_object_mut() {
-        let arr = stages
-            .iter()
-            .map(|(name, ms)| json!({ "stage": name, "ms": ms }))
-            .collect::<Vec<_>>();
-        obj.insert("stages".to_string(), json!(arr));
-    }
-    write_file(&path, &serde_json::to_string_pretty(&value)?)
-}
-
 /// Runs `f`, appending its wall-clock milliseconds to `stages` under `name`.
 fn timed<T, F: FnOnce() -> Result<T>>(
-    stages: &mut Vec<(String, u128)>,
+    stages: &mut Vec<StageTiming>,
     name: &str,
     f: F,
 ) -> Result<T> {
     let start = Instant::now();
     let out = f();
-    stages.push((name.to_string(), start.elapsed().as_millis()));
+    stages.push(StageTiming {
+        stage: name.to_string(),
+        ms: start.elapsed().as_millis() as u64,
+    });
     out
 }
 

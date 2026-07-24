@@ -55,8 +55,11 @@ impl Waker {
 /// (the app uses it to emit `queue-changed` / `processing-progress` events);
 /// tests use it to observe progress.
 ///
-/// Returns a [`Waker`] captured before the loop starts is not possible from
-/// inside, so callers that need the waker should use [`spawn`] instead.
+/// The caller owns the thread and the [`Waker`]: spawn a thread running this,
+/// then build a `Waker` from that thread's handle and the same `stop` flag so
+/// a "Process now" command can cut the current sleep short. Wiring the actual
+/// `std::thread::spawn` lives in the app layer (Plan B), because it needs
+/// `'static` model handles the core can't own.
 pub fn run_loop<F>(
     queue: &Queue,
     idle: &dyn IdleSource,
