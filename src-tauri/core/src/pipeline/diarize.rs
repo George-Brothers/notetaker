@@ -91,8 +91,25 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
     }
 
+    /// Diarization is verified against REAL human multi-speaker audio, not
+    /// the synthetic `bilingual.wav` fixture.
+    ///
+    /// A control experiment established why: run against sherpa-onnx's own
+    /// published multi-speaker test recording (`diarization-check.wav`, real
+    /// human voices), this exact `SherpaDiarizer` cleanly separates the
+    /// speakers turn by turn. Run against `bilingual.wav`, it collapses every
+    /// turn into one speaker — because that fixture's two voices are
+    /// synthetic (piper-tts) and a speaker-embedding model trained on human
+    /// speech cannot tell two TTS voices apart. The code is correct; the
+    /// synthetic fixture just cannot exercise it. So the honest diarization
+    /// test uses the real-human recording, and the synthetic fixture is left
+    /// to the transcription tests (Whisper transcribes it fine).
+    ///
+    /// The assertion is written so the old collapsed-to-one-speaker output
+    /// would fail it: real separation (>= 3 distinct speakers) AND genuine
+    /// turn-taking (adjacent spans that change speaker).
     #[test]
-    fn fixture_yields_at_least_two_speakers() {
+    fn separates_speakers_on_real_multispeaker_audio() {
         let seg_path = repo_path("../../models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx");
         let emb_path =
             repo_path("../../models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx");
@@ -101,21 +118,25 @@ mod tests {
             return;
         }
 
-        let samples = load_wav_mono_16k(&repo_path("../../fixtures/bilingual.wav"));
+        let samples = load_wav_mono_16k(&repo_path("../../fixtures/diarization-check.wav"));
         let d = SherpaDiarizer::load(&seg_path, &emb_path).unwrap();
         let spans = d.diarize(&samples).unwrap();
 
-        let speakers: std::collections::BTreeSet<u32> = spans.iter().map(|s| s.speaker).collect();
-        assert!(
-            speakers.len() >= 2,
-            "expected >=2 speakers, got {:?} from spans {:?}",
-            speakers,
-            spans
-        );
         assert!(
             spans.iter().all(|s| s.end_s > s.start_s),
-            "every span must have end_s > start_s: {:?}",
-            spans
+            "every span must have end_s > start_s: {spans:?}"
+        );
+
+        let distinct: std::collections::BTreeSet<u32> = spans.iter().map(|s| s.speaker).collect();
+        assert!(
+            distinct.len() >= 3,
+            "real multi-speaker audio should yield >=3 speakers, got {distinct:?} from {spans:?}"
+        );
+
+        let alternates = spans.windows(2).any(|w| w[0].speaker != w[1].speaker);
+        assert!(
+            alternates,
+            "expected adjacent spans to change speaker (turn-taking), got {spans:?}"
         );
     }
 }
