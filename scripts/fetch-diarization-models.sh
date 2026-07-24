@@ -53,3 +53,10 @@ fi
 echo "done."
 echo "  segmentation: $SEG_MODEL"
 echo "  embedding:    $EMB_MODEL"
+
+# --- Diarization verification audio (committed to git, not downloaded) ------
+# fixtures/diarization-check.wav is sherpa-onnx's own published multi-speaker
+# test recording (real human voices), from:
+#   https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-segmentation-models
+# It is committed directly so `separates_speakers_on_real_multispeaker_audio`
+# in diarize.rs runs without a network fetch. sherpa-onnx is Apache-2.0.

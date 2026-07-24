@@ -88,3 +88,19 @@ and must yield **≥2 speakers** and **both languages (English + Mandarin)**
 when run through the transcription/diarization pipeline. As of this
 writing the fixture is still the synthetic piper-tts recording described
 above — no replacement has been needed.
+
+## `diarization-check.wav` — real-human speaker-separation fixture
+
+Added 2026-07-23 after a control experiment showed the synthetic
+`bilingual.wav` voices above cannot exercise speaker diarization: a
+speaker-embedding model trained on human speech cannot distinguish two
+piper-tts voices, so every turn collapses to one speaker. The same
+`SherpaDiarizer` code separates real human voices cleanly.
+
+- Source: sherpa-onnx's own published multi-speaker test recording, from the
+  `speaker-segmentation-models` release on
+  https://github.com/k2-fsa/sherpa-onnx (Apache-2.0).
+- 16 kHz mono, ~57 s, multiple real speakers taking turns.
+- Used only by `diarize.rs::separates_speakers_on_real_multispeaker_audio`.
+- `bilingual.wav` is retained for the transcription tests — Whisper
+  transcribes the synthetic voices in both languages without trouble.
