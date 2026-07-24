@@ -23,6 +23,12 @@ export interface RecordingRow {
   status: Status;
   /** What the AI thinks this belongs to, awaiting one-click confirmation. */
   suggestedTask: string | null;
+  /**
+   * Why processing failed, in language a non-technical user can act on.
+   * Present on list rows too, so a failed row can explain itself without
+   * making the user open it.
+   */
+  error: string | null;
 }
 
 export interface RecordingDetail extends RecordingRow {
@@ -30,7 +36,6 @@ export interface RecordingDetail extends RecordingRow {
   summaryMd: string;
   /** Diarizer key ("spk1") to display name ("Jamie"). */
   speakers: Record<string, string>;
-  error: string | null;
 }
 
 export interface SearchHit {
@@ -56,6 +61,9 @@ export const api = {
   getRecording: (id: string) => invoke<RecordingDetail>("get_recording", { id }),
   search: (query: string) => invoke<SearchHit[]>("search", { query }),
   processNow: (id: string) => invoke<void>("process_now", { id }),
+  /** Persists a user's edits to the AI-written summary. */
+  updateSummary: (id: string, summaryMd: string) =>
+    invoke<void>("update_summary", { id, summaryMd }),
   assignTask: (id: string, task: string) => invoke<void>("assign_task", { id, task }),
   renameSpeaker: (id: string, key: string, name: string) =>
     invoke<void>("rename_speaker", { id, key, name }),
