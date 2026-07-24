@@ -27,3 +27,6 @@ dist-ssr
 .superpowers/
 .lavish/
 /models/
+
+# Bake-off scratch (large ASR model, fetched on demand)
+/fixtures/_control_known_good.wav
