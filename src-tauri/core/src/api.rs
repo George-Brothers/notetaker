@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::index::Index;
 use crate::storage::{Mode, RecordingRef, Status, Store};
+use crate::watch::AutoRecordPolicy;
 
 /// Sidecar file name, inside a recording's own directory, holding the AI's
 /// task suggestion as plain text. `storage::Meta` has no field for this (it
@@ -76,6 +77,34 @@ pub struct Settings {
     pub llm_model: String,
     pub tier_override: Option<String>,
     pub process_when_idle: bool,
+
+    // --- Plan B. Every field below is `#[serde(default)]` so a settings file
+    // written by Plan A still parses instead of resetting a user's config.
+    /// What to do when each known meeting app appears, keyed by the watcher's
+    /// app id (`"zoom"`). Apps absent from the map use
+    /// [`AutoRecordPolicy::Ask`].
+    #[serde(default)]
+    pub auto_record: BTreeMap<String, AutoRecordPolicy>,
+    /// Seconds of user inactivity before background processing may start.
+    /// Ignored when `process_when_idle` is false.
+    #[serde(default = "default_min_idle_secs")]
+    pub min_idle_secs: u64,
+    /// Only process while on wall power — the "and plugged in" half of Mr.
+    /// Brothers' choice.
+    #[serde(default = "default_true")]
+    pub require_ac: bool,
+    /// Keep the intermediate WAV after the FLAC finalize. Off by default: FLAC
+    /// is lossless, so the WAV is pure duplication.
+    #[serde(default)]
+    pub keep_wav: bool,
+}
+
+fn default_min_idle_secs() -> u64 {
+    300
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -86,6 +115,10 @@ impl Default for Settings {
             llm_model: "qwen3:8b".to_string(),
             tier_override: None,
             process_when_idle: true,
+            auto_record: BTreeMap::new(),
+            min_idle_secs: default_min_idle_secs(),
+            require_ac: default_true(),
+            keep_wav: false,
         }
     }
 }
@@ -530,11 +563,47 @@ mod tests {
             llm_model: "custom-model".to_string(),
             tier_override: Some("CpuSmall".to_string()),
             process_when_idle: false,
+            auto_record: BTreeMap::from([
+                ("zoom".to_string(), AutoRecordPolicy::Always),
+                ("slack".to_string(), AutoRecordPolicy::Never),
+            ]),
+            min_idle_secs: 60,
+            require_ac: false,
+            keep_wav: true,
         };
         set_settings(&path, &settings).unwrap();
 
         let round_tripped = get_settings(&path).unwrap();
         assert_eq!(round_tripped, settings);
+    }
+
+    #[test]
+    fn settings_written_before_plan_b_still_load() {
+        // A settings file from Plan A has none of the capture/power fields. It
+        // must keep working with its own values intact and defaults filled in
+        // for the rest — an upgrade that silently reset a user's config would
+        // be indistinguishable from data loss.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+                "storageRoot": "/Users/george/Notetaker",
+                "llmBaseUrl": "http://localhost:11434",
+                "llmModel": "qwen3:8b",
+                "tierOverride": null,
+                "processWhenIdle": false
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = get_settings(&path).unwrap();
+        assert_eq!(loaded.storage_root, "/Users/george/Notetaker");
+        assert!(!loaded.process_when_idle, "existing value must survive");
+        assert!(loaded.auto_record.is_empty());
+        assert_eq!(loaded.min_idle_secs, 300);
+        assert!(loaded.require_ac);
+        assert!(!loaded.keep_wav);
     }
 
     #[test]

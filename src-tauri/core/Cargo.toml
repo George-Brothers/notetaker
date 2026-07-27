@@ -13,6 +13,7 @@ name = "notetaker_core"
 [dependencies]
 anyhow = "1.0.104"
 chrono = "0.4.45"
+flacenc = "0.5.1"
 hound = "3.5.1"
 log = "0.4.33"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
@@ -29,3 +30,9 @@ whisper-rs = "0.16.0"
 [dev-dependencies]
 httpmock = "0.8.3"
 tempfile = "3.27.0"
+
+# macOS-only: the real microphone source. Absent on Linux, where `alsa-sys`
+# would need pkg-config we have no sudo to install — and where the capture
+# logic is tested against `capture::source::FakeSource` instead.
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.16.0"

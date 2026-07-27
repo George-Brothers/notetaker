@@ -45,6 +45,9 @@ export interface SearchHit {
   snippet: string;
 }
 
+/** What the app does when a known meeting app appears. */
+export type AutoRecordPolicy = "ask" | "always" | "never";
+
 export interface Settings {
   storageRoot: string;
   llmBaseUrl: string;
@@ -52,6 +55,62 @@ export interface Settings {
   /** null means "use the tier detected from this machine's hardware". */
   tierOverride: string | null;
   processWhenIdle: boolean;
+  /** Per-app policy, keyed by app id ("zoom"). Missing key means "ask". */
+  autoRecord: Record<string, AutoRecordPolicy>;
+  /** Inactivity required before background processing starts. */
+  minIdleSecs: number;
+  /** Only process on wall power. */
+  requireAc: boolean;
+  /** Keep the intermediate WAV after the lossless FLAC finalize. */
+  keepWav: boolean;
+}
+
+export type CaptureState = "idle" | "recording" | "paused";
+
+/** Live snapshot for the record bar. Polled while recording. */
+export interface CaptureStatus {
+  state: CaptureState;
+  recordingId: string | null;
+  /** Seconds of audio captured; paused time is not counted. */
+  elapsedS: number;
+  /** Peak level since the last poll, 0..1. */
+  micLevel: number;
+  /** Always 0 for in-person recordings, which have no system track. */
+  systemLevel: number;
+  diskFreeMb: number;
+}
+
+export type MeetingEventKind = "started" | "ended";
+
+/** A meeting app appearing or disappearing, after debounce. */
+export interface MeetingEvent {
+  appId: string;
+  appName: string;
+  kind: MeetingEventKind;
+  /** True when policy is "always" — record without prompting. */
+  autoStart: boolean;
+}
+
+/** Whether the local LLM is ready, and what's missing if not. */
+export interface OllamaStatus {
+  installed: boolean;
+  running: boolean;
+  models: string[];
+  /** Whether `Settings.llmModel` is among `models`. */
+  modelReady: boolean;
+  /** Present when not installed: what the user should do about it. */
+  installHint: string | null;
+}
+
+/** Progress of a model download — Ollama pulls and whisper/sherpa fetches. */
+export interface PullProgress {
+  /** What is being fetched, for the label. */
+  name: string;
+  /** 0..100. */
+  percent: number;
+  /** Terminal states carry a message; otherwise null. */
+  error: string | null;
+  done: boolean;
 }
 
 export const api = {
@@ -69,4 +128,27 @@ export const api = {
     invoke<void>("rename_speaker", { id, key, name }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
+
+  // --- Capture (Plan B) ---
+  startCapture: (mode: Mode, title: string) =>
+    invoke<CaptureStatus>("start_capture", { mode, title }),
+  pauseCapture: () => invoke<CaptureStatus>("pause_capture"),
+  resumeCapture: () => invoke<CaptureStatus>("resume_capture"),
+  /** Stops, finalizes to FLAC, and queues the recording. Returns its id. */
+  stopCapture: () => invoke<string>("stop_capture"),
+  captureStatus: () => invoke<CaptureStatus>("capture_status"),
+
+  // --- Meeting watcher ---
+  /** Drains any debounced meeting events since the last poll. */
+  pollMeetings: () => invoke<MeetingEvent[]>("poll_meetings"),
+  setAutoRecord: (appId: string, policy: AutoRecordPolicy) =>
+    invoke<void>("set_auto_record", { appId, policy }),
+
+  // --- Local models ---
+  ollamaStatus: () => invoke<OllamaStatus>("ollama_status"),
+  /** Starts a pull; progress arrives via `pullProgress`. */
+  pullModel: (model: string) => invoke<void>("pull_model", { model }),
+  pullProgress: () => invoke<PullProgress[]>("pull_progress"),
+  /** The hardware tier detected for this machine ("small" | "medium" | "large"). */
+  detectedTier: () => invoke<string>("detected_tier"),
 };
