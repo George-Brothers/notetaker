@@ -1,10 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, within, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, within, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { api } from "../../lib/ipc";
-import type { RecordingDetail, RecordingRow } from "../../lib/ipc";
+import type { CaptureStatus, RecordingDetail, RecordingRow } from "../../lib/ipc";
 
+// Every api function App reaches for has to be stubbed, not just the ones
+// these tests assert on. App also mounts the capture hook, which calls
+// `captureStatus` and `pollMeetings` on mount and again on a timer; leaving
+// them off the mock left them `undefined`, and the resulting throw set an
+// error banner mid-test at an unpredictable moment — worth roughly one flaky
+// failure in eight, in whichever test happened to be interacting at the time.
 vi.mock("../../lib/ipc", () => ({
   api: {
     listTasks: vi.fn(),
@@ -14,11 +20,29 @@ vi.mock("../../lib/ipc", () => ({
     search: vi.fn(),
     processNow: vi.fn(),
     assignTask: vi.fn(),
+    renameRecording: vi.fn(),
     renameSpeaker: vi.fn(),
+    updateSummary: vi.fn(),
     getSettings: vi.fn(),
     setSettings: vi.fn(),
+    startCapture: vi.fn(),
+    pauseCapture: vi.fn(),
+    resumeCapture: vi.fn(),
+    stopCapture: vi.fn(),
+    captureStatus: vi.fn(),
+    pollMeetings: vi.fn(),
+    setAutoRecord: vi.fn(),
   },
 }));
+
+const IDLE_STATUS: CaptureStatus = {
+  state: "idle",
+  recordingId: null,
+  elapsedS: 0,
+  micLevel: 0,
+  systemLevel: 0,
+  diskFreeMb: 20_000,
+};
 
 const TASKS = ["Accounting 302", "ENT 401"];
 
@@ -85,9 +109,29 @@ function setupApi() {
     return Promise.reject(new Error("not found"));
   });
   vi.mocked(api.assignTask).mockResolvedValue(undefined);
+  vi.mocked(api.renameRecording).mockResolvedValue(undefined);
   vi.mocked(api.renameSpeaker).mockResolvedValue(undefined);
+  vi.mocked(api.updateSummary).mockResolvedValue(undefined);
   vi.mocked(api.search).mockResolvedValue([]);
   vi.mocked(api.createTask).mockResolvedValue(undefined);
+  vi.mocked(api.captureStatus).mockResolvedValue(IDLE_STATUS);
+  vi.mocked(api.pollMeetings).mockResolvedValue([]);
+}
+
+/**
+ * Selects a recording in the list and returns its settled detail pane.
+ *
+ * The `await act` matters: the pane clears its drafts in a mount effect, and a
+ * passive effect can still be pending when the query that waits for the pane
+ * resolves. Clicking into the pane before that flush lets the reset land
+ * *after* the click and silently undo it — which is what made these tests fail
+ * about one run in eight.
+ */
+async function openRecording(title: string): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByText(title));
+  const pane = await screen.findByRole("region", { name: "Recording detail" });
+  await act(async () => {});
+  return pane;
 }
 
 beforeEach(() => {
@@ -149,10 +193,9 @@ describe("library UI", () => {
 
   it("renames a speaker via the inline form opened by clicking their name", async () => {
     render(<App />);
-    fireEvent.click(await screen.findByText("Lecture 3: Depreciation"));
+    const pane = await openRecording("Lecture 3: Depreciation");
 
-    const speakerButton = await screen.findByRole("button", { name: "Speaker 1" });
-    fireEvent.click(speakerButton);
+    fireEvent.click(within(pane).getByRole("button", { name: "Speaker 1" }));
 
     const input = screen.getByLabelText("Rename Speaker 1");
     fireEvent.change(input, { target: { value: "Jamie" } });
@@ -161,6 +204,77 @@ describe("library UI", () => {
     await waitFor(() =>
       expect(api.renameSpeaker).toHaveBeenCalledWith("rec-1", "spk1", "Jamie")
     );
+  });
+
+  it("renames the recording when its title is edited and clicked away from", async () => {
+    // Recordings are auto-titled so Record never blocks on typing a name;
+    // renaming afterwards is what makes an auto-title survivable.
+    render(<App />);
+    const pane = await openRecording("Lecture 3: Depreciation");
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Lecture 3: Depreciation" }));
+
+    const input = screen.getByLabelText("Recording title");
+    fireEvent.change(input, { target: { value: "New name" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => expect(api.renameRecording).toHaveBeenCalledWith("rec-1", "New name"));
+  });
+
+  it("saves a rename on Enter", async () => {
+    render(<App />);
+    const pane = await openRecording("Lecture 3: Depreciation");
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Lecture 3: Depreciation" }));
+
+    const input = screen.getByLabelText("Recording title");
+    fireEvent.change(input, { target: { value: "New name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(api.renameRecording).toHaveBeenCalledTimes(1));
+    expect(api.renameRecording).toHaveBeenCalledWith("rec-1", "New name");
+  });
+
+  it("cancels a rename on Escape without saving it", async () => {
+    render(<App />);
+    const pane = await openRecording("Lecture 3: Depreciation");
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Lecture 3: Depreciation" }));
+
+    const input = screen.getByLabelText("Recording title");
+    fireEvent.change(input, { target: { value: "Typed then thought better of it" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    // Escape removes the input, and removing a focused element can itself fire
+    // a blur — the cancel has to win that race.
+    fireEvent.blur(input);
+
+    expect(api.renameRecording).not.toHaveBeenCalled();
+    expect(
+      within(pane).getByRole("button", { name: "Lecture 3: Depreciation" })
+    ).toBeInTheDocument();
+  });
+
+  it("does not call renameRecording when the title is left unchanged", async () => {
+    render(<App />);
+    const pane = await openRecording("Lecture 3: Depreciation");
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Lecture 3: Depreciation" }));
+    fireEvent.blur(screen.getByLabelText("Recording title"));
+
+    expect(api.renameRecording).not.toHaveBeenCalled();
+  });
+
+  it("refuses to save a blank title", async () => {
+    render(<App />);
+    const pane = await openRecording("Lecture 3: Depreciation");
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Lecture 3: Depreciation" }));
+
+    const input = screen.getByLabelText("Recording title");
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.blur(input);
+
+    expect(api.renameRecording).not.toHaveBeenCalled();
   });
 
   it("debounces the search input before calling api.search", async () => {

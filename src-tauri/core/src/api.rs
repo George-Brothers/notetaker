@@ -41,6 +41,10 @@ pub struct RecordingRow {
     /// Why processing failed, so a failed row can explain itself in the list
     /// without the user having to open it.
     pub error: Option<String>,
+    /// Why *capture* ended early or lost a track, if it did. Separate from
+    /// `error` because it outlives every processing attempt: a `Ready` row can
+    /// still need to say "this lecture is short because the disk filled up".
+    pub capture_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -55,6 +59,7 @@ pub struct RecordingDetail {
     pub status: Status,
     pub suggested_task: Option<String>,
     pub error: Option<String>,
+    pub capture_note: Option<String>,
     pub transcript_md: String,
     pub summary_md: String,
     pub speakers: BTreeMap<String, String>,
@@ -155,6 +160,7 @@ pub fn get_recording(store: &Store, id: &str) -> Result<RecordingDetail> {
         status: row.status,
         suggested_task: row.suggested_task,
         error: row.error,
+        capture_note: row.capture_note,
         transcript_md: fs::read_to_string(rec.dir.join(TRANSCRIPT_FILE)).unwrap_or_default(),
         summary_md: fs::read_to_string(rec.dir.join(SUMMARY_FILE)).unwrap_or_default(),
         speakers: rec.meta.speakers.clone(),
@@ -197,6 +203,22 @@ pub fn process_now(store: &Store, id: &str) -> Result<()> {
         }
         Status::Queued | Status::Processing => {}
     }
+    Ok(())
+}
+
+/// Retitles a recording, moving its folder to match.
+///
+/// Recordings are auto-titled ("Meeting — Jul 27, 2:30 PM") so that hitting
+/// Record never blocks on typing a name; this is what makes that trade
+/// survivable, because an auto-title is useless for finding a lecture three
+/// weeks later.
+///
+/// Note this takes no `Index`: the search index still holds the old title
+/// until the next `Index::rebuild` or a later `upsert` on this recording. The
+/// app layer, which owns the `Index`, is where that refresh belongs.
+pub fn rename_recording(store: &Store, id: &str, title: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    store.rename_recording(&rec, title)?;
     Ok(())
 }
 
@@ -284,6 +306,7 @@ fn to_row(rec: &RecordingRef) -> RecordingRow {
         status: rec.meta.status,
         suggested_task: read_suggested_task(&rec.dir),
         error: rec.meta.error.clone(),
+        capture_note: rec.meta.capture_note.clone(),
     }
 }
 
@@ -399,6 +422,68 @@ mod tests {
         let moved = find_by_id(&s, &rec.meta.id).unwrap();
         assert_eq!(moved.task.as_deref(), Some("Accounting 302"));
         assert!(moved.dir.starts_with(dir.path().join("Tasks").join("Accounting 302")));
+    }
+
+    // --- rename_recording ------------------------------------------------
+
+    #[test]
+    fn rename_recording_retitles_the_recording_and_moves_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let rec = create(&s, "Meeting — Aug 4, 10:02 AM");
+        let old_dir = rec.dir.clone();
+
+        rename_recording(&s, &rec.meta.id, "Accounting 302 midterm review").unwrap();
+
+        assert!(!old_dir.exists());
+        let detail = get_recording(&s, &rec.meta.id).unwrap();
+        assert_eq!(detail.title, "Accounting 302 midterm review");
+        let rows = list_recordings(&s).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Accounting 302 midterm review");
+    }
+
+    #[test]
+    fn rename_recording_rejects_a_title_that_is_not_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let rec = create(&s, "Lecture 3");
+
+        assert!(rename_recording(&s, &rec.meta.id, "  ").is_err());
+        assert!(rename_recording(&s, &rec.meta.id, "..").is_err());
+        assert!(rename_recording(&s, &rec.meta.id, "CS/Fall").is_err());
+        assert_eq!(get_recording(&s, &rec.meta.id).unwrap().title, "Lecture 3");
+    }
+
+    #[test]
+    fn rename_recording_unknown_id_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        assert!(rename_recording(&s, "nonexistent", "New name").is_err());
+    }
+
+    // --- capture_note ----------------------------------------------------
+
+    #[test]
+    fn capture_note_reaches_both_the_list_row_and_the_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let mut rec = create(&s, "Lecture 3");
+        rec.meta.capture_note =
+            Some("Recording stopped because the disk was almost full.".to_string());
+        s.save_meta(&rec).unwrap();
+
+        let rows = list_recordings(&s).unwrap();
+        assert_eq!(
+            rows[0].capture_note.as_deref(),
+            Some("Recording stopped because the disk was almost full.")
+        );
+        let detail = get_recording(&s, &rec.meta.id).unwrap();
+        assert_eq!(
+            detail.capture_note.as_deref(),
+            Some("Recording stopped because the disk was almost full.")
+        );
+        assert_eq!(detail.error, None, "a capture note is not a processing error");
     }
 
     // --- process_now -------------------------------------------------
