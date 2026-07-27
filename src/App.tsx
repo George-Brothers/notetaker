@@ -1,10 +1,13 @@
 import { useMemo } from "react";
 import { useLibrary } from "./hooks/useLibrary";
 import type { LibraryView } from "./hooks/useLibrary";
+import { useCapture } from "./hooks/useCapture";
 import { Sidebar } from "./components/Sidebar";
 import { RecordingList } from "./components/RecordingList";
 import { RecordingDetail } from "./components/RecordingDetail";
 import { SearchBar } from "./components/SearchBar";
+import { RecordBar } from "./components/RecordBar";
+import { MeetingPrompt } from "./components/MeetingPrompt";
 import type { SearchHit } from "./lib/ipc";
 import "./App.css";
 
@@ -42,37 +45,59 @@ function SearchResults({ hits, onSelect }: { hits: SearchHit[]; onSelect: (id: s
 
 function App() {
   const lib = useLibrary();
+  const capture = useCapture();
   const isSearching = useMemo(() => lib.query.trim().length > 0, [lib.query]);
 
   return (
-    <div className="app-shell">
-      <Sidebar tasks={lib.tasks} activeView={lib.view} onSelectView={lib.setView} onCreateTask={lib.createTask} />
+    <div className="app-root">
+      <RecordBar
+        status={capture.status}
+        onStart={capture.start}
+        onPause={capture.pause}
+        onResume={capture.resume}
+        onStop={capture.stop}
+      />
+      {capture.captureError && <p className="record-bar__error">{capture.captureError}</p>}
 
-      <div className="library-pane">
-        <SearchBar query={lib.query} onSearch={lib.search} />
+      <div className="app-shell">
+        <Sidebar tasks={lib.tasks} activeView={lib.view} onSelectView={lib.setView} onCreateTask={lib.createTask} />
 
-        {isSearching ? (
-          <SearchResults hits={lib.searchResults ?? []} onSelect={lib.selectRecording} />
-        ) : (
-          <>
-            <h2 className="library-pane__title">{viewTitle(lib.view)}</h2>
-            <RecordingList
-              recordings={lib.recordings}
-              tasks={lib.tasks}
-              selectedId={lib.selectedId}
-              onSelect={lib.selectRecording}
-              onAssignTask={lib.assignTask}
-            />
-          </>
-        )}
+        <div className="library-pane">
+          <SearchBar query={lib.query} onSearch={lib.search} />
+
+          {isSearching ? (
+            <SearchResults hits={lib.searchResults ?? []} onSelect={lib.selectRecording} />
+          ) : (
+            <>
+              <h2 className="library-pane__title">{viewTitle(lib.view)}</h2>
+              <RecordingList
+                recordings={lib.recordings}
+                tasks={lib.tasks}
+                selectedId={lib.selectedId}
+                onSelect={lib.selectRecording}
+                onAssignTask={lib.assignTask}
+              />
+            </>
+          )}
+        </div>
+
+        <RecordingDetail
+          detail={lib.detail}
+          loading={lib.detailLoading}
+          onRenameSpeaker={lib.renameSpeaker}
+          onSaveSummary={lib.saveSummary}
+        />
       </div>
 
-      <RecordingDetail
-        detail={lib.detail}
-        loading={lib.detailLoading}
-        onRenameSpeaker={lib.renameSpeaker}
-        onSaveSummary={lib.saveSummary}
-      />
+      {capture.pendingMeeting && (
+        <MeetingPrompt
+          event={capture.pendingMeeting}
+          onRecord={capture.recordPendingMeeting}
+          onNotNow={capture.dismissPendingMeeting}
+          onAlways={capture.alwaysRecordPending}
+          onNever={capture.neverRecordPending}
+        />
+      )}
     </div>
   );
 }
