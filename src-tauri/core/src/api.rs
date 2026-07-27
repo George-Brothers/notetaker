@@ -549,7 +549,7 @@ mod tests {
 
         let settings = get_settings(&path).unwrap();
         assert_eq!(settings.llm_base_url, "http://localhost:11434");
-        assert_eq!(settings.process_when_idle, true);
+        assert!(settings.process_when_idle);
     }
 
     #[test]
