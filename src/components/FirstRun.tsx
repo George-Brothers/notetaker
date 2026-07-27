@@ -18,17 +18,6 @@ const STATUS_LABEL: Record<ItemStatus, string> = {
   info: "Checked on the Mac",
 };
 
-// `PullProgress` has no field distinguishing an Ollama pull from a
-// whisper/sherpa speech-model fetch (see ipc.ts) — both share the same
-// shape, keyed only by `name`. This is a best-effort classification by name
-// until the contract grows a `kind`; reported to the runtime owner.
-const SPEECH_MODEL_HINTS = ["whisper", "sense", "sherpa", "diariz", "pyannote"];
-
-function looksLikeSpeechModel(name: string): boolean {
-  const lower = name.toLowerCase();
-  return SPEECH_MODEL_HINTS.some((hint) => lower.includes(hint));
-}
-
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -99,6 +88,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [progress, setProgress] = useState<PullProgress[]>([]);
   const [pulling, setPulling] = useState(false);
+  const [downloadingModels, setDownloadingModels] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -152,7 +142,20 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
     }
   }
 
-  const speechEntries = progress.filter((p) => looksLikeSpeechModel(p.name));
+  async function handleDownloadModels() {
+    setLoadError(null);
+    setDownloadingModels(true);
+    try {
+      await api.downloadModels();
+      await refresh();
+    } catch (err) {
+      setLoadError(describeError(err));
+    } finally {
+      setDownloadingModels(false);
+    }
+  }
+
+  const speechEntries = progress.filter((p) => p.kind === "speech");
   const speechStatus: ItemStatus =
     speechEntries.length === 0
       ? "not-started"
@@ -160,7 +163,9 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         ? "done"
         : "in-progress";
 
-  const ollamaEntry = settings ? progress.find((p) => p.name === settings.llmModel) : undefined;
+  const ollamaEntry = settings
+    ? progress.find((p) => p.kind === "ollama" && p.name === settings.llmModel)
+    : undefined;
 
   const ollamaItemStatus: ItemStatus = !ollama
     ? "not-started"
@@ -195,11 +200,21 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         </ChecklistItem>
 
         <ChecklistItem index={2} title="Download the speech models" status={speechStatus}>
-          {speechEntries.length === 0 ? (
-            <p className="first-run__item-hint">Happens automatically in the background — nothing to do yet.</p>
-          ) : (
-            speechEntries.map((entry) => <ProgressRow key={entry.name} entry={entry} />)
+          {speechStatus !== "done" && (
+            <>
+              <button type="button" onClick={handleDownloadModels} disabled={downloadingModels}>
+                Download speech models
+              </button>
+              {speechEntries.length === 0 && (
+                <p className="first-run__item-hint">
+                  Happens automatically in the background — or download now.
+                </p>
+              )}
+            </>
           )}
+          {speechEntries.map((entry) => (
+            <ProgressRow key={entry.name} entry={entry} />
+          ))}
         </ChecklistItem>
 
         <ChecklistItem index={3} title="Install Ollama and download the summary model" status={ollamaItemStatus}>
