@@ -28,6 +28,7 @@ vi.mock("../../lib/ipc", () => ({
     ollamaStatus: vi.fn(),
     pullModel: vi.fn(),
     pullProgress: vi.fn(),
+    downloadModels: vi.fn(),
     detectedTier: vi.fn(),
   },
 }));
@@ -92,6 +93,7 @@ function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus } = {}
   vi.mocked(api.ollamaStatus).mockResolvedValue(overrides.ollama ?? OLLAMA_NEEDS_MODEL);
   vi.mocked(api.pullProgress).mockResolvedValue([]);
   vi.mocked(api.pullModel).mockResolvedValue(undefined);
+  vi.mocked(api.downloadModels).mockResolvedValue(undefined);
 }
 
 async function openSettings() {
@@ -331,6 +333,85 @@ describe("First-run checklist", () => {
     const card = await screen.findByRole("region", { name: "Getting started" });
 
     expect(await within(card).findByText(/Network error — check your connection\./)).toBeInTheDocument();
+  });
+
+  it("clicking the speech-models button calls downloadModels", async () => {
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    const button = await within(card).findByRole("button", { name: "Download speech models" });
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(api.downloadModels).toHaveBeenCalled());
+  });
+
+  it("renders progress with kind 'speech' on the speech item, not the Ollama item", async () => {
+    vi.mocked(api.pullProgress).mockResolvedValue([
+      { kind: "speech", name: "sensevoice-small", percent: 55, error: null, done: false },
+    ]);
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    const speechItem = within(card).getByText("Download the speech models").closest("li") as HTMLElement;
+    const ollamaItem = within(card)
+      .getByText("Install Ollama and download the summary model")
+      .closest("li") as HTMLElement;
+
+    expect(await within(speechItem).findByText(/sensevoice-small — 55%/)).toBeInTheDocument();
+    expect(within(ollamaItem).queryByText(/sensevoice-small/)).not.toBeInTheDocument();
+  });
+
+  it("renders progress with kind 'ollama' on the Ollama item, not the speech item", async () => {
+    vi.mocked(api.pullProgress).mockResolvedValue([
+      { kind: "ollama", name: "qwen2.5:7b", percent: 20, error: null, done: false },
+    ]);
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    const speechItem = within(card).getByText("Download the speech models").closest("li") as HTMLElement;
+    const ollamaItem = within(card)
+      .getByText("Install Ollama and download the summary model")
+      .closest("li") as HTMLElement;
+
+    expect(await within(ollamaItem).findByText(/qwen2\.5:7b — 20%/)).toBeInTheDocument();
+    expect(within(speechItem).queryByText(/qwen2\.5:7b/)).not.toBeInTheDocument();
+  });
+
+  it("classifies a speech model matching none of the old heuristic's name substrings (paraformer-zh) as speech", async () => {
+    // Proves the `name`-substring heuristic is gone: "paraformer-zh" contains
+    // none of the old hints (whisper/sense/sherpa/diariz/pyannote), so this
+    // would have shown "Not started" forever under the old code.
+    vi.mocked(api.pullProgress).mockResolvedValue([
+      { kind: "speech", name: "paraformer-zh", percent: 10, error: null, done: false },
+    ]);
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    const speechItem = within(card).getByText("Download the speech models").closest("li") as HTMLElement;
+
+    expect(await within(speechItem).findByText(/paraformer-zh — 10%/)).toBeInTheDocument();
+    await waitFor(() => expect(within(speechItem).getByText("In progress")).toBeInTheDocument());
+  });
+
+  it("an errored speech download surfaces its message and the button becomes available again", async () => {
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    const item = within(card).getByText("Download the speech models").closest("li") as HTMLElement;
+
+    vi.mocked(api.pullProgress).mockResolvedValue([
+      {
+        kind: "speech",
+        name: "sensevoice-small",
+        percent: 40,
+        error: "Network error — check your connection.",
+        done: true,
+      },
+    ]);
+
+    fireEvent.click(within(item).getByRole("button", { name: "Download speech models" }));
+
+    expect(await within(item).findByText(/Network error — check your connection\./)).toBeInTheDocument();
+    expect(within(item).queryByRole("progressbar")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(item).getByRole("button", { name: "Download speech models" })).toBeEnabled()
+    );
   });
 
   it("can be dismissed, and the app underneath remains fully usable", async () => {
