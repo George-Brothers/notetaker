@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useLibrary } from "./hooks/useLibrary";
 import type { LibraryView } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
@@ -8,8 +8,22 @@ import { RecordingDetail } from "./components/RecordingDetail";
 import { SearchBar } from "./components/SearchBar";
 import { RecordBar } from "./components/RecordBar";
 import { MeetingPrompt } from "./components/MeetingPrompt";
+import { Settings } from "./components/Settings";
+import { FirstRun } from "./components/FirstRun";
 import type { SearchHit } from "./lib/ipc";
 import "./App.css";
+
+const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
+
+function readFirstRunDismissed(): boolean {
+  try {
+    return window.localStorage.getItem(FIRST_RUN_DISMISSED_KEY) === "1";
+  } catch {
+    // localStorage can throw (private mode, disabled storage) — degrade to
+    // "not dismissed yet" rather than crash the shell over a nagging card.
+    return false;
+  }
+}
 
 function viewTitle(view: LibraryView): string {
   switch (view.kind) {
@@ -47,16 +61,38 @@ function App() {
   const lib = useLibrary();
   const capture = useCapture();
   const isSearching = useMemo(() => lib.query.trim().length > 0, [lib.query]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
+
+  function dismissFirstRun() {
+    setFirstRunDismissed(true);
+    try {
+      window.localStorage.setItem(FIRST_RUN_DISMISSED_KEY, "1");
+    } catch {
+      // Best effort only — worst case the card reappears next launch.
+    }
+  }
 
   return (
     <div className="app-root">
-      <RecordBar
-        status={capture.status}
-        onStart={capture.start}
-        onPause={capture.pause}
-        onResume={capture.resume}
-        onStop={capture.stop}
-      />
+      <div className="app-topbar">
+        <RecordBar
+          status={capture.status}
+          onStart={capture.start}
+          onPause={capture.pause}
+          onResume={capture.resume}
+          onStop={capture.stop}
+        />
+        <button
+          type="button"
+          className="app-topbar__settings"
+          onClick={() => setSettingsOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={settingsOpen}
+        >
+          Settings
+        </button>
+      </div>
       {capture.captureError && <p className="record-bar__error">{capture.captureError}</p>}
 
       <div className="app-shell">
@@ -98,6 +134,10 @@ function App() {
           onNever={capture.neverRecordPending}
         />
       )}
+
+      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+
+      {!firstRunDismissed && <FirstRun onDismiss={dismissFirstRun} />}
     </div>
   );
 }
