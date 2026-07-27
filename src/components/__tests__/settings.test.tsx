@@ -34,6 +34,7 @@ vi.mock("../../lib/ipc", () => ({
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
+  mode: null,
   recordingId: null,
   elapsedS: 0,
   micLevel: 0,
@@ -275,7 +276,7 @@ describe("Settings screen", () => {
 
     await waitFor(() => expect(api.pullModel).toHaveBeenCalledWith("qwen2.5:7b"));
 
-    resolveProgress([{ name: "qwen2.5:7b", percent: 42, error: null, done: false }]);
+    resolveProgress([{ kind: "ollama", name: "qwen2.5:7b", percent: 42, error: null, done: false }]);
 
     expect(
       await within(dialog).findByRole("progressbar", { name: "qwen2.5:7b download progress" })
@@ -285,7 +286,7 @@ describe("Settings screen", () => {
   it("surfaces a failed pull's error text instead of leaving a stuck progress bar", async () => {
     const dialog = await openSettings();
     vi.mocked(api.pullProgress).mockResolvedValue([
-      { name: "qwen2.5:7b", percent: 10, error: "Connection refused", done: true },
+      { kind: "ollama", name: "qwen2.5:7b", percent: 10, error: "Connection refused", done: true },
     ]);
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Pull model" }));
@@ -324,7 +325,7 @@ describe("First-run checklist", () => {
 
   it("surfaces a failed speech-model download's error text on its checklist item", async () => {
     vi.mocked(api.pullProgress).mockResolvedValue([
-      { name: "sensevoice-small", percent: 30, error: "Network error — check your connection.", done: true },
+      { kind: "speech", name: "sensevoice-small", percent: 30, error: "Network error — check your connection.", done: true },
     ]);
     render(<App />);
     const card = await screen.findByRole("region", { name: "Getting started" });
@@ -343,6 +344,7 @@ describe("First-run checklist", () => {
 
     vi.mocked(api.startCapture).mockResolvedValue({
       state: "recording",
+      mode: "meeting",
       recordingId: "rec-1",
       elapsedS: 0,
       micLevel: 0,

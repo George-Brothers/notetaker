@@ -73,11 +73,29 @@ pub struct OllamaStatus {
     pub install_hint: Option<String>,
 }
 
+/// Which downloader a [`PullProgress`] came from.
+///
+/// The first-run checklist tracks two separate things — "download the speech
+/// models" and "install the summary AI" — that report through one progress
+/// list. Without this the UI had to guess from the model's name, which breaks
+/// the moment a model is renamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PullKind {
+    /// An Ollama model, for summaries.
+    Ollama,
+    /// A whisper or diarization model, for transcription.
+    Speech,
+}
+
 /// One progress report for a long download. Serializes to `PullProgress` in
 /// `src/lib/ipc.ts`, and is the same value the UI renders for model downloads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullProgress {
+    /// Which checklist item this download belongs to.
+    #[serde(default = "ollama_kind")]
+    pub kind: PullKind,
     /// What is being fetched, for the label — here, the model name.
     pub name: String,
     /// 0..=100, monotonic non-decreasing across a single pull.
@@ -86,6 +104,10 @@ pub struct PullProgress {
     pub error: Option<String>,
     /// True on the last report, success or failure.
     pub done: bool,
+}
+
+fn ollama_kind() -> PullKind {
+    PullKind::Ollama
 }
 
 /// What `/api/tags` returns.
@@ -168,7 +190,7 @@ pub fn status(base_url: &str, wanted_model: &str) -> OllamaStatus {
 /// tracks it and then finishes at 100 on `success`.
 pub fn pull<F: FnMut(PullProgress)>(base_url: &str, model: &str, mut on_progress: F) -> Result<()> {
     let url = format!("{base_url}/api/pull");
-    let response = ureq::post(&url)
+    let response = match ureq::post(&url)
         .config()
         .timeout_connect(Some(PULL_CONNECT_TIMEOUT))
         // Read the status ourselves so a rejected pull explains itself in
@@ -176,7 +198,21 @@ pub fn pull<F: FnMut(PullProgress)>(base_url: &str, model: &str, mut on_progress
         .http_status_as_error(false)
         .build()
         .send_json(serde_json::json!({ "model": model, "stream": true }))
-        .with_context(|| format!("could not reach ollama at {url}"))?;
+    {
+        Ok(response) => response,
+        Err(e) => {
+            // Report before returning. Every other failure path here emits a
+            // terminal progress first, and a UI driven by the callback would
+            // otherwise sit at 0% forever with no reason shown — which is
+            // exactly what "Ollama isn't running" looks like to a user.
+            let message = format!(
+                "Couldn't reach Ollama to download \"{model}\". Make sure Ollama is running, \
+                 then try again."
+            );
+            on_progress(failed(model, &message));
+            return Err(e).context(message);
+        }
+    };
 
     let http_status = response.status().as_u16();
     if !(200..300).contains(&http_status) {
@@ -215,6 +251,7 @@ pub fn pull<F: FnMut(PullProgress)>(base_url: &str, model: &str, mut on_progress
         if parsed.status.as_deref() == Some("success") {
             succeeded = true;
             on_progress(PullProgress {
+                kind: PullKind::Ollama,
                 name: model.to_string(),
                 percent: 100.0,
                 error: None,
@@ -228,6 +265,7 @@ pub fn pull<F: FnMut(PullProgress)>(base_url: &str, model: &str, mut on_progress
                 highest = percent;
             }
             on_progress(PullProgress {
+                kind: PullKind::Ollama,
                 name: model.to_string(),
                 percent: highest,
                 error: None,
@@ -259,6 +297,7 @@ pub fn ensure_model<F: FnMut(PullProgress)>(
 ) -> Result<()> {
     if status(base_url, model).model_ready {
         on_progress(PullProgress {
+                kind: PullKind::Ollama,
             name: model.to_string(),
             percent: 100.0,
             error: None,
@@ -275,6 +314,7 @@ pub fn ensure_model<F: FnMut(PullProgress)>(
 /// at 40%.
 fn failed(model: &str, message: &str) -> PullProgress {
     PullProgress {
+        kind: PullKind::Ollama,
         name: model.to_string(),
         percent: 0.0,
         error: Some(message.to_string()),
@@ -692,18 +732,32 @@ mod tests {
 
     #[test]
     fn pull_against_a_dead_port_names_ollama() {
-        let (_seen, sink) = recorder();
+        let (seen, sink) = recorder();
         let err = pull(DEAD_PORT, "qwen3:8b", sink).unwrap_err().to_string();
 
         assert!(
             err.to_lowercase().contains("ollama"),
             "error must name ollama for the UI: {err}"
         );
+
+        // And it must reach the callback, not only the return value: a UI
+        // driven by progress alone would otherwise show a bar stuck at 0%
+        // with nothing explaining why.
+        let reports = seen.borrow();
+        let last = reports
+            .last()
+            .expect("an unreachable server must still report a terminal failure");
+        assert!(last.done, "the failure report must be terminal");
+        assert!(
+            last.error.as_deref().is_some_and(|e| e.contains("Ollama")),
+            "the report must carry an actionable reason: {last:?}"
+        );
     }
 
     #[test]
     fn pull_progress_serializes_to_the_ipc_camel_case_shape() {
         let p = PullProgress {
+            kind: PullKind::Ollama,
             name: "qwen3:8b".into(),
             percent: 42.5,
             error: None,
@@ -712,7 +766,13 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(&p).unwrap(),
-            json!({"name": "qwen3:8b", "percent": 42.5, "error": null, "done": false})
+            json!({
+                "kind": "ollama",
+                "name": "qwen3:8b",
+                "percent": 42.5,
+                "error": null,
+                "done": false
+            })
         );
     }
 

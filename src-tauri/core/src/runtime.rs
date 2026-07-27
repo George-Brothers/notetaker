@@ -50,8 +50,8 @@ use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
 use crate::capture::{self, CaptureState, CaptureStatus, DiskSpace};
 use crate::index::Index;
-use crate::models::{detect_tier, Tier};
-use crate::ollama::{self, OllamaStatus, PullProgress};
+use crate::models::{detect_tier, registry, Downloader, Tier};
+use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
 use crate::pipeline::diarize::Diarizer;
 use crate::pipeline::llm::LlmClient;
 use crate::pipeline::run::{requeue_stale, PipelineDeps};
@@ -146,6 +146,7 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "ollama_status", args: &[] },
     Command { name: "pull_model", args: &["model"] },
     Command { name: "pull_progress", args: &[] },
+    Command { name: "download_models", args: &[] },
     Command { name: "detected_tier", args: &[] },
 ];
 
@@ -365,6 +366,10 @@ struct Inner {
     /// Free space for `capture_status` between recordings; a live session has
     /// its own.
     disk: SysinfoDisk,
+    /// Where whisper/sherpa model files live. Beside the index and settings in
+    /// the app's data dir, not in the user's recordings folder: they are
+    /// re-downloadable cache, not the user's data.
+    models_dir: PathBuf,
 }
 
 impl Runtime {
@@ -404,6 +409,7 @@ impl Runtime {
         Ok(Runtime {
             inner: Arc::new(Inner {
                 disk: SysinfoDisk::new(&root),
+                models_dir: data_dir.join("models"),
                 store: Store::new(root),
                 index: Mutex::new(index),
                 settings_path,
@@ -493,32 +499,12 @@ impl Runtime {
     /// Implemented here rather than delegating, because neither `storage` nor
     /// `api` exposes a rename.
     pub fn rename_recording(&self, id: &str, title: &str) -> Result<()> {
-        let cleaned = sanitize(title);
-        if cleaned.is_empty() {
-            bail!("a recording needs a name — that one is empty once punctuation is removed");
-        }
-
-        let mut rec = self.inner.find(id)?;
-        rec.meta.title = title.to_string();
-
-        // Only the folder name is cosmetic, so a timestamp we cannot parse
-        // means "rename in place", never an error that loses the new title.
-        if let Some(parent) = rec.dir.parent() {
-            if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&rec.meta.created) {
-                let stamp = created.format("%Y-%m-%d %H.%M");
-                let dest = unique_dir(parent, &format!("{stamp} {cleaned}"));
-                if dest != rec.dir {
-                    fs::rename(&rec.dir, &dest).with_context(|| {
-                        format!("renaming {} to {}", rec.dir.display(), dest.display())
-                    })?;
-                    rec.dir = dest;
-                }
-            }
-        }
-
-        self.inner.store.save_meta(&rec)?;
+        api::rename_recording(&self.inner.store, id, title)?;
         // The index stores the directory, so skipping this would leave search
-        // pointing at a folder that no longer exists.
+        // pointing at a folder that no longer exists. `api::rename_recording`
+        // has no `Index` — the app layer owns it — which is exactly why this
+        // wrapper exists.
+        let rec = self.inner.find(id)?;
         self.inner.index_one(&rec)
     }
 
@@ -700,6 +686,7 @@ impl Runtime {
             pulls.insert(
                 model.clone(),
                 PullProgress {
+                    kind: PullKind::Ollama,
                     name: model.clone(),
                     percent: 0.0,
                     error: None,
@@ -737,6 +724,89 @@ impl Runtime {
     /// can show "done" rather than a bar that vanishes at 100%.
     pub fn pull_progress(&self) -> Vec<PullProgress> {
         lock(&self.inner.pulls).values().cloned().collect()
+    }
+
+    /// Downloads the speech models this machine's tier needs, in the
+    /// background, reporting through the same progress list as an Ollama pull.
+    ///
+    /// Without this the first-run checklist could only *observe* speech-model
+    /// downloads, so an item that had never been started sat at "not started"
+    /// with no way for the user to act on it. Already-present models are
+    /// reported complete without re-downloading, so pressing the button twice
+    /// is harmless.
+    pub fn download_models(&self) -> Result<()> {
+        let settings = self.get_settings()?;
+        let tier = settings
+            .tier_override
+            .as_deref()
+            .and_then(tier_from_name)
+            .unwrap_or_else(|| {
+                tier_from_name(&self.detected_tier()).unwrap_or(Tier::CpuSmall)
+            });
+        let specs = registry::required_models(&tier);
+
+        {
+            let mut pulls = lock(&self.inner.pulls);
+            if specs
+                .iter()
+                .any(|s| pulls.get(s.name).is_some_and(|p| !p.done))
+            {
+                return Ok(());
+            }
+            for spec in &specs {
+                pulls.insert(
+                    spec.name.to_string(),
+                    PullProgress {
+                        kind: PullKind::Speech,
+                        name: spec.name.to_string(),
+                        percent: 0.0,
+                        error: None,
+                        done: false,
+                    },
+                );
+            }
+        }
+
+        let inner = Arc::clone(&self.inner);
+        let models_dir = self.inner.models_dir.clone();
+        thread::Builder::new()
+            .name("notetaker-models".to_string())
+            .spawn(move || {
+                let downloader = Downloader { models_dir };
+                for spec in specs {
+                    let report = |percent: f64, error: Option<String>, done: bool| {
+                        lock(&inner.pulls).insert(
+                            spec.name.to_string(),
+                            PullProgress {
+                                kind: PullKind::Speech,
+                                name: spec.name.to_string(),
+                                percent,
+                                error,
+                                done,
+                            },
+                        );
+                    };
+                    let outcome = downloader.ensure(spec, |got, total| {
+                        // A server that sends no length gives total 0; hold at
+                        // 0% rather than dividing by it.
+                        let percent = if total > 0 {
+                            (got as f64 / total as f64 * 100.0).min(100.0)
+                        } else {
+                            0.0
+                        };
+                        report(percent, None, false);
+                    });
+                    match outcome {
+                        Ok(_) => report(100.0, None, true),
+                        Err(e) => {
+                            log::warn!("downloading {}: {e:#}", spec.name);
+                            report(0.0, Some(format!("{e:#}")), true);
+                        }
+                    }
+                }
+            })
+            .context("starting the speech-model download")?;
+        Ok(())
     }
 
     /// The hardware tier detected for this machine, as the same string
@@ -1033,39 +1103,24 @@ fn tier_name(tier: Tier) -> &'static str {
     }
 }
 
+/// The inverse of [`tier_name`], for reading `Settings::tier_override` back.
+/// An unrecognized name is `None` rather than a guess — the caller falls back
+/// to what it detected, which is better than downloading the wrong models
+/// because a settings file had a typo in it.
+fn tier_from_name(name: &str) -> Option<Tier> {
+    match name {
+        "AppleSiliconBig" => Some(Tier::AppleSiliconBig),
+        "AppleSiliconSmall" => Some(Tier::AppleSiliconSmall),
+        "CpuSmall" => Some(Tier::CpuSmall),
+        _ => None,
+    }
+}
+
 /// A poisoned lock only means some other thread panicked while holding it.
 /// Everything behind these locks is either re-derived from disk or purely
 /// advisory, so recovering the guard beats taking the app down with it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Strips filesystem-hostile characters. Mirrors `storage::sanitize`, which is
-/// private to that module.
-fn sanitize(title: &str) -> String {
-    title
-        .chars()
-        .filter(|c| !matches!(c, '/' | ':' | '\\' | '*' | '?' | '"' | '<' | '>' | '|'))
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-/// `parent/name`, or `parent/name (2)`, `(3)`, ... if taken. Mirrors
-/// `storage::unique_dir`, which is private to that module.
-fn unique_dir(parent: &Path, name: &str) -> PathBuf {
-    let candidate = parent.join(name);
-    if !candidate.exists() {
-        return candidate;
-    }
-    let mut n = 2;
-    loop {
-        let candidate = parent.join(format!("{name} ({n})"));
-        if !candidate.exists() {
-            return candidate;
-        }
-        n += 1;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1850,9 +1905,18 @@ mod tests {
         let rt = runtime(dir.path(), 0.2);
         let id = record(&rt, Mode::InPerson, "Lecture");
 
+        // What matters is that it is refused and nothing on disk moved — the
+        // storage layer owns the wording, and asserting on its exact sentence
+        // here would just break every time that sentence improves.
         let err = rt.rename_recording(&id, " /// ").unwrap_err();
-        assert!(format!("{err:#}").contains("needs a name"), "{err:#}");
+        let message = format!("{err:#}");
+        assert!(
+            message.to_lowercase().contains("title"),
+            "the refusal must be about the title: {message}"
+        );
         assert_eq!(rt.get_recording(&id).unwrap().title, "Lecture");
+        // And search still points at the untouched folder.
+        assert_eq!(rt.search("Lecture").unwrap().len(), 1);
     }
 
     #[test]
@@ -2137,6 +2201,7 @@ mod tests {
             ("poll_meetings", rt.poll_meetings().map(|_| ())),
             ("ollama_status", rt.ollama_status().map(|_| ())),
             ("pull_model", rt.pull_model("qwen3:8b")),
+            ("download_models", rt.download_models()),
         ];
         let called: Vec<&str> = fallible
             .into_iter()

@@ -7,6 +7,7 @@ const MEETING_POLL_MS = 3000;
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
+  mode: null,
   recordingId: null,
   elapsedS: 0,
   micLevel: 0,

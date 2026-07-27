@@ -30,6 +30,7 @@ vi.mock("../../lib/ipc", () => ({
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
+  mode: null,
   recordingId: null,
   elapsedS: 0,
   micLevel: 0,
@@ -39,6 +40,7 @@ const IDLE_STATUS: CaptureStatus = {
 
 const RECORDING_STATUS: CaptureStatus = {
   state: "recording",
+  mode: "meeting",
   recordingId: "rec-live",
   elapsedS: 5,
   micLevel: 0.4,

@@ -29,6 +29,13 @@ export interface RecordingRow {
    * making the user open it.
    */
   error: string | null;
+  /**
+   * Why *capture* ended early or lost a track, if it did. Separate from
+   * `error` because it outlives every processing attempt — a finished, fully
+   * transcribed recording still needs to be able to say "this is short
+   * because the disk filled up."
+   */
+  captureNote: string | null;
 }
 
 export interface RecordingDetail extends RecordingRow {
@@ -70,6 +77,13 @@ export type CaptureState = "idle" | "recording" | "paused";
 /** Live snapshot for the record bar. Polled while recording. */
 export interface CaptureStatus {
   state: CaptureState;
+  /**
+   * What kind of recording is running; null when nothing is. Carried here
+   * rather than remembered by whichever component pressed Record, so a menu
+   * bar or a window reopened mid-recording can tell a meeting from a lecture
+   * without having started it.
+   */
+  mode: Mode | null;
   recordingId: string | null;
   /** Seconds of audio captured; paused time is not counted. */
   elapsedS: number;
@@ -102,8 +116,16 @@ export interface OllamaStatus {
   installHint: string | null;
 }
 
+/**
+ * Which checklist item a download belongs to. The first-run screen tracks
+ * "download the speech models" and "install the summary AI" separately, but
+ * both report through one progress list.
+ */
+export type PullKind = "ollama" | "speech";
+
 /** Progress of a model download — Ollama pulls and whisper/sherpa fetches. */
 export interface PullProgress {
+  kind: PullKind;
   /** What is being fetched, for the label. */
   name: string;
   /** 0..100. */
@@ -158,6 +180,12 @@ export const api = {
   /** Starts a pull; progress arrives via `pullProgress`. */
   pullModel: (model: string) => invoke<void>("pull_model", { model }),
   pullProgress: () => invoke<PullProgress[]>("pull_progress"),
+  /**
+   * Starts downloading the speech models this machine's tier needs. Models
+   * already present report complete without re-downloading, so pressing this
+   * twice is harmless. Progress arrives via `pullProgress` with kind "speech".
+   */
+  downloadModels: () => invoke<void>("download_models"),
   /** The hardware tier detected for this machine ("small" | "medium" | "large"). */
   detectedTier: () => invoke<string>("detected_tier"),
 };

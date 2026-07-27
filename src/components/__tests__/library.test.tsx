@@ -37,6 +37,7 @@ vi.mock("../../lib/ipc", () => ({
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
+  mode: null,
   recordingId: null,
   elapsedS: 0,
   micLevel: 0,
@@ -60,6 +61,7 @@ const RECORDINGS: Array<RecordingRow & { error?: string | null }> = [
     status: "ready",
     suggestedTask: "Accounting 302",
     error: null,
+    captureNote: null,
   },
   {
     id: "rec-2",
@@ -71,6 +73,7 @@ const RECORDINGS: Array<RecordingRow & { error?: string | null }> = [
     status: "processing",
     suggestedTask: null,
     error: null,
+    captureNote: null,
   },
   {
     id: "rec-3",
@@ -82,6 +85,7 @@ const RECORDINGS: Array<RecordingRow & { error?: string | null }> = [
     status: "failed",
     suggestedTask: null,
     error: "The model download was interrupted. Reconnect and reprocess.",
+    captureNote: null,
   },
 ];
 
@@ -99,6 +103,7 @@ const DETAIL_REC1: RecordingDetail = {
   summaryMd: "## TL;DR\nWe covered straight-line depreciation.",
   speakers: { spk1: "Speaker 1", george: "George" },
   error: null,
+  captureNote: null,
 };
 
 function setupApi() {
@@ -176,6 +181,7 @@ describe("library UI", () => {
         status: "ready",
         suggestedTask: "Accounting 302",
         error: null,
+        captureNote: null,
       },
     ] as RecordingRow[]);
 
