@@ -17,9 +17,16 @@ pub struct Suggestion {
     pub confidence: f32,
 }
 
+/// The model's raw reply. Both fields tolerate being missing or `null`: this
+/// is the last stage of a long pipeline, and a local model answering
+/// `{"task": null}` — a perfectly reasonable way to say "none of these fit" —
+/// used to fail the whole run and throw away an otherwise good transcript.
+/// A suggestion we cannot read means Unsorted, never a lost recording.
 #[derive(serde::Deserialize)]
 struct RawSuggestion {
-    task: String,
+    #[serde(default)]
+    task: Option<String>,
+    #[serde(default)]
     confidence: f32,
 }
 
@@ -40,8 +47,9 @@ pub fn suggest_task(llm: &LlmClient, summary: &str, tasks: &[String]) -> Result<
     let raw: RawSuggestion = serde_json::from_str(json_text)
         .with_context(|| format!("ollama returned a suggestion we couldn't parse: {reply}"))?;
 
-    let task = if raw.confidence >= CONFIDENCE_THRESHOLD && tasks.iter().any(|t| t == &raw.task) {
-        Some(raw.task)
+    let named = raw.task.unwrap_or_default();
+    let task = if raw.confidence >= CONFIDENCE_THRESHOLD && tasks.iter().any(|t| t == &named) {
+        Some(named)
     } else {
         None
     };
@@ -118,5 +126,36 @@ mod tests {
             "a task outside the provided list must never be invented"
         );
         invented.delete();
+    }
+
+    /// A local model saying "none of these fit" as `null` rather than `""` —
+    /// or omitting a field entirely — must land in Unsorted, not fail the run.
+    /// This is the last stage of the pipeline, so an error here would discard
+    /// a finished transcript and summary over a suggestion nobody needed.
+    #[test]
+    fn an_unreadable_suggestion_means_unsorted_not_a_lost_recording() {
+        let server = MockServer::start();
+        let llm = LlmClient {
+            base_url: server.base_url(),
+            model: "qwen3:8b".to_string(),
+        };
+
+        for reply in [
+            r#"{"task": null, "confidence": 0.9}"#,
+            r#"{"confidence": 0.9}"#,
+            r#"{"task": "Accounting 302"}"#,
+            r#"{}"#,
+        ] {
+            let mut mock = server.mock(|when, then| {
+                when.method(POST).path("/api/chat");
+                then.status(200).json_body(serde_json::json!({
+                    "message": { "role": "assistant", "content": reply }
+                }));
+            });
+            let s = suggest_task(&llm, "summary text", &tasks())
+                .unwrap_or_else(|e| panic!("{reply} should not fail the run: {e:#}"));
+            assert_eq!(s.task, None, "{reply} should land in Unsorted");
+            mock.delete();
+        }
     }
 }

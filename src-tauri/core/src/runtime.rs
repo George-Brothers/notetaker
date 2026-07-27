@@ -44,9 +44,11 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 
 use crate::api::{self, RecordingDetail, RecordingRow, SearchHit, Settings};
+use crate::capture::flac::finalize_to_flac;
+use crate::capture::recover::recover_orphans;
 use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
-use crate::capture::{CaptureState, CaptureStatus, DiskSpace};
+use crate::capture::{self, CaptureState, CaptureStatus, DiskSpace};
 use crate::index::Index;
 use crate::models::{detect_tier, Tier};
 use crate::ollama::{self, OllamaStatus, PullProgress};
@@ -58,6 +60,19 @@ use crate::power::{PowerPolicy, PowerState, SystemProbe};
 use crate::queue::{IdleSource, Queue, RunOutcome};
 use crate::scheduler;
 use crate::storage::{Mode, RecordingRef, Status, Store};
+
+/// What [`Runtime::start_up`] found and did, so the app can tell the user
+/// "2 interrupted recordings were recovered" rather than silently repairing
+/// files behind their back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartUp {
+    /// Recordings whose audio file a crash left mid-write, now repaired.
+    pub recovered: usize,
+    /// Recordings a crash left mid-processing, now back in the queue.
+    pub requeued: usize,
+    /// Recordings in the rebuilt search index.
+    pub indexed: usize,
+}
 use crate::watch::watcher::Watcher;
 use crate::watch::{AutoRecordPolicy, MeetingEvent};
 
@@ -329,6 +344,17 @@ struct Inner {
     /// Id of the most recently finished recording, so a Stop that races the
     /// disk guard's own stop still hands the UI an id instead of an error.
     last_recording: Mutex<Option<String>>,
+    /// Held for the whole of [`Inner::finish_session`].
+    ///
+    /// Closing out a recording is not instant — it finalizes the audio,
+    /// re-encodes both tracks to FLAC, queues, and indexes. The pump thread
+    /// and the user's Stop both arrive here, and taking the session out of its
+    /// slot is only the first step, so "the slot is empty" does not mean "the
+    /// recording is ready". Without this, `stop_capture` could return an id
+    /// for a recording that is not yet queued and whose audio file is halfway
+    /// through being replaced — and the UI would refresh its list a moment too
+    /// early and show nothing.
+    finishing: Mutex<()>,
     watcher: Mutex<Watcher>,
     sources: Box<dyn CaptureSources>,
     probe: Arc<dyn SystemProbe + Send + Sync>,
@@ -383,6 +409,7 @@ impl Runtime {
                 settings_path,
                 session: Mutex::new(None),
                 last_recording: Mutex::new(None),
+                finishing: Mutex::new(()),
                 watcher: Mutex::new(Watcher::with_sysinfo()),
                 sources,
                 probe,
@@ -396,17 +423,29 @@ impl Runtime {
     /// One-time startup work, before the window is shown: recover anything a
     /// crash left mid-flight and refresh the search index from disk.
     ///
-    /// Returns `(requeued, indexed)`. The index is a disposable cache derived
-    /// from the files, so rebuilding it on launch is also how a deleted or
-    /// corrupt database heals itself.
+    /// The index is a disposable cache derived from the files, so rebuilding
+    /// it on launch is also how a deleted or corrupt database heals itself.
     ///
-    /// **Not yet wired:** `capture::recover::recover_orphans`, which repairs a
-    /// WAV whose writer died mid-recording, belongs here. It was still a stub
-    /// when this was written (Plan B1 task 2, in flight).
-    pub fn start_up(&self) -> Result<(usize, usize)> {
+    /// Recovery runs first and deliberately never fails the startup: a
+    /// recording it cannot repair is left on disk with an explanation on it,
+    /// and the app still opens. Refusing to launch over one damaged file would
+    /// take the other hundred recordings down with it.
+    pub fn start_up(&self) -> Result<StartUp> {
+        let keep_wav = self.get_settings().unwrap_or_default().keep_wav;
+        let recovered = match recover_orphans(&self.inner.store, keep_wav) {
+            Ok(ids) => ids.len(),
+            Err(e) => {
+                log::warn!("recovering interrupted recordings: {e:#}");
+                0
+            }
+        };
         let requeued = requeue_stale(&self.inner.store)?;
         let indexed = lock(&self.inner.index).rebuild(&self.inner.store)?;
-        Ok((requeued, indexed))
+        Ok(StartUp {
+            recovered,
+            requeued,
+            indexed,
+        })
     }
 
     // --- library ---------------------------------------------------------
@@ -891,10 +930,37 @@ impl Inner {
         Ok(ready.len())
     }
 
+    /// Re-encodes a finished recording's tracks as FLAC — same audio, about
+    /// half the disk.
+    ///
+    /// Deliberately infallible from the caller's point of view. A failed
+    /// encode leaves the WAV exactly where it is, and `pipeline::run` opens
+    /// either extension, so the recording still transcribes normally; the only
+    /// cost is the space. Failing the stop over it would be trading a lecture
+    /// for a compression ratio.
+    fn compress_tracks(&self, rec: &RecordingRef) {
+        let keep_wav = api::get_settings(&self.settings_path)
+            .unwrap_or_default()
+            .keep_wav;
+        for stem in [capture::MIC_TRACK, capture::SYSTEM_TRACK] {
+            let wav = rec.dir.join(format!("{stem}.wav"));
+            if !wav.exists() {
+                continue;
+            }
+            if let Err(e) = finalize_to_flac(&wav, keep_wav) {
+                log::warn!("keeping {} as wav: {e:#}", wav.display());
+            }
+        }
+    }
+
     /// Closes out the live session: finalize the audio, queue the recording,
     /// index it, and remember its id. Returns `None` when there was no session
     /// — the user's Stop raced the disk guard's, and the other one won.
     fn finish_session(&self) -> Result<Option<String>> {
+        // Taken before the session slot: a caller that loses the race waits
+        // here until the winner has finished, then finds the slot empty and
+        // reports the id of a recording that is genuinely ready.
+        let _finishing = lock(&self.finishing);
         let mut session = match lock(&self.session).take() {
             Some(session) => session,
             None => return Ok(None),
@@ -906,11 +972,8 @@ impl Inner {
         drop(session);
         *lock(&self.last_recording) = Some(id.clone());
 
-        // TODO(B1 task 2): `capture::flac::finalize_to_flac` goes here, before
-        // the enqueue, once that module lands. The pipeline already opens
-        // either extension, so nothing else changes.
-
         let mut rec = self.find(&id)?;
+        self.compress_tracks(&rec);
         Queue { store: &self.store }.enqueue(&mut rec)?;
         // Index it now so a brand-new recording is findable by title
         // immediately; the transcript follows when processing finishes.
@@ -1338,6 +1401,131 @@ mod tests {
         rt.stop_capture().unwrap()
     }
 
+    /// Stopping a recording must leave FLAC on disk, not the WAV capture wrote.
+    /// The saving is roughly half the space of every lecture ever recorded, so
+    /// "the call is wired up" is worth pinning: an unwired `compress_tracks`
+    /// leaves a `.wav` here and no test elsewhere would notice.
+    #[test]
+    fn stopping_a_recording_leaves_a_verified_flac_in_place_of_the_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.3);
+        let id = record(&rt, Mode::InPerson, "Lecture");
+
+        let rec = rt.inner.find(&id).unwrap();
+        let wav = rec.dir.join(format!("{}.wav", capture::MIC_TRACK));
+        let flac = rec.dir.join(format!("{}.flac", capture::MIC_TRACK));
+        assert!(flac.exists(), "the mic track should have been compressed");
+        assert!(!wav.exists(), "the wav should have been reclaimed");
+        // And it is still readable audio, not just a file with the right name.
+        let samples = crate::pipeline::audio::load_mono_16k(&flac).unwrap();
+        assert!(!samples.is_empty());
+    }
+
+    /// When `stop_capture` returns an id, that recording must be *ready* —
+    /// queued, indexed, and its audio finished being rewritten.
+    ///
+    /// The pump thread and the user's Stop both close a session out, and the
+    /// loser used to return as soon as it found the session slot empty, while
+    /// the winner was still re-encoding the audio. The UI would then refresh
+    /// its list on a recording that was not in the queue yet.
+    #[test]
+    fn stop_capture_returns_only_once_the_recording_is_actually_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.3);
+        let id = record(&rt, Mode::InPerson, "Lecture");
+
+        // No waiting, no polling: the moment stop_capture returned, all of it
+        // must already be true.
+        assert_eq!(status_of(&rt, &id), Status::Queued);
+        let rec = rt.inner.find(&id).unwrap();
+        assert!(rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
+        assert!(!rec.dir.join(format!("{}.wav", capture::MIC_TRACK)).exists());
+    }
+
+    /// The same, with `keep_wav` on: both files survive. This is the setting a
+    /// user turns on when they want the uncompressed master.
+    #[test]
+    fn keep_wav_keeps_both_copies_of_a_finished_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.3);
+        let mut settings = rt.get_settings().unwrap();
+        settings.keep_wav = true;
+        rt.set_settings(&settings).unwrap();
+
+        let id = record(&rt, Mode::InPerson, "Lecture");
+        let rec = rt.inner.find(&id).unwrap();
+        assert!(rec.dir.join(format!("{}.wav", capture::MIC_TRACK)).exists());
+        assert!(rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
+    }
+
+    /// Start-up must repair a recording whose writer died mid-capture. The
+    /// crash is simulated the way it really happens: a WAV header that
+    /// understates the audio sitting after it.
+    #[test]
+    fn start_up_repairs_a_recording_a_crash_left_half_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.3);
+        let id = record(&rt, Mode::InPerson, "Lecture");
+
+        // Undo the finalize so the recording looks mid-capture again: a lone
+        // wav, no flac, status Recorded.
+        let rec = rt.inner.find(&id).unwrap();
+        let flac = rec.dir.join(format!("{}.flac", capture::MIC_TRACK));
+        let wav = rec.dir.join(format!("{}.wav", capture::MIC_TRACK));
+        let samples = crate::pipeline::audio::load_mono_16k(&flac).unwrap();
+        write_wav_with_short_header(&wav, &samples);
+        fs::remove_file(&flac).unwrap();
+        let mut rec = rt.inner.find(&id).unwrap();
+        rec.meta.status = Status::Recorded;
+        rt.inner.store.save_meta(&rec).unwrap();
+
+        let started = rt.start_up().unwrap();
+        assert_eq!(started.recovered, 1, "the interrupted recording");
+        assert!(flac.exists(), "recovery should have finalized it");
+        let recovered = crate::pipeline::audio::load_mono_16k(&flac).unwrap();
+        assert_eq!(
+            recovered.len(),
+            samples.len(),
+            "every sample that reached disk should have come back"
+        );
+    }
+
+    /// Writes a wav whose header claims only the first tenth of its audio —
+    /// what `TrackWriter` leaves behind when the power goes out between
+    /// flushes.
+    fn write_wav_with_short_header(path: &Path, samples: &[f32]) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: crate::capture::SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for s in samples {
+            w.write_sample((s * 32768.0).round().clamp(-32768.0, 32767.0) as i16)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+
+        // Rewrite the two length fields to a tenth of the real audio, leaving
+        // the samples themselves in place.
+        let audio_bytes = (samples.len() * 2) as u32;
+        let short = audio_bytes / 10;
+        let mut bytes = fs::read(path).unwrap();
+        let data_at = find_data_chunk(&bytes);
+        bytes[4..8].copy_from_slice(&(data_at as u32 + short - 8).to_le_bytes());
+        bytes[data_at + 4..data_at + 8].copy_from_slice(&short.to_le_bytes());
+        fs::write(path, bytes).unwrap();
+    }
+
+    /// Offset of the `data` chunk header in a wav.
+    fn find_data_chunk(bytes: &[u8]) -> usize {
+        bytes
+            .windows(4)
+            .position(|w| w == b"data")
+            .expect("a wav written by hound always has a data chunk")
+    }
+
     // --- the headline: capture -> queue -> process -> search ---------------
 
     #[test]
@@ -1406,9 +1594,16 @@ mod tests {
 
         let id = record(&rt, Mode::Meeting, "Standup");
         let rec_dir = rt.inner.find(&id).unwrap().dir;
-        assert!(rec_dir.join("audio-mic.wav").exists());
+        // Either extension: a finished track is normally FLAC, but one the
+        // encoder declined (here the system track, which the fake source
+        // leaves silent) stays a WAV. `pipeline::run` opens both, so "the
+        // track is there" is the invariant, not which container it is in.
+        let track_exists = |stem: &str| {
+            rec_dir.join(format!("{stem}.flac")).exists() || rec_dir.join(format!("{stem}.wav")).exists()
+        };
+        assert!(track_exists(capture::MIC_TRACK));
         assert!(
-            rec_dir.join("audio-system.wav").exists(),
+            track_exists(capture::SYSTEM_TRACK),
             "a meeting must capture the other side of the call"
         );
 
@@ -1722,9 +1917,9 @@ mod tests {
         rec.meta.status = Status::Processing;
         rt.inner.store.save_meta(&rec).unwrap();
 
-        let (requeued, indexed) = rt.start_up().unwrap();
-        assert_eq!(requeued, 1);
-        assert_eq!(indexed, 1);
+        let started = rt.start_up().unwrap();
+        assert_eq!(started.requeued, 1);
+        assert_eq!(started.indexed, 1);
         assert_eq!(status_of(&rt, &id), Status::Queued);
     }
 
