@@ -7,10 +7,14 @@ summarization later, organized by tasks. No cloud.
 ## State
 - **Plan A (portable core): COMPLETE** (2026-07-23) — storage, index, queue,
   pipeline, models, UI library view.
-- **Plan B1 (everything not Mac-locked): COMPLETE** on branch
-  `plan-b-capture` (2026-07-27). Capture engine, crash recovery + FLAC,
+- **Plan B1 (everything not Mac-locked): BUILT, review findings OPEN** on
+  branch `plan-b-capture` (2026-07-27). Capture engine, crash recovery + FLAC,
   meeting watcher, idle/power gating, Ollama manager, the `Runtime` facade,
-  and the remaining UI. **217 Rust + 49 frontend tests green, clippy clean.**
+  and the remaining UI. **217 Rust + 54 frontend tests green, clippy clean.**
+  An independent review then returned FAIL on two IMPORTANT findings —
+  **`docs/superpowers/specs/2026-07-27-planb1-review.md`. Fixing those is the
+  next task, before anything else.** Neither is data loss; both are in the
+  capture lifecycle. That doc also records what the review did NOT check.
 - **Plan B2 (the Mac day): not started**, waiting on the hardware (~2026-07-30).
   Scope and a precise checklist at the bottom of the Plan B doc — it is short
   by design, because B1 left a trait with a working fake behind every
