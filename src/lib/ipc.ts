@@ -124,6 +124,15 @@ export const api = {
   updateSummary: (id: string, summaryMd: string) =>
     invoke<void>("update_summary", { id, summaryMd }),
   assignTask: (id: string, task: string) => invoke<void>("assign_task", { id, task }),
+  /**
+   * Renames a recording. Recordings start with an auto-generated title
+   * ("Meeting — Jul 27, 2:30 PM") so that hitting record never blocks on
+   * typing; this is how one becomes "Accounting 302 — midterm review" later.
+   * The title is part of the on-disk directory name, so this moves the
+   * directory too.
+   */
+  renameRecording: (id: string, title: string) =>
+    invoke<void>("rename_recording", { id, title }),
   renameSpeaker: (id: string, key: string, name: string) =>
     invoke<void>("rename_speaker", { id, key, name }),
   getSettings: () => invoke<Settings>("get_settings"),
