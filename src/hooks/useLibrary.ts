@@ -114,6 +114,26 @@ export function useLibrary() {
     [refreshRecordings, selectedId]
   );
 
+  const renameRecording = useCallback(
+    async (id: string, title: string) => {
+      const trimmed = title.trim();
+      if (!trimmed) return;
+      try {
+        await api.renameRecording(id, trimmed);
+        // The title lives in the on-disk folder name, so a rename moves the
+        // recording; refetch both the list and the open detail rather than
+        // patching the old title in place.
+        await refreshRecordings();
+        if (selectedId === id) {
+          setDetail(await api.getRecording(id));
+        }
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [refreshRecordings, selectedId]
+  );
+
   const renameSpeaker = useCallback(
     async (id: string, key: string, name: string) => {
       const trimmed = name.trim();
@@ -177,6 +197,7 @@ export function useLibrary() {
     detailLoading,
     createTask,
     assignTask,
+    renameRecording,
     renameSpeaker,
     saveSummary,
     query,

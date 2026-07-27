@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { api } from "../lib/ipc";
 import type { RecordingDetail as RecordingDetailData } from "../lib/ipc";
 import { StatusChip } from "./StatusChip";
 
@@ -8,6 +9,12 @@ export interface RecordingDetailProps {
   loading: boolean;
   onRenameSpeaker: (id: string, key: string, name: string) => void;
   onSaveSummary: (id: string, summaryMd: string) => void;
+  /**
+   * Optional so the pane renames a recording on its own when the host hasn't
+   * wired it. Pass `useLibrary`'s `renameRecording` to also refresh the list
+   * and the detail from disk afterwards.
+   */
+  onRenameRecording?: (id: string, title: string) => void;
 }
 
 interface TranscriptLine {
@@ -28,23 +35,57 @@ function parseTranscript(md: string): TranscriptLine[] {
     .map((m) => ({ time: m[1], speaker: m[2], text: m[3] }));
 }
 
+// The title is an <h2>, so the control that replaces it has to keep the
+// heading's own type rather than a browser default. Inline because App.css is
+// not this component's to edit; these belong in a `.detail-pane__title` rule.
+const TITLE_CONTROL_STYLE = {
+  font: "inherit",
+  color: "inherit",
+  background: "none",
+  padding: 0,
+  textAlign: "left",
+  width: "100%",
+} as const;
+
 function formatDetailDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-export function RecordingDetail({ detail, loading, onRenameSpeaker, onSaveSummary }: RecordingDetailProps) {
+export function RecordingDetail({
+  detail,
+  loading,
+  onRenameSpeaker,
+  onSaveSummary,
+  onRenameRecording,
+}: RecordingDetailProps) {
   const [summaryDraft, setSummaryDraft] = useState("");
   const [renaming, setRenaming] = useState<{ lineIndex: number; key: string; original: string } | null>(
     null
   );
   const [renameDraft, setRenameDraft] = useState("");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  // What the user just renamed this to, shown until the host refetches the
+  // recording — without it the heading snaps back to the old name and the
+  // rename looks like it failed.
+  const [savedTitle, setSavedTitle] = useState<string | null>(null);
+  // The real "is an edit in flight" flag. State would be read stale by the
+  // blur that Escape and Enter can trigger by unmounting the focused input,
+  // which is exactly how a cancelled rename gets saved anyway.
+  const titleEditRef = useRef(false);
 
   useEffect(() => {
     setSummaryDraft(detail?.summaryMd ?? "");
     setRenaming(null);
   }, [detail?.id, detail?.summaryMd]);
+
+  useEffect(() => {
+    titleEditRef.current = false;
+    setEditingTitle(false);
+    setSavedTitle(null);
+  }, [detail?.id]);
 
   if (loading) {
     return (
@@ -62,6 +103,7 @@ export function RecordingDetail({ detail, loading, onRenameSpeaker, onSaveSummar
     );
   }
 
+  const title = savedTitle ?? detail.title;
   const lines = parseTranscript(detail.transcriptMd);
   const nameToKey = Object.entries(detail.speakers).reduce<Record<string, string>>((acc, [key, name]) => {
     acc[name] = key;
@@ -72,6 +114,31 @@ export function RecordingDetail({ detail, loading, onRenameSpeaker, onSaveSummar
     const key = nameToKey[speakerName] ?? speakerName;
     setRenaming({ lineIndex, key, original: speakerName });
     setRenameDraft(speakerName);
+  }
+
+  function beginTitleEdit() {
+    if (!detail) return;
+    titleEditRef.current = true;
+    setTitleDraft(title);
+    setEditingTitle(true);
+  }
+
+  function endTitleEdit() {
+    titleEditRef.current = false;
+    setEditingTitle(false);
+  }
+
+  function commitTitle() {
+    if (!titleEditRef.current || !detail) return;
+    endTitleEdit();
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === title) return;
+    setSavedTitle(trimmed);
+    if (onRenameRecording) {
+      onRenameRecording(detail.id, trimmed);
+    } else {
+      void api.renameRecording(detail.id, trimmed);
+    }
   }
 
   function submitRename(e: FormEvent) {
@@ -87,7 +154,38 @@ export function RecordingDetail({ detail, loading, onRenameSpeaker, onSaveSummar
   return (
     <section className="detail-pane" aria-label="Recording detail">
       <header className="detail-pane__header">
-        <h2>{detail.title}</h2>
+        <h2>
+          {editingTitle ? (
+            <input
+              className="detail-pane__title-input"
+              style={{ ...TITLE_CONTROL_STYLE, border: "none", borderBottom: "1px solid currentColor" }}
+              aria-label="Recording title"
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitTitle();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  endTitleEdit();
+                }
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className="detail-pane__title"
+              style={{ ...TITLE_CONTROL_STYLE, border: "none", cursor: "pointer" }}
+              title="Click to rename"
+              onClick={beginTitleEdit}
+            >
+              {title}
+            </button>
+          )}
+        </h2>
         <div className="detail-pane__meta">
           <span>{formatDetailDate(detail.created)}</span>
           <span>{detail.task ?? "Unsorted"}</span>

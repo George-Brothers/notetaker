@@ -5,8 +5,11 @@
 //! pass can repair rather than nothing at all. And **captured audio is never
 //! thrown away to report a problem**: a dead microphone, a full disk, or a
 //! file that will not close cleanly all end the recording, finalize what is
-//! already on disk, and leave a plain-English sentence in `meta.error` — they
-//! never bubble up as an error that loses the recording id.
+//! already on disk, and leave a plain-English sentence in `meta.capture_note`
+//! — they never bubble up as an error that loses the recording id. That note
+//! is a field of its own rather than `meta.error` because the queue clears
+//! `error` on every retry, and no amount of reprocessing brings back audio the
+//! disk never took.
 //!
 //! [`Session::pump`] is deliberately a single synchronous step rather than a
 //! loop hidden inside a thread: the app owns the cadence, and every test here
@@ -47,7 +50,7 @@ pub struct Session {
     /// Reused between pumps so an hour of capture doesn't churn allocations.
     buf: Vec<f32>,
     /// Plain-language reasons this recording ended early or lost a track,
-    /// joined into `meta.error` on stop.
+    /// joined into `meta.capture_note` on stop.
     notes: Vec<String>,
     /// Whether the final `meta.json` write landed. Tracked apart from the
     /// state so a stop whose save failed can be retried without closing the
@@ -177,7 +180,7 @@ impl Session {
             self.rec.meta.duration_s = self.elapsed_s();
             self.rec.meta.status = Status::Recorded;
             if !self.notes.is_empty() {
-                self.rec.meta.error = Some(self.notes.join(" "));
+                self.rec.meta.capture_note = Some(self.notes.join(" "));
             }
         }
 
@@ -194,6 +197,12 @@ impl Session {
     pub fn status(&mut self) -> CaptureStatus {
         CaptureStatus {
             state: self.state,
+            // `None` once the session has stopped: the snapshot answers "what
+            // is recording right now", and by then nothing is.
+            mode: match self.state {
+                CaptureState::Idle => None,
+                CaptureState::Recording | CaptureState::Paused => Some(self.rec.meta.mode),
+            },
             recording_id: Some(self.rec.meta.id.clone()),
             elapsed_s: self.elapsed_s(),
             mic_level: self.mic.writer.take_peak(),
@@ -287,7 +296,7 @@ fn drain(ch: &mut Channel, capturing: bool, buf: &mut Vec<f32>, notes: &mut Vec<
 /// Releases the device and closes the file. Neither failure is propagated: by
 /// now the audio is on disk, and the caller needs the recording id far more
 /// than it needs an error. A file that would not close cleanly is called out
-/// in `meta.error` so the recovery pass and the user both know to look.
+/// in `meta.capture_note` so the recovery pass and the user both know to look.
 fn close(ch: &mut Channel, notes: &mut Vec<String>) {
     if let Err(e) = ch.source.stop() {
         log::warn!("releasing {} failed: {e:#}", ch.source.label());
@@ -407,6 +416,10 @@ mod tests {
 
         let meta = meta_on_disk(&store, &id);
         assert_eq!(meta.status, Status::Recorded);
+        assert!(
+            meta.capture_note.is_none(),
+            "clean capture must not leave a note"
+        );
         assert!(meta.error.is_none(), "clean capture must not set an error");
     }
 
@@ -626,7 +639,14 @@ mod tests {
 
         let meta = meta_on_disk(&store, &id);
         assert_eq!(meta.status, Status::Recorded);
-        let message = meta.error.expect("the user must be told why it stopped");
+        assert_eq!(
+            meta.error, None,
+            "a capture problem is not a processing failure, so it must not sit \
+             in the field the queue clears on retry"
+        );
+        let message = meta
+            .capture_note
+            .expect("the user must be told why it stopped");
         assert!(message.contains("storage space"), "{message}");
         assert!(
             !message.contains("MIN_FREE_MB") && !message.contains("Err"),
@@ -655,7 +675,7 @@ mod tests {
         let id = session.stop().unwrap();
 
         let message = meta_on_disk(&store, &id)
-            .error
+            .capture_note
             .expect("the user must be told why it stopped");
         assert!(message.contains("storage space"), "{message}");
         assert!(track(&rec_dir, "audio-mic").is_empty());
@@ -708,7 +728,7 @@ mod tests {
         );
         let meta = meta_on_disk(&store, &id);
         assert!((meta.duration_s - 0.3).abs() < 1e-6);
-        assert!(meta.error.unwrap().contains("storage space"));
+        assert!(meta.capture_note.unwrap().contains("storage space"));
     }
 
     #[test]
@@ -738,7 +758,7 @@ mod tests {
         assert_eq!(meta.status, Status::Recorded);
         assert!((meta.duration_s - 0.5).abs() < 1e-6);
         let message = meta
-            .error
+            .capture_note
             .expect("the user must be told the mic dropped out");
         assert!(message.contains("microphone"), "{message}");
     }
@@ -806,5 +826,62 @@ mod tests {
             0.0,
             "the meter must fall back to silent when no new audio arrived"
         );
+    }
+
+    #[test]
+    fn status_reports_which_mode_is_recording_and_nothing_once_stopped() {
+        // Without this, only the component that pressed Record knows what kind
+        // of recording is running — a menu bar or a recovered session polling
+        // the same snapshot cannot tell a meeting from an in-person lecture.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+
+        let mut session = Session::start(
+            &store,
+            Mode::Meeting,
+            "Standup",
+            Box::new(FakeSource::tone("microphone", 0.3)),
+            Some(Box::new(SilentSource::new("system audio"))),
+            healthy_disk(),
+        )
+        .unwrap();
+
+        session.pump().unwrap();
+        assert_eq!(session.status().mode, Some(Mode::Meeting));
+
+        session.pause();
+        assert_eq!(
+            session.status().mode,
+            Some(Mode::Meeting),
+            "a paused recording is still a meeting"
+        );
+        session.resume();
+
+        session.stop().unwrap();
+        assert_eq!(
+            session.status().mode,
+            None,
+            "nothing is being recorded once the session has stopped"
+        );
+        assert_eq!(CaptureStatus::idle(1234).mode, None);
+    }
+
+    #[test]
+    fn status_reports_in_person_mode_for_an_in_person_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+
+        let mut session = Session::start(
+            &store,
+            Mode::InPerson,
+            "Lecture 3",
+            Box::new(FakeSource::tone("microphone", 0.3)),
+            None,
+            healthy_disk(),
+        )
+        .unwrap();
+
+        session.pump().unwrap();
+        assert_eq!(session.status().mode, Some(Mode::InPerson));
     }
 }

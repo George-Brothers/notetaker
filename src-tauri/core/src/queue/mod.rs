@@ -66,6 +66,12 @@ impl<'a> Queue<'a> {
                 // Clear any error from a previous failed attempt so the UI
                 // does not show a stale "download interrupted" on a
                 // recording that is now queued to run again.
+                //
+                // `meta.capture_note` is deliberately left alone: it explains
+                // the audio, not the attempt. Queueing a recording cannot undo
+                // the disk filling up mid-lecture, so wiping that message here
+                // would leave the user with a 20-minute file of a 40-minute
+                // class and no explanation.
                 rec.meta.error = None;
                 self.store.save_meta(rec)?;
             }
@@ -321,6 +327,67 @@ mod tests {
         let on_disk = store.scan().unwrap();
         assert_eq!(on_disk[0].meta.status, Status::Queued);
         assert_eq!(on_disk[0].meta.error, None);
+    }
+
+    #[test]
+    fn a_capture_time_note_survives_enqueue_and_a_successful_run() {
+        // The bug this pins: `Session::stop` explains a short recording ("the
+        // disk was almost full"), then enqueue wiped that message and the user
+        // never learned why their lecture was 20 minutes short.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let queue = Queue { store: &store };
+
+        let mut rec = recorded(&store, "Lecture", 2026, 8, 4, 9, 0);
+        rec.meta.capture_note = Some("Recording stopped because the disk was almost full.".to_string());
+        store.save_meta(&rec).unwrap();
+
+        queue.enqueue(&mut rec).unwrap();
+        assert_eq!(
+            store.scan().unwrap()[0].meta.capture_note.as_deref(),
+            Some("Recording stopped because the disk was almost full."),
+            "queueing a recording must not erase why capture ended early"
+        );
+
+        assert_eq!(
+            queue.run_one(&AlwaysIdle, |_r| Ok(())).unwrap(),
+            RunOutcome::Ran
+        );
+        let on_disk = store.scan().unwrap();
+        assert_eq!(on_disk[0].meta.status, Status::Ready);
+        assert_eq!(
+            on_disk[0].meta.capture_note.as_deref(),
+            Some("Recording stopped because the disk was almost full."),
+            "processing successfully does not undo what happened during capture"
+        );
+    }
+
+    #[test]
+    fn clearing_a_processing_error_on_re_enqueue_leaves_the_capture_note_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let queue = Queue { store: &store };
+
+        let mut rec = recorded(&store, "Lecture", 2026, 8, 4, 9, 0);
+        rec.meta.capture_note = Some("The microphone stopped working partway through.".to_string());
+        store.save_meta(&rec).unwrap();
+
+        queue.enqueue(&mut rec).unwrap();
+        for _ in 0..3 {
+            queue.run_one(&AlwaysIdle, |_r| Err(anyhow!("boom"))).unwrap();
+        }
+        let mut failed = store.scan().unwrap().into_iter().next().unwrap();
+        assert_eq!(failed.meta.status, Status::Failed);
+        assert!(failed.meta.error.is_some());
+
+        queue.enqueue(&mut failed).unwrap();
+        let on_disk = store.scan().unwrap();
+        assert_eq!(on_disk[0].meta.error, None, "the retryable error still clears");
+        assert_eq!(
+            on_disk[0].meta.capture_note.as_deref(),
+            Some("The microphone stopped working partway through."),
+            "a capture-time problem is not undone by retrying the processing"
+        );
     }
 
     #[test]

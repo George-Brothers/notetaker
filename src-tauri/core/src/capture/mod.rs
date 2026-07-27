@@ -19,6 +19,8 @@ pub mod track;
 
 use serde::{Deserialize, Serialize};
 
+use crate::storage::Mode;
+
 /// File stem for the microphone track — the local user's own voice. Present in
 /// both modes.
 pub const MIC_TRACK: &str = "audio-mic";
@@ -60,6 +62,13 @@ pub enum CaptureState {
 #[serde(rename_all = "camelCase")]
 pub struct CaptureStatus {
     pub state: CaptureState,
+    /// What kind of recording is running, `None` when nothing is.
+    ///
+    /// Carried in the snapshot rather than remembered by whichever component
+    /// pressed Record, so that anything else polling capture — a menu bar, a
+    /// window reopened mid-recording, a session recovered after a crash — can
+    /// tell a meeting from an in-person lecture without having started it.
+    pub mode: Option<Mode>,
     /// Id of the recording being captured, if any.
     pub recording_id: Option<String>,
     /// Seconds of audio actually captured — paused time is not counted.
@@ -96,6 +105,7 @@ impl CaptureStatus {
     pub fn idle(disk_free_mb: u64) -> Self {
         CaptureStatus {
             state: CaptureState::Idle,
+            mode: None,
             recording_id: None,
             elapsed_s: 0.0,
             mic_level: 0.0,
