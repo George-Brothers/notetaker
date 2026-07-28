@@ -72,7 +72,13 @@ export interface Settings {
   keepWav: boolean;
 }
 
-export type CaptureState = "idle" | "recording" | "paused";
+/**
+ * `finishing` is the stretch after the last sample and before the recording is
+ * queued: the tracks are still being re-encoded and indexed. It is not idle —
+ * re-arming the record bar there shows the user a library with nothing new in
+ * it — and it is not recording either.
+ */
+export type CaptureState = "idle" | "recording" | "paused" | "finishing";
 
 /** Live snapshot for the record bar. Polled while recording. */
 export interface CaptureStatus {

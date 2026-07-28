@@ -7,14 +7,16 @@ summarization later, organized by tasks. No cloud.
 ## State
 - **Plan A (portable core): COMPLETE** (2026-07-23) — storage, index, queue,
   pipeline, models, UI library view.
-- **Plan B1 (everything not Mac-locked): BUILT, review findings OPEN** on
-  branch `plan-b-capture` (2026-07-27). Capture engine, crash recovery + FLAC,
-  meeting watcher, idle/power gating, Ollama manager, the `Runtime` facade,
-  and the remaining UI. **217 Rust + 54 frontend tests green, clippy clean.**
-  An independent review then returned FAIL on two IMPORTANT findings —
-  **`docs/superpowers/specs/2026-07-27-planb1-review.md`. Fixing those is the
-  next task, before anything else.** Neither is data loss; both are in the
-  capture lifecycle. That doc also records what the review did NOT check.
+- **Plan B1 (everything not Mac-locked): COMPLETE** on branch `plan-b-capture`
+  (2026-07-27). Capture engine, crash recovery + FLAC, meeting watcher,
+  idle/power gating, Ollama manager, the `Runtime` facade, and the remaining
+  UI. An independent review returned FAIL on two IMPORTANT findings and one
+  MINOR; **all three are fixed**, each pinned by a test proven to fail when the
+  fix is reverted. **224 Rust + 56 frontend tests green, clippy `--all-targets`
+  clean, `pnpm build` clean.** What the findings were, what was chosen, and
+  what is *still* open — read
+  **`docs/superpowers/specs/2026-07-27-planb1-review.md`**, including its
+  "Edges of this review" and "Still open after the fixes" sections.
 - **Plan B2 (the Mac day): not started**, waiting on the hardware (~2026-07-30).
   Scope and a precise checklist at the bottom of the Plan B doc — it is short
   by design, because B1 left a trait with a working fake behind every
@@ -65,6 +67,13 @@ summarization later, organized by tasks. No cloud.
   a plain-English note. Wasted disk is recoverable, a lecture is not.
 - `meta.error` describes a processing *attempt* and clears on retry;
   `meta.capture_note` describes the *audio* and outlives every attempt.
+- **Nothing moves a live recording's folder.** Rename and file-under-a-task are
+  refused, in plain English, while that recording is the live session — the
+  session holds the path it opened with. Enforced in `runtime.rs`, not in the
+  UI: a disabled button is not a guarantee.
+- **"Idle" means the recording has landed.** Between the last sample and the
+  recording being queued, capture reports `Finishing`, never `Idle` — the record
+  bar must not re-arm while the library still has nothing new in it.
 - Speech = SenseVoice (default) / Whisper (fallback); diarization = sherpa-onnx;
   summaries = Ollama+Qwen. Diarization is verified on real human audio only —
   synthetic TTS voices don't separate.

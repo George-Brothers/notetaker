@@ -53,6 +53,15 @@ pub enum CaptureState {
     Recording,
     /// Holding the files open, discarding incoming audio.
     Paused,
+    /// Audio capture is over, but the recording is not put away yet: the
+    /// tracks are still being re-encoded, queued and indexed.
+    ///
+    /// A state of its own because that stretch is neither recording nor idle,
+    /// and calling it idle is a lie the user can catch — the record bar would
+    /// re-arm while the library still shows nothing new. Long enough to matter
+    /// (a whole FLAC encode), so the UI says "Saving…" instead of pretending
+    /// the recording has landed.
+    Finishing,
 }
 
 /// A live snapshot for the record bar: what state we're in, how long we've
@@ -108,6 +117,24 @@ impl CaptureStatus {
             mode: None,
             recording_id: None,
             elapsed_s: 0.0,
+            mic_level: 0.0,
+            system_level: 0.0,
+            disk_free_mb,
+        }
+    }
+
+    /// The status of a recording that has stopped capturing but is still being
+    /// put away.
+    ///
+    /// `mode` is `None` and the meters read flat for the same reason they do
+    /// when idle: nothing is being captured. What survives is the id and the
+    /// length, so the UI can name the recording it is waiting on.
+    pub fn finishing(recording_id: String, elapsed_s: f64, disk_free_mb: u64) -> Self {
+        CaptureStatus {
+            state: CaptureState::Finishing,
+            mode: None,
+            recording_id: Some(recording_id),
+            elapsed_s,
             mic_level: 0.0,
             system_level: 0.0,
             disk_free_mb,

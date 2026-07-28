@@ -199,8 +199,10 @@ impl Session {
             state: self.state,
             // `None` once the session has stopped: the snapshot answers "what
             // is recording right now", and by then nothing is.
+            // `Finishing` is the runtime's word for the stretch after the
+            // session object is gone, so a live session never reports it.
             mode: match self.state {
-                CaptureState::Idle => None,
+                CaptureState::Idle | CaptureState::Finishing => None,
                 CaptureState::Recording | CaptureState::Paused => Some(self.rec.meta.mode),
             },
             recording_id: Some(self.rec.meta.id.clone()),

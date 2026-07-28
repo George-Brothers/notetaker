@@ -326,6 +326,30 @@ impl SchedulerHandle {
     }
 }
 
+/// What is known about a recording while it is being put away — enough for
+/// [`CaptureStatus::finishing`], and nothing that needs the `Session` object,
+/// which is dropped as soon as its files are closed.
+#[derive(Debug, Clone)]
+struct Closing {
+    id: String,
+    elapsed_s: f64,
+}
+
+/// Clears [`Inner::closing`] however [`Inner::finish_session`] leaves — a
+/// `?`, a panic, or the ordinary path.
+///
+/// A drop guard rather than a line at the end, because a stuck "Saving…" is a
+/// record bar that never re-arms: the user would have to restart the app to
+/// record again. Every early return out of the close-out has to clear it, and
+/// the compiler cannot check that a human remembered to.
+struct ClearOnDrop<'a>(&'a Mutex<Option<Closing>>);
+
+impl Drop for ClearOnDrop<'_> {
+    fn drop(&mut self) {
+        *lock(self.0) = None;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The runtime
 // ---------------------------------------------------------------------------
@@ -356,6 +380,16 @@ struct Inner {
     /// through being replaced — and the UI would refresh its list a moment too
     /// early and show nothing.
     finishing: Mutex<()>,
+    /// The recording being closed out right now, for anyone *polling* rather
+    /// than waiting.
+    ///
+    /// The `finishing` lock above serializes the closers; it does nothing for
+    /// [`Runtime::capture_status`], which must never block the UI thread on a
+    /// FLAC encode. So the same window is also published here, and a poll
+    /// during it reads [`CaptureState::Finishing`] rather than "idle" — the
+    /// difference between the record bar saying "Saving…" and it re-arming
+    /// while the previous recording is still being written.
+    closing: Mutex<Option<Closing>>,
     watcher: Mutex<Watcher>,
     sources: Box<dyn CaptureSources>,
     probe: Arc<dyn SystemProbe + Send + Sync>,
@@ -416,6 +450,7 @@ impl Runtime {
                 session: Mutex::new(None),
                 last_recording: Mutex::new(None),
                 finishing: Mutex::new(()),
+                closing: Mutex::new(None),
                 watcher: Mutex::new(Watcher::with_sysinfo()),
                 sources,
                 probe,
@@ -484,7 +519,12 @@ impl Runtime {
         self.inner.index_one(&rec)
     }
 
+    /// Files a recording under a task, moving its directory to match.
+    ///
+    /// Refuses while that recording is the live one, for the reason spelled
+    /// out on [`Inner::refuse_while_capturing`].
     pub fn assign_task(&self, id: &str, task: &str) -> Result<()> {
+        self.inner.refuse_while_capturing(id, "filed under a task")?;
         api::assign_task(&self.inner.store, &mut lock(&self.inner.index), id, task)
     }
 
@@ -498,7 +538,11 @@ impl Runtime {
     ///
     /// Implemented here rather than delegating, because neither `storage` nor
     /// `api` exposes a rename.
+    ///
+    /// Refuses while that recording is the live one — see
+    /// [`Inner::refuse_while_capturing`].
     pub fn rename_recording(&self, id: &str, title: &str) -> Result<()> {
+        self.inner.refuse_while_capturing(id, "renamed")?;
         api::rename_recording(&self.inner.store, id, title)?;
         // The index stores the directory, so skipping this would leave search
         // pointing at a folder that no longer exists. `api::rename_recording`
@@ -557,7 +601,17 @@ impl Runtime {
     /// timing luck.
     pub fn start_capture(&self, mode: Mode, title: &str) -> Result<CaptureStatus> {
         let mut slot = lock(&self.inner.session);
-        if slot.is_some() {
+        if let Some(existing) = slot.as_ref() {
+            // A session still in the slot with capture already over is the one
+            // case in `finish_session` that puts it back: its `meta.json`
+            // would not write. Saying "a recording is in progress" there would
+            // send the user looking for a Stop button they already pressed.
+            if existing.state() == CaptureState::Idle {
+                bail!(
+                    "the last recording has not finished saving yet — press Stop again to \
+                     finish saving it, then start a new recording"
+                );
+            }
             bail!("a recording is already in progress — stop it before starting another");
         }
 
@@ -622,23 +676,52 @@ impl Runtime {
             .context("nothing is being recorded right now")
     }
 
-    /// A snapshot for the record bar. Cheap enough to poll while recording.
+    /// A snapshot for the record bar. Cheap enough to poll while recording,
+    /// and deliberately never blocks on the close-out: a poll that waited for
+    /// a FLAC encode would freeze the window it is drawing.
+    ///
+    /// Reports [`CaptureState::Finishing`] for the whole stretch between the
+    /// last sample and the recording being queued. Reporting idle there was a
+    /// review finding: the record bar re-armed while the library still showed
+    /// the previous recording as un-queued.
     pub fn capture_status(&self) -> CaptureStatus {
+        // Both slots are read under the session lock, which `finish_session`
+        // also holds while it moves the recording from one to the other. That
+        // is what closes the gap: there is no instant where the session is out
+        // of its slot and `closing` is not yet set.
+        //
+        // A live session wins over a closing one. Starting the next lecture
+        // while the last is still encoding is allowed — they have separate
+        // folders — and the record bar must show the recording that is
+        // actually running.
         let mut slot = lock(&self.inner.session);
-        match slot.as_mut() {
-            Some(session) => session.status(),
-            None => CaptureStatus::idle(self.inner.disk.free_mb().unwrap_or(0)),
+        if let Some(session) = slot.as_mut() {
+            if session.state() != CaptureState::Idle {
+                return session.status();
+            }
+            // Capture is over — the disk guard or a dead mic ended it — but
+            // nobody has closed the recording out yet. The window is small,
+            // and it is still not "idle".
+            return CaptureStatus::finishing(
+                session.recording().meta.id.clone(),
+                session.elapsed_s(),
+                self.inner.disk.free_mb().unwrap_or(0),
+            );
         }
+        if let Some(closing) = lock(&self.inner.closing).clone() {
+            return CaptureStatus::finishing(
+                closing.id,
+                closing.elapsed_s,
+                self.inner.disk.free_mb().unwrap_or(0),
+            );
+        }
+        CaptureStatus::idle(self.inner.disk.free_mb().unwrap_or(0))
     }
 
     /// One step of the capture loop, for a caller that wants to drive capture
     /// itself. The pump thread calls exactly this.
     pub fn pump_once(&self) -> Result<CaptureState> {
-        let mut slot = lock(&self.inner.session);
-        match slot.as_mut() {
-            Some(session) => session.pump(),
-            None => Ok(CaptureState::Idle),
-        }
+        self.inner.pump_once()
     }
 
     // --- meeting watcher --------------------------------------------------
@@ -967,6 +1050,35 @@ impl Inner {
             .with_context(|| format!("no recording with id {id}"))
     }
 
+    /// Rejects an operation that would move a recording's folder while a
+    /// session still has that folder open.
+    ///
+    /// Rename and "file under a task" both move the directory. `Session` holds
+    /// the path it was given at `start()`, so moving it out from under a live
+    /// capture leaves the session writing to a folder that is no longer there:
+    /// the stop fails on `meta.json`, the recording shows 0:00 and never
+    /// queues, and the user sees a raw `No such file or directory`. Refusing —
+    /// in a sentence that says what to do instead — is the whole fix, and it
+    /// belongs here rather than in the UI, because the UI is not the only
+    /// caller and a disabled button is not a guarantee.
+    ///
+    /// Only the *live* session is protected. A recording still being encoded
+    /// after capture has ended is safe to move: its files are closed.
+    fn refuse_while_capturing(&self, id: &str, action: &str) -> Result<()> {
+        let mut slot = lock(&self.session);
+        let live = slot
+            .as_mut()
+            .filter(|s| s.state() != CaptureState::Idle)
+            .is_some_and(|s| s.recording().meta.id == id);
+        if live {
+            bail!(
+                "this recording is still being recorded, so it cannot be {action} yet — \
+                 stop the recording first, then try again"
+            );
+        }
+        Ok(())
+    }
+
     /// Rebuilds the idle/power policy from a fresh `Settings`.
     fn refresh_policy(&self, settings: &Settings) {
         self.idle.replace(build_policy(&self.probe, settings));
@@ -1023,6 +1135,16 @@ impl Inner {
         }
     }
 
+    /// One step of the capture loop. The pump thread and
+    /// [`Runtime::pump_once`] both call exactly this.
+    fn pump_once(&self) -> Result<CaptureState> {
+        let mut slot = lock(&self.session);
+        match slot.as_mut() {
+            Some(session) => session.pump(),
+            None => Ok(CaptureState::Idle),
+        }
+    }
+
     /// Closes out the live session: finalize the audio, queue the recording,
     /// index it, and remember its id. Returns `None` when there was no session
     /// — the user's Stop raced the disk guard's, and the other one won.
@@ -1031,14 +1153,35 @@ impl Inner {
         // here until the winner has finished, then finds the slot empty and
         // reports the id of a recording that is genuinely ready.
         let _finishing = lock(&self.finishing);
-        let mut session = match lock(&self.session).take() {
+        let mut slot = lock(&self.session);
+        let mut session = match slot.take() {
             Some(session) => session,
             None => return Ok(None),
         };
 
+        // Published while the session slot is still held, so a poll can never
+        // catch the recording between the two and call it idle.
+        *lock(&self.closing) = Some(Closing {
+            id: session.recording().meta.id.clone(),
+            elapsed_s: session.elapsed_s(),
+        });
+        let _clear = ClearOnDrop(&self.closing);
+        drop(slot);
+
         // `stop` has already closed the audio files by the time it can report
         // an error, so the recording is never lost to a failed save.
-        let id = session.stop()?;
+        let id = match session.stop() {
+            Ok(id) => id,
+            Err(e) => {
+                // Put the session back rather than dropping it. `Session::stop`
+                // promises a failed `meta.json` write can be retried, and only
+                // this object can retry it — the tracks are already closed, so
+                // holding it costs nothing and losing it strands a recording
+                // until the next launch's recovery sweep.
+                *lock(&self.session) = Some(session);
+                return Err(e);
+            }
+        };
         drop(session);
         *lock(&self.last_recording) = Some(id.clone());
 
@@ -1056,20 +1199,13 @@ impl Inner {
 /// session is gone, which is how a user's Stop ends this thread.
 fn pump_until_done(inner: &Arc<Inner>) {
     loop {
-        let state = {
-            let mut slot = lock(&inner.session);
-            match slot.as_mut() {
-                Some(session) => match session.pump() {
-                    Ok(state) => state,
-                    Err(e) => {
-                        // `pump` only errors when its own stop could not save
-                        // meta.json; the audio is already closed on disk.
-                        log::warn!("capture pump: {e:#}");
-                        CaptureState::Idle
-                    }
-                },
-                // Someone else stopped the recording; nothing left to drive.
-                None => return,
+        let state = match inner.pump_once() {
+            Ok(state) => state,
+            Err(e) => {
+                // `pump` only errors when its own stop could not save
+                // meta.json; the audio is already closed on disk.
+                log::warn!("capture pump: {e:#}");
+                CaptureState::Idle
             }
         };
 
@@ -1802,6 +1938,158 @@ mod tests {
         assert_eq!(rt.capture_status().state, CaptureState::Idle);
     }
 
+    /// Review finding 2. Closing a recording out — finalize, FLAC-encode both
+    /// tracks, queue, index — takes real time, and `capture_status` used to
+    /// answer "idle" for all of it. The record bar therefore re-armed while
+    /// the library still had nothing new in it, and on an auto-stop (disk
+    /// guard, dead mic) that is the only signal the UI gets.
+    ///
+    /// The invariant, stated the way the UI depends on it: **the first moment
+    /// capture reads idle, the recording is already in the queue.**
+    #[test]
+    fn capture_never_reads_idle_before_the_recording_is_in_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two seconds of audio, so the encode is a real piece of work rather
+        // than a rounding error.
+        let rt = runtime(dir.path(), 2.0);
+
+        let id = rt
+            .start_capture(Mode::InPerson, "Lecture")
+            .unwrap()
+            .recording_id
+            .unwrap();
+
+        // The sources run dry on their own, so this is the auto-stop path: no
+        // Stop is ever pressed, and the pump thread does the close-out.
+        let mut saw_finishing = false;
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            assert!(Instant::now() < deadline, "capture never reached idle");
+            let status = rt.capture_status();
+            match status.state {
+                CaptureState::Finishing => {
+                    saw_finishing = true;
+                    assert_eq!(
+                        status.recording_id.as_deref(),
+                        Some(id.as_str()),
+                        "the UI has to know which recording it is waiting on"
+                    );
+                }
+                CaptureState::Idle => {
+                    assert_eq!(
+                        status_of(&rt, &id),
+                        Status::Queued,
+                        "idle means the recording has landed — this one had not"
+                    );
+                    break;
+                }
+                CaptureState::Recording | CaptureState::Paused => {}
+            }
+        }
+
+        assert!(
+            saw_finishing,
+            "the close-out window must be visible to the UI, not silently idle"
+        );
+    }
+
+    /// The same window seen from the other end: a poll that lands after the
+    /// session object is gone but before the recording is put away.
+    ///
+    /// Driven directly rather than through a race, so it pins the reported
+    /// shape — id and length — exactly.
+    #[test]
+    fn a_recording_still_being_put_away_reports_itself_and_its_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.2);
+        let id = record(&rt, Mode::InPerson, "Lecture");
+
+        *lock(&rt.inner.closing) = Some(Closing {
+            id: id.clone(),
+            elapsed_s: 12.5,
+        });
+        let status = rt.capture_status();
+        assert_eq!(status.state, CaptureState::Finishing);
+        assert_eq!(status.recording_id.as_deref(), Some(id.as_str()));
+        assert_eq!(status.elapsed_s, 12.5);
+        assert_eq!(status.mode, None, "nothing is being captured any more");
+        assert_eq!(status.mic_level, 0.0);
+
+        *lock(&rt.inner.closing) = None;
+        assert_eq!(rt.capture_status().state, CaptureState::Idle);
+    }
+
+    /// A recording that starts while the last one is still encoding must win
+    /// the status snapshot — they have separate folders, and the record bar
+    /// has to show the one that is actually running.
+    #[test]
+    fn a_live_recording_outranks_one_that_is_still_being_put_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 600.0);
+
+        *lock(&rt.inner.closing) = Some(Closing {
+            id: "the-previous-one".to_string(),
+            elapsed_s: 30.0,
+        });
+        let live = rt
+            .start_capture(Mode::InPerson, "Lecture")
+            .unwrap()
+            .recording_id
+            .unwrap();
+
+        let status = rt.capture_status();
+        assert_eq!(status.state, CaptureState::Recording);
+        assert_eq!(status.recording_id.as_deref(), Some(live.as_str()));
+
+        *lock(&rt.inner.closing) = None;
+        rt.stop_capture().unwrap();
+    }
+
+    /// A stop whose `meta.json` write fails keeps the session alive so the
+    /// retry `Session::stop` documents can actually happen. Dropping it left
+    /// the recording invisible until the next launch, and a second Stop said
+    /// "nothing is being recorded right now" about a recording that existed.
+    #[test]
+    fn a_stop_that_cannot_save_stays_retryable_instead_of_stranding_the_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 600.0);
+
+        let id = rt
+            .start_capture(Mode::InPerson, "Lecture")
+            .unwrap()
+            .recording_id
+            .unwrap();
+        wait_until("the first audio to reach the file", || {
+            rt.capture_status().elapsed_s > 0.0
+        });
+
+        // Make `meta.json` unwritable the crude, portable way.
+        let rec_dir = rt.inner.find(&id).unwrap().dir;
+        let meta_path = rec_dir.join("meta.json");
+        fs::remove_file(&meta_path).unwrap();
+        fs::create_dir(&meta_path).unwrap();
+
+        assert!(
+            rt.stop_capture().is_err(),
+            "a save that did not happen must be reported, not swallowed"
+        );
+        // And the app says something true about it rather than offering a
+        // fresh start over the top of a recording that never landed.
+        let err = rt.start_capture(Mode::InPerson, "Another").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("has not finished saving"),
+            "{err:#}"
+        );
+
+        fs::remove_dir(&meta_path).unwrap();
+        let stopped = rt
+            .stop_capture()
+            .expect("the retry must close the recording out");
+        assert_eq!(stopped, id);
+        assert_eq!(status_of(&rt, &id), Status::Queued);
+        assert!(rt.get_recording(&id).unwrap().duration_s > 0.0);
+    }
+
     #[test]
     fn pause_and_resume_report_the_state_the_record_bar_renders() {
         let dir = tempfile::tempdir().unwrap();
@@ -1917,6 +2205,106 @@ mod tests {
         assert_eq!(rt.get_recording(&id).unwrap().title, "Lecture");
         // And search still points at the untouched folder.
         assert_eq!(rt.search("Lecture").unwrap().len(), 1);
+    }
+
+    /// Review finding 1. Renaming moves the recording's folder, and a live
+    /// session holds that folder open — so a rename mid-lecture used to strand
+    /// the recording at 0:00 and hand the user
+    /// `No such file or directory (os error 2)`.
+    #[test]
+    fn renaming_the_live_recording_is_refused_instead_of_stranding_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // Long enough that the session is certainly still capturing.
+        let rt = runtime(dir.path(), 600.0);
+
+        let started = rt.start_capture(Mode::InPerson, "Lecture").unwrap();
+        let id = started.recording_id.expect("a started capture has an id");
+        wait_until("the first audio to reach the file", || {
+            rt.capture_status().elapsed_s > 0.0
+        });
+
+        let err = rt.rename_recording(&id, "Renamed mid-lecture").unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("stop the recording first"),
+            "the refusal must tell the user what to do: {message}"
+        );
+        assert!(
+            !message.contains("os error") && !message.to_lowercase().contains("no such file"),
+            "a raw filesystem error must never reach the user: {message}"
+        );
+
+        // The point of refusing: the recording still closes out normally.
+        let stopped = rt.stop_capture().expect("stop must still work");
+        assert_eq!(stopped, id);
+        assert_eq!(status_of(&rt, &id), Status::Queued);
+        assert!(
+            rt.get_recording(&id).unwrap().duration_s > 0.0,
+            "a stranded recording is the one that shows 0:00"
+        );
+
+        // And the rename the user wanted is available the moment it is safe.
+        rt.rename_recording(&id, "Renamed after stopping").unwrap();
+        assert_eq!(
+            rt.get_recording(&id).unwrap().title,
+            "Renamed after stopping"
+        );
+    }
+
+    /// The same hole, through the other command that moves a folder. Nothing
+    /// in the review found this one; it is the same bug wearing a different
+    /// name, and a guard on only half of it is not a fix.
+    #[test]
+    fn filing_the_live_recording_under_a_task_is_refused_for_the_same_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 600.0);
+        rt.create_task("Accounting 302").unwrap();
+
+        let id = rt
+            .start_capture(Mode::InPerson, "Lecture")
+            .unwrap()
+            .recording_id
+            .unwrap();
+
+        let err = rt.assign_task(&id, "Accounting 302").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("stop the recording first"),
+            "{err:#}"
+        );
+        assert_eq!(
+            rt.get_recording(&id).unwrap().task,
+            None,
+            "the refused move must not have half-happened"
+        );
+
+        rt.stop_capture().unwrap();
+        rt.assign_task(&id, "Accounting 302").unwrap();
+        assert_eq!(
+            rt.get_recording(&id).unwrap().task.as_deref(),
+            Some("Accounting 302")
+        );
+    }
+
+    /// A recording that is not live is fair game even while it is still being
+    /// put away — its files are closed by then. Guarding too much would make
+    /// renaming feel randomly broken just after a stop.
+    #[test]
+    fn renaming_a_recording_that_is_not_the_live_one_still_works_mid_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 600.0);
+
+        rt.start_capture(Mode::InPerson, "Earlier lecture").unwrap();
+        let first = rt.stop_capture().unwrap();
+
+        rt.start_capture(Mode::InPerson, "Live lecture").unwrap();
+
+        rt.rename_recording(&first, "Earlier lecture, renamed")
+            .unwrap();
+        assert_eq!(
+            rt.get_recording(&first).unwrap().title,
+            "Earlier lecture, renamed"
+        );
+        rt.stop_capture().unwrap();
     }
 
     #[test]

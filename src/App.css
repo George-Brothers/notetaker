@@ -699,8 +699,20 @@ p {
   background: var(--status-processing-bg);
 }
 
+/* Capture is over, the recording is still being written. Deliberately the same
+   colour as "processing" in the library: it is the same kind of wait. */
+.record-bar__state--finishing {
+  color: var(--status-queued-fg);
+  background: var(--status-queued-bg);
+}
+
+.record-bar__state--finishing .record-bar__state-dot {
+  animation: chip-pulse 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .record-bar__state--recording .record-bar__state-dot {
+  .record-bar__state--recording .record-bar__state-dot,
+  .record-bar__state--finishing .record-bar__state-dot {
     animation: none;
   }
 }
@@ -747,6 +759,15 @@ p {
   .level-meter__fill {
     transition: none;
   }
+}
+
+.record-bar__finishing {
+  color: var(--status-queued-fg);
+  background: var(--status-queued-bg);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .record-bar__disk-warning {

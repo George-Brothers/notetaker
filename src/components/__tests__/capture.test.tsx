@@ -53,6 +53,20 @@ const PAUSED_STATUS: CaptureStatus = {
   state: "paused",
 };
 
+/**
+ * Capture is over but the recording is still being encoded and queued. The
+ * meters read flat and there is no mode, because nothing is being captured.
+ */
+const FINISHING_STATUS: CaptureStatus = {
+  state: "finishing",
+  mode: null,
+  recordingId: "rec-live",
+  elapsedS: 5,
+  micLevel: 0,
+  systemLevel: 0,
+  diskFreeMb: 20_000,
+};
+
 const ZOOM_STARTED_ASK: MeetingEvent = {
   appId: "zoom",
   appName: "Zoom",
@@ -158,6 +172,47 @@ describe("record bar", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeDisabled());
     expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  });
+
+  it("says it is still saving, and refuses a new recording, until the last one lands", async () => {
+    // The auto-stop path — a full disk or a dead mic ends the recording with
+    // nobody pressing Stop, so this snapshot is the only thing the UI is told.
+    vi.mocked(api.captureStatus).mockResolvedValue(FINISHING_STATUS);
+    render(<App />);
+
+    expect(await screen.findByText(/saving your recording/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
+    // Stop stays live: a save that failed is retried by pressing it again.
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  });
+
+  it("follows a self-stopping recording through saving and only then re-arms Start", async () => {
+    // Real timers: this is about the status poll, and the poll is the only
+    // thing that tells the UI a self-stopping recording ended.
+    const patience = { timeout: 4000 };
+    vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
+    vi.mocked(api.captureStatus).mockResolvedValue(IDLE_STATUS);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeDisabled());
+
+    // The session ends itself — a full disk, a dead mic — and nobody presses
+    // Stop, so the next poll is the first the UI hears of it.
+    vi.mocked(api.captureStatus).mockResolvedValue(FINISHING_STATUS);
+    await waitFor(
+      () => expect(screen.getByText(/saving your recording/i)).toBeInTheDocument(),
+      patience
+    );
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+
+    vi.mocked(api.captureStatus).mockResolvedValue(IDLE_STATUS);
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "Start" })).toBeEnabled(),
+      patience
+    );
+    expect(screen.queryByText(/saving your recording/i)).not.toBeInTheDocument();
   });
 
   it("shows the system level meter in meeting mode and hides it in in-person mode", async () => {

@@ -51,6 +51,8 @@ function stateLabel(state: CaptureState): string {
       return "Recording";
     case "paused":
       return "Paused";
+    case "finishing":
+      return "Saving…";
     case "idle":
       return "Idle";
   }
@@ -79,6 +81,11 @@ export function RecordBar({ status, onStart, onPause, onResume, onStop }: Record
   const [mode, setMode] = useState<Mode>("meeting");
   const idle = status.state === "idle";
   const paused = status.state === "paused";
+  // The last recording is still being written. Starting another one here would
+  // look like the first never happened, so Start waits — but Stop stays live,
+  // because a save that failed is retried by pressing it again.
+  const finishing = status.state === "finishing";
+  const capturing = status.state === "recording" || paused;
 
   function handleStart() {
     onStart(mode, defaultTitle(mode));
@@ -124,13 +131,19 @@ export function RecordBar({ status, onStart, onPause, onResume, onStop }: Record
         <button type="button" className="record-bar__start" onClick={handleStart} disabled={!idle}>
           Start
         </button>
-        <button type="button" onClick={handleToggle} disabled={idle}>
+        <button type="button" onClick={handleToggle} disabled={!capturing}>
           {paused ? "Resume" : "Pause"}
         </button>
         <button type="button" onClick={onStop} disabled={idle}>
           Stop
         </button>
       </div>
+
+      {finishing && (
+        <span className="record-bar__finishing" role="status">
+          Saving your recording — it will appear in the library in a moment.
+        </span>
+      )}
 
       <span className={`record-bar__state record-bar__state--${status.state}`}>
         <span className="record-bar__state-dot" aria-hidden="true" />
