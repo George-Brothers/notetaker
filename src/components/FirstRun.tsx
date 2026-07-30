@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { api } from "../lib/ipc";
+import { api, LANGUAGE_CHOICES } from "../lib/ipc";
 import type { OllamaStatus, PullProgress, Settings as SettingsData } from "../lib/ipc";
 
 export interface FirstRunProps {
@@ -78,6 +78,62 @@ function ChecklistItem({
 }
 
 /**
+ * Which languages you speak, asked before anything is downloaded.
+ *
+ * This is a question about *download size*, not a preference. Chinese,
+ * Cantonese, Japanese and Korean are the languages a second 239 MB model is
+ * markedly better at; English and everything else are handled by the model
+ * that gets downloaded regardless. Asking first means a user who only ever
+ * speaks English never fetches a model that would never be chosen for their
+ * audio.
+ */
+function LanguageStep({
+  selected,
+  onChange,
+  saving,
+}: {
+  selected: string[];
+  onChange: (next: string[]) => void;
+  saving: boolean;
+}) {
+  function toggle(code: string) {
+    const next = selected.includes(code)
+      ? selected.filter((c) => c !== code)
+      : [...selected, code];
+    // Never leave it empty: with nothing chosen there is no basis for deciding
+    // what to download, and English is the safe default the app already ships.
+    onChange(next.length === 0 ? ["en"] : next);
+  }
+
+  const extraModel = LANGUAGE_CHOICES.some(
+    (choice) => choice.senseVoice && selected.includes(choice.code),
+  );
+
+  return (
+    <fieldset className="first-run__languages" disabled={saving}>
+      <legend className="first-run__item-hint">
+        Pick every language you expect to hear. You can change this later in Settings.
+      </legend>
+      {LANGUAGE_CHOICES.map((choice) => (
+        <label key={choice.code} className="first-run__language">
+          <input
+            type="checkbox"
+            checked={selected.includes(choice.code)}
+            onChange={() => toggle(choice.code)}
+          />
+          <span>{choice.label}</span>
+        </label>
+      ))}
+      <p className="first-run__item-hint">
+        {extraModel
+          ? "Adds a second speech model (about 239 MB) that is much more accurate on those languages."
+          : "Nothing extra to download for these."}
+      </p>
+    </fieldset>
+  );
+}
+
+/**
  * The first-run checklist (spec: permissions, speech models, Ollama).
  * Deliberately not a wizard: it renders as a dismissible card, not a
  * blocking overlay, because recording works with none of these three items
@@ -89,6 +145,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
   const [progress, setProgress] = useState<PullProgress[]>([]);
   const [pulling, setPulling] = useState(false);
   const [downloadingModels, setDownloadingModels] = useState(false);
+  const [savingLanguages, setSavingLanguages] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -139,6 +196,23 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
       setLoadError(describeError(err));
     } finally {
       setPulling(false);
+    }
+  }
+
+  async function handleLanguages(next: string[]) {
+    if (!settings) return;
+    const updated = { ...settings, languages: next };
+    // Optimistic: the checkbox must feel instant, and a failed write is
+    // reported rather than silently reverting the tick the user just made.
+    setSettings(updated);
+    setLoadError(null);
+    setSavingLanguages(true);
+    try {
+      await api.setSettings(updated);
+    } catch (err) {
+      setLoadError(describeError(err));
+    } finally {
+      setSavingLanguages(false);
     }
   }
 
@@ -199,7 +273,21 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
           </p>
         </ChecklistItem>
 
-        <ChecklistItem index={2} title="Download the speech models" status={speechStatus}>
+        <ChecklistItem
+          index={2}
+          title="Which languages do you speak?"
+          status={settings ? "done" : "not-started"}
+        >
+          {settings && (
+            <LanguageStep
+              selected={settings.languages ?? ["en"]}
+              onChange={handleLanguages}
+              saving={savingLanguages}
+            />
+          )}
+        </ChecklistItem>
+
+        <ChecklistItem index={3} title="Download the speech models" status={speechStatus}>
           {speechStatus !== "done" && (
             <>
               <button type="button" onClick={handleDownloadModels} disabled={downloadingModels}>
@@ -217,7 +305,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
           ))}
         </ChecklistItem>
 
-        <ChecklistItem index={3} title="Install Ollama and download the summary model" status={ollamaItemStatus}>
+        <ChecklistItem index={4} title="Install Ollama and download the summary model" status={ollamaItemStatus}>
           {ollama && !ollama.installed && ollama.installHint && (
             <p className="first-run__item-hint">{ollama.installHint}</p>
           )}

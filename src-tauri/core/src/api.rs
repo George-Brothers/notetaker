@@ -138,6 +138,45 @@ pub struct Settings {
     /// is lossless, so the WAV is pure duplication.
     #[serde(default)]
     pub keep_wav: bool,
+
+    // --- Plan C: which languages this user actually speaks.
+    /// The languages spoken in this user's recordings, as ISO-639-1 codes
+    /// (`"en"`, `"zh"`, `"ja"`, `"ko"`, `"yue"`, …). First run asks; this is
+    /// the answer.
+    ///
+    /// It exists to decide **what to download**. A 239 MB model that would
+    /// never be chosen for your audio should not be fetched, and the only way
+    /// to know that in advance is to ask. Defaults to English so an upgraded
+    /// settings file behaves exactly as it did before.
+    #[serde(default = "default_languages")]
+    pub languages: Vec<String>,
+    /// Which speech model to use. `Auto` routes per segment; the other two
+    /// force one model for everything.
+    #[serde(default)]
+    pub speech_engine: SpeechEngine,
+}
+
+/// Which speech model transcribes a recording.
+///
+/// The override exists because `Auto` cannot be right every time — a language
+/// detector that mislabels a segment produces a wrong transcript with no
+/// explanation, and without this the only remedy would be a code change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpeechEngine {
+    /// Detect each segment's language and send it to the better model.
+    #[default]
+    Auto,
+    /// Whisper for everything, whatever the language.
+    Whisper,
+    /// SenseVoice for everything. Falls back to Whisper if it is not
+    /// downloaded, since refusing to transcribe would be worse than
+    /// transcribing with the other model.
+    SenseVoice,
+}
+
+fn default_languages() -> Vec<String> {
+    vec!["en".to_string()]
 }
 
 fn default_min_idle_secs() -> u64 {
@@ -157,6 +196,8 @@ impl Default for Settings {
             tier_override: None,
             process_when_idle: true,
             auto_record: BTreeMap::new(),
+            languages: default_languages(),
+            speech_engine: SpeechEngine::Auto,
             min_idle_secs: default_min_idle_secs(),
             require_ac: default_true(),
             keep_wav: false,
@@ -831,6 +872,8 @@ mod tests {
             min_idle_secs: 60,
             require_ac: false,
             keep_wav: true,
+            languages: vec!["en".to_string(), "zh".to_string()],
+            speech_engine: SpeechEngine::SenseVoice,
         };
         set_settings(&path, &settings).unwrap();
 

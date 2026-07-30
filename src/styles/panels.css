@@ -373,3 +373,59 @@
   border-radius: 999px;
   background: currentColor;
 }
+
+/* --- first run: the language question ---------------------------------- */
+/*
+ * A fieldset rather than a div: the six checkboxes are one question, and a
+ * screen reader should announce the legend before the options. The legend
+ * doubles as the hint, so the question is not stated twice.
+ */
+.first-run__languages {
+  border: 0;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+}
+
+.first-run__languages > legend,
+.first-run__languages > p {
+  flex-basis: 100%;
+  margin: 0 0 0.15rem;
+}
+
+.first-run__languages > p {
+  margin-top: 0.35rem;
+}
+
+.first-run__language {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--color-foreground);
+  cursor: pointer;
+}
+
+.first-run__languages:disabled .first-run__language {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* --- settings: the language checkboxes ---------------------------------- */
+.settings-languages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.settings-language {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--color-foreground);
+  cursor: pointer;
+}

@@ -6,6 +6,7 @@ pub mod audio;
 pub mod diarize;
 pub mod llm;
 pub mod merge;
+pub mod route;
 pub mod run;
 pub mod suggest;
 pub mod summarize;

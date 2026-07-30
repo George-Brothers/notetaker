@@ -54,8 +54,9 @@ use crate::models::{detect_tier, ensure_segmentation_unpacked, registry, Downloa
 use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
 use crate::pipeline::diarize::{Diarizer, SherpaDiarizer};
 use crate::pipeline::llm::LlmClient;
+use crate::pipeline::route::{LanguageTranscriber, RoutingTranscriber};
 use crate::pipeline::run::{requeue_stale, PipelineDeps};
-use crate::pipeline::transcribe::{Transcriber, WhisperTranscriber};
+use crate::pipeline::transcribe::{SenseVoiceTranscriber, Transcriber, WhisperTranscriber};
 use crate::power::{PowerPolicy, PowerState, SystemProbe};
 use crate::queue::{IdleSource, Queue, RunOutcome};
 use crate::scheduler;
@@ -1032,7 +1033,8 @@ impl Runtime {
     /// reported complete without re-downloading, so pressing the button twice
     /// is harmless.
     pub fn download_models(&self) -> Result<()> {
-        let specs = registry::required_models(&self.resolved_tier());
+        let settings = self.get_settings().unwrap_or_default();
+        let specs = registry::required_models(&self.resolved_tier(), &settings.languages);
 
         {
             let mut pulls = lock(&self.inner.pulls);
@@ -1206,10 +1208,12 @@ impl Runtime {
             return Ok(Processing::AlreadyRunning);
         }
 
+        let settings = self.get_settings().unwrap_or_default();
         let tier = self.resolved_tier();
         let models_dir = &self.inner.models_dir;
+        let required = registry::required_models(&tier, &settings.languages);
 
-        let missing: Vec<String> = registry::required_models(&tier)
+        let missing: Vec<String> = required
             .iter()
             .filter(|spec| !models_dir.join(spec.dest).exists())
             .map(|spec| spec.name.to_string())
@@ -1222,7 +1226,33 @@ impl Runtime {
         let segmentation_path = ensure_segmentation_unpacked(models_dir)?;
         let embedding_path = models_dir.join(registry::DIARIZATION_EMBEDDING.dest);
 
-        let transcriber = WhisperTranscriber::load(&speech_path)?;
+        let whisper = WhisperTranscriber::load(&speech_path)?;
+
+        // SenseVoice only exists here if the languages this user speaks called
+        // for it — `required_models` decided that, and the missing-file check
+        // above already proved it is present. An English-only user loads one
+        // model, exactly as before routing existed.
+        let sense_voice: Option<Box<dyn LanguageTranscriber + Send + Sync>> =
+            if registry::wants_sense_voice(&settings.languages) {
+                Some(Box::new(SenseVoiceTranscriber::load(
+                    &models_dir.join(registry::SENSE_VOICE_MODEL.dest),
+                    &models_dir.join(registry::SENSE_VOICE_TOKENS.dest),
+                )?))
+            } else {
+                None
+            };
+
+        let transcriber =
+            RoutingTranscriber::new(Box::new(whisper), sense_voice, settings.speech_engine);
+        log::info!(
+            "speech: {}",
+            if transcriber.routes() {
+                "per-segment routing between Whisper and SenseVoice"
+            } else {
+                "one model for everything"
+            }
+        );
+
         let diarizer = SherpaDiarizer::load(&segmentation_path, &embedding_path)?;
 
         self.start_scheduler(SchedulerModels {
@@ -2219,7 +2249,8 @@ mod tests {
         };
         // Every model this tier needs, named the way the first-run checklist
         // names them — a caller must be able to say which one to fetch.
-        let expected: Vec<String> = registry::required_models(&rt.resolved_tier())
+        let languages = rt.get_settings().unwrap().languages;
+        let expected: Vec<String> = registry::required_models(&rt.resolved_tier(), &languages)
             .iter()
             .map(|s| s.name.to_string())
             .collect();

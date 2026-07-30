@@ -140,7 +140,40 @@ export interface Settings {
   requireAc: boolean;
   /** Keep the intermediate WAV after the lossless FLAC finalize. */
   keepWav: boolean;
+  /**
+   * The languages spoken in this user's recordings, as ISO-639-1 codes.
+   * First run asks; this is the answer, and it decides which speech models
+   * get downloaded. Defaults to `["en"]`.
+   */
+  languages: string[];
+  /**
+   * Which speech model transcribes. `auto` detects each segment's language
+   * and sends it to the better model; the other two force one.
+   */
+  speechEngine: SpeechEngine;
 }
+
+export type SpeechEngine = "auto" | "whisper" | "senseVoice";
+
+/**
+ * The languages the app can be told about, and what choosing one costs.
+ *
+ * `senseVoice: true` means picking it downloads a second 239 MB model that is
+ * markedly better at that language than Whisper. Everything else is handled by
+ * Whisper, which is downloaded either way — so those choices are free.
+ */
+export const LANGUAGE_CHOICES: ReadonlyArray<{
+  code: string;
+  label: string;
+  senseVoice: boolean;
+}> = [
+  { code: "en", label: "English", senseVoice: false },
+  { code: "zh", label: "Chinese (Mandarin)", senseVoice: true },
+  { code: "yue", label: "Cantonese", senseVoice: true },
+  { code: "ja", label: "Japanese", senseVoice: true },
+  { code: "ko", label: "Korean", senseVoice: true },
+  { code: "other", label: "Another language", senseVoice: false },
+];
 
 /**
  * `finishing` is the stretch after the last sample and before the recording is

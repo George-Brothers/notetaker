@@ -36,6 +36,8 @@ const BASE_SETTINGS: Settings = {
   minIdleSecs: 300,
   requireAc: true,
   keepWav: false,
+  languages: ["en"],
+  speechEngine: "auto",
 };
 
 const OLLAMA_NOT_INSTALLED: OllamaStatus = {
@@ -216,6 +218,43 @@ describe("Settings screen", () => {
     await waitFor(() => expect(api.setSettings).toHaveBeenCalledWith({ ...BASE_SETTINGS, keepWav: true }));
   });
 
+  it("ticking Chinese persists it, which is what decides the extra download", async () => {
+    const dialog = await openSettings();
+
+    fireEvent.click(within(dialog).getByLabelText("Chinese (Mandarin)"));
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith({
+        ...BASE_SETTINGS,
+        languages: ["en", "zh"],
+      })
+    );
+  });
+
+  it("unticking the last language falls back to English rather than none", async () => {
+    // With nothing selected there is no basis for choosing a model at all, so
+    // the app must not be able to reach that state.
+    const dialog = await openSettings();
+
+    fireEvent.click(within(dialog).getByLabelText("English"));
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith({ ...BASE_SETTINGS, languages: ["en"] })
+    );
+  });
+
+  it("forcing a single speech model persists the override", async () => {
+    const dialog = await openSettings();
+
+    fireEvent.change(within(dialog).getByLabelText("Speech model"), {
+      target: { value: "whisper" },
+    });
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith({ ...BASE_SETTINGS, speechEngine: "whisper" })
+    );
+  });
+
   it("the auto-record three-way writes autoRecord: { zoom: 'always' }", async () => {
     const dialog = await openSettings();
     const zoomGroup = within(dialog).getByRole("group", { name: "Zoom" });
@@ -307,6 +346,54 @@ describe("First-run checklist", () => {
       .getByText("Install Ollama and download the summary model")
       .closest("li") as HTMLElement;
     await waitFor(() => expect(within(item).getByText("Done")).toBeInTheDocument());
+  });
+
+  it("asks which languages you speak before offering to download anything", async () => {
+    // The order is the point: the answer decides what gets fetched, so it has
+    // to be asked first or the download cannot be sized to the user.
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+
+    const items = within(card).getAllByRole("listitem");
+    const languageIndex = items.findIndex((li) =>
+      li.textContent?.includes("Which languages do you speak?")
+    );
+    const downloadIndex = items.findIndex((li) =>
+      li.textContent?.includes("Download the speech models")
+    );
+
+    expect(languageIndex).toBeGreaterThanOrEqual(0);
+    expect(languageIndex).toBeLessThan(downloadIndex);
+  });
+
+  it("choosing a language on first run saves it without leaving the checklist", async () => {
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    await waitFor(() => expect(within(card).getByLabelText("Japanese")).toBeInTheDocument());
+
+    fireEvent.click(within(card).getByLabelText("Japanese"));
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith({
+        ...BASE_SETTINGS,
+        languages: ["en", "ja"],
+      })
+    );
+  });
+
+  it("says when a choice costs an extra download and when it does not", async () => {
+    // A 239 MB download is worth one sentence of warning before it starts.
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    await waitFor(() => expect(within(card).getByLabelText("Korean")).toBeInTheDocument());
+
+    expect(within(card).getByText(/Nothing extra to download/i)).toBeInTheDocument();
+
+    fireEvent.click(within(card).getByLabelText("Korean"));
+
+    await waitFor(() =>
+      expect(within(card).getByText(/second speech model \(about 239 MB\)/i)).toBeInTheDocument()
+    );
   });
 
   it("surfaces a failed speech-model download's error text on its checklist item", async () => {

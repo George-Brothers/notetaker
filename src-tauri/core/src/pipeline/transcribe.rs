@@ -94,6 +94,61 @@ impl Transcriber for WhisperTranscriber {
     }
 }
 
+/// A `LanguageTranscriber` backed by SenseVoice through sherpa-onnx.
+///
+/// Non-autoregressive, so it transcribes a segment in one forward pass rather
+/// than token by token — several times faster than Whisper — and it returns
+/// the language it detected alongside the text, which is what makes
+/// [`RoutingTranscriber`] affordable.
+///
+/// The recognizer is behind a `Mutex` because sherpa's `transcribe` takes
+/// `&mut self`, while the pipeline holds transcribers behind a shared
+/// reference. Segments are transcribed one at a time regardless, so this
+/// serializes nothing that was ever parallel.
+///
+/// [`RoutingTranscriber`]: super::route::RoutingTranscriber
+pub struct SenseVoiceTranscriber {
+    inner: std::sync::Mutex<sherpa_rs::sense_voice::SenseVoiceRecognizer>,
+}
+
+impl SenseVoiceTranscriber {
+    /// Loads the int8 SenseVoice model and its token table.
+    ///
+    /// `language: "auto"` is the point — a fixed language here would defeat
+    /// the detection this whole design rests on.
+    pub fn load(model: &Path, tokens: &Path) -> Result<Self> {
+        let config = sherpa_rs::sense_voice::SenseVoiceConfig {
+            model: model.to_string_lossy().into_owned(),
+            tokens: tokens.to_string_lossy().into_owned(),
+            language: "auto".to_string(),
+            // Inverse text normalization: turns spoken numbers and dates into
+            // digits, and adds punctuation. A meeting transcript is read by a
+            // person, so this is worth having on.
+            use_itn: true,
+            ..Default::default()
+        };
+        let inner = sherpa_rs::sense_voice::SenseVoiceRecognizer::new(config)
+            .map_err(|e| anyhow::anyhow!("loading SenseVoice from {}: {e}", model.display()))?;
+        Ok(SenseVoiceTranscriber {
+            inner: std::sync::Mutex::new(inner),
+        })
+    }
+}
+
+impl super::route::LanguageTranscriber for SenseVoiceTranscriber {
+    fn transcribe_span(&self, samples: &[f32]) -> Result<(String, String)> {
+        let mut recognizer = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = recognizer.transcribe(16_000, samples);
+        Ok((
+            super::route::normalize_lang(&result.lang),
+            result.text.trim().to_string(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { api } from "../lib/ipc";
-import type { AutoRecordPolicy, OllamaStatus, PullProgress, Settings as SettingsData } from "../lib/ipc";
+import { api, LANGUAGE_CHOICES } from "../lib/ipc";
+import type {
+  AutoRecordPolicy,
+  OllamaStatus,
+  PullProgress,
+  Settings as SettingsData,
+  SpeechEngine,
+} from "../lib/ipc";
 
 export interface SettingsProps {
   onClose: () => void;
@@ -473,6 +479,60 @@ export function Settings({ onClose }: SettingsProps) {
                   />
                   <label htmlFor="settings-require-ac">Only process while plugged in</label>
                 </div>
+              </section>
+
+              <section className="settings-section" aria-labelledby="settings-speech-heading">
+                <h3 id="settings-speech-heading">Languages and speech</h3>
+                <p className="settings-hint">
+                  Which languages you expect to hear. Chinese, Cantonese, Japanese and Korean use a
+                  second speech model that is much more accurate on them; English and everything
+                  else use the model that is always installed.
+                </p>
+                <div className="settings-languages">
+                  {LANGUAGE_CHOICES.map((choice) => (
+                    <label key={choice.code} className="settings-language">
+                      <input
+                        type="checkbox"
+                        checked={(settings.languages ?? ["en"]).includes(choice.code)}
+                        onChange={(e) => {
+                          const current = settings.languages ?? ["en"];
+                          const next = e.target.checked
+                            ? [...current, choice.code]
+                            : current.filter((c) => c !== choice.code);
+                          // Never empty: with nothing selected there is no
+                          // basis for choosing a model at all.
+                          updateSettings({
+                            ...settings,
+                            languages: next.length === 0 ? ["en"] : next,
+                          });
+                        }}
+                      />
+                      <span>{choice.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="settings-field">
+                  <label htmlFor="settings-speech-engine">Speech model</label>
+                  <select
+                    id="settings-speech-engine"
+                    value={settings.speechEngine ?? "auto"}
+                    onChange={(e) =>
+                      updateSettings({
+                        ...settings,
+                        speechEngine: e.target.value as SpeechEngine,
+                      })
+                    }
+                  >
+                    <option value="auto">Automatic — pick per sentence</option>
+                    <option value="whisper">Always use Whisper</option>
+                    <option value="senseVoice">Always use SenseVoice</option>
+                  </select>
+                </div>
+                <p className="settings-hint">
+                  Automatic works out the language of each thing that gets said and uses whichever
+                  model is better at it, so a conversation that switches language mid-sentence still
+                  comes out right. Change this only if a transcript comes out wrong.
+                </p>
               </section>
 
               <section className="settings-section" aria-labelledby="settings-storage-format-heading">
