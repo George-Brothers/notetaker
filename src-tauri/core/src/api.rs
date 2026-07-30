@@ -519,14 +519,22 @@ fn read_sidecar(dir: &Path, name: &str) -> Option<String> {
     }
 }
 
-/// Which audio tracks are actually on disk, in `TRACK_NAMES` order.
+/// Which audio tracks are actually on disk *and* have bytes, in
+/// `TRACK_NAMES` order.
+///
+/// Existence is not enough. A meeting recorded with nothing playing through
+/// the speakers leaves a 0-byte system track behind — real, openable, and
+/// completely silent. Offering it as a track means offering a player that
+/// appears broken, which is exactly what this field's contract forbids.
 fn audio_tracks(dir: &Path) -> Vec<String> {
     TRACK_NAMES
         .iter()
         .filter(|track| {
-            ["flac", "wav"]
-                .iter()
-                .any(|ext| dir.join(format!("audio-{track}.{ext}")).exists())
+            ["flac", "wav"].iter().any(|ext| {
+                std::fs::metadata(dir.join(format!("audio-{track}.{ext}")))
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false)
+            })
         })
         .map(|t| t.to_string())
         .collect()
@@ -999,5 +1007,37 @@ mod tests {
         let path = dir.path().join("a").join("b").join("settings.json");
         set_settings(&path, &Settings::default()).unwrap();
         assert!(path.exists());
+    }
+
+    // --- audio_tracks ---------------------------------------------------
+
+    #[test]
+    fn audio_tracks_ignores_a_track_file_with_no_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let rec = create(&store, "Team sync");
+
+        // What a meeting with nothing playing through the speakers leaves
+        // behind: a mic track with audio, and a system track WASAPI never
+        // wrote a sample to.
+        std::fs::write(rec.dir.join("audio-mic.flac"), b"not empty").unwrap();
+        std::fs::write(rec.dir.join("audio-system.flac"), b"").unwrap();
+
+        assert_eq!(audio_tracks(&rec.dir), vec!["mic".to_string()]);
+    }
+
+    #[test]
+    fn audio_tracks_lists_every_track_that_has_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let rec = create(&store, "Team sync");
+
+        std::fs::write(rec.dir.join("audio-mic.flac"), b"not empty").unwrap();
+        std::fs::write(rec.dir.join("audio-system.flac"), b"also not empty").unwrap();
+
+        assert_eq!(
+            audio_tracks(&rec.dir),
+            vec!["mic".to_string(), "system".to_string()]
+        );
     }
 }
