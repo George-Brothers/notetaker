@@ -12,6 +12,7 @@
 //! `.flac` (finalized) extension.
 
 pub mod flac;
+pub mod platform;
 pub mod recover;
 pub mod session;
 pub mod source;

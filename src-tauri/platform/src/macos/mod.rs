@@ -11,10 +11,11 @@
 //! it. [`speaker`] therefore holds the design and the reason it is not written
 //! blind, not a guess at an implementation.
 //!
-//! Nothing breaks in the meantime: core already has `SilentSource` for exactly
-//! this case, so meeting mode on a Mac records a real microphone track and an
-//! empty system track until [`speaker`] lands. That is a documented, existing
-//! fallback rather than a new one invented here.
+//! In the meantime a Mac records in-person mode normally and declines meeting
+//! mode with a plain-English message. That is core's existing
+//! `CaptureSources::system` contract — an error there means "I cannot capture
+//! the other side of a call", and meeting mode refuses rather than silently
+//! recording half a conversation. Deliberately not changed here.
 
 pub mod power;
 pub mod speaker;

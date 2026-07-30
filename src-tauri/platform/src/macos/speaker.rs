@@ -1,10 +1,16 @@
 //! System audio on macOS, via ScreenCaptureKit. **Not yet implemented.**
 //!
 //! This file exists to hold a decision and a design, not a placeholder that
-//! pretends to work. [`SystemAudioSource::start`] returns a clear error, and
-//! core maps that onto its existing `SilentSource`, so meeting mode on a Mac
-//! records a real microphone track and an empty system track. That fallback was
-//! designed in Plan B1; it is not being invented here to paper over a gap.
+//! pretends to work. [`SystemAudioSource::start`] returns a clear error, which
+//! is precisely how core's `CaptureSources::system` contract says a platform
+//! reports "I cannot capture the other side of a call": **meeting mode then
+//! refuses to start**, rather than silently recording half a conversation.
+//!
+//! So until this lands, a Mac can record in-person mode (microphone) but will
+//! decline meeting mode with the message below. That is the existing Plan B1
+//! behaviour, deliberately not changed here — recording a meeting that is
+//! missing every other participant, and only finding out afterwards, is worse
+//! than being told up front.
 //!
 //! # Why it is not written yet
 //!
@@ -62,14 +68,15 @@ pub struct SystemAudioSource;
 impl SystemAudioSource {
     /// Always fails, with a message written for someone who is not an engineer.
     ///
-    /// Core turns this into a `SilentSource`, so a meeting still records the
-    /// microphone. The message is what the user sees explaining why the other
-    /// half is missing.
+    /// Per core's `CaptureSources::system` contract this makes meeting mode
+    /// decline to start, so this message is what the user actually reads. It
+    /// says what cannot be done and what still can, and it does not mention
+    /// ScreenCaptureKit, a delegate, or a permission API.
     pub fn start() -> Result<Self> {
         anyhow::bail!(
-            "Recording this computer's sound is not available on macOS yet, so this \
-             recording will capture your microphone only. Everyone else on the call \
-             will not be recorded."
+            "Notetaker cannot record this computer's sound on a Mac yet, so it cannot \
+             record a meeting — everyone else on the call would be missing. Recording \
+             an in-person conversation with the microphone still works."
         )
     }
 

@@ -2679,6 +2679,7 @@ dependencies = [
  "hound",
  "httpmock",
  "log",
+ "notetaker-platform",
  "rusqlite",
  "serde",
  "serde_json",

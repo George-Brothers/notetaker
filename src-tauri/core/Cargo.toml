@@ -27,6 +27,8 @@ ureq = { version = "3.3.0", features = ["json"] }
 uuid = { version = "1.24.0", features = ["v4"] }
 whisper-rs = "0.16.0"
 
+notetaker-platform = { path = "../platform" }
+
 [dev-dependencies]
 httpmock = "0.8.3"
 tempfile = "3.27.0"

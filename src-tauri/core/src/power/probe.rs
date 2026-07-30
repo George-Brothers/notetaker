@@ -98,18 +98,95 @@ pub fn parse_state(ioreg_output: &str, pmset_output: &str) -> Option<PowerState>
     })
 }
 
-/// The real macOS probe. UNVERIFIED off a Mac: the parsers below it are
-/// covered by tests, but this shell-out itself is first exercised on the
-/// hardware.
+/// The real macOS probe.
+///
+/// Idle time now comes from CoreGraphics
+/// (`CGEventSourceSecondsSinceLastEventType`, in `notetaker-platform`) rather
+/// than from scraping `HIDIdleTime` out of `ioreg` text. That retires the risk
+/// `docs/MAP.md` listed first under "verified vs assumed": the `ioreg` parser is
+/// tested, but if that command's output ever changed shape the parse would
+/// return `None`, the policy would read "not idle", and background transcription
+/// would quietly never run again with nothing pointing at the cause.
+///
+/// AC and battery still come from `pmset -g batt` and [`parse_power`], which is
+/// tested against real captured output. That one is left alone deliberately: it
+/// is a stable documented format, and unlike idle time a parse failure there is
+/// visible rather than silent.
 #[cfg(target_os = "macos")]
 pub struct MacProbe;
 
 #[cfg(target_os = "macos")]
 impl SystemProbe for MacProbe {
     fn read(&self) -> Option<PowerState> {
-        let ioreg = capture("ioreg", &["-c", "IOHIDSystem"])?;
+        let idle_secs = notetaker_platform::macos::power::idle_seconds() as u64;
         let pmset = capture("pmset", &["-g", "batt"])?;
-        parse_state(&ioreg, &pmset)
+        let (on_ac, battery_pct) = parse_power(&pmset)?;
+        Some(PowerState {
+            idle_secs,
+            on_ac,
+            battery_pct,
+        })
+    }
+}
+
+/// The real Windows probe: idle time from `GetLastInputInfo`, power state from
+/// `GetSystemPowerStatus`, both through `notetaker-platform`.
+///
+/// No text parsing and no subprocess anywhere in this path — the whole reading
+/// is two documented Win32 calls. Compile-verified against
+/// `x86_64-pc-windows-msvc`; the values it returns are first seen on a real
+/// machine or in CI.
+///
+/// A failure returns `None`, per this module's rule: an unreadable machine
+/// counts as "not idle", so a broken probe delays background work instead of
+/// running it while the user is typing.
+#[cfg(target_os = "windows")]
+pub struct WinProbe;
+
+#[cfg(target_os = "windows")]
+impl SystemProbe for WinProbe {
+    fn read(&self) -> Option<PowerState> {
+        match notetaker_platform::read_power_state() {
+            Ok(raw) => Some(PowerState {
+                idle_secs: raw.idle_secs,
+                on_ac: raw.on_ac,
+                battery_pct: raw.battery_pct,
+            }),
+            Err(e) => {
+                log::warn!("could not read this machine's power state: {e:#}");
+                None
+            }
+        }
+    }
+}
+
+/// The real probe for this platform, or a probe that always reads "unknown" on
+/// a platform with neither.
+///
+/// Lets the app layer say `default_probe()` without a `cfg` chain of its own.
+/// `Arc`, to match what `Runtime::open` takes.
+pub fn default_probe() -> std::sync::Arc<dyn SystemProbe + Send + Sync> {
+    #[cfg(target_os = "macos")]
+    {
+        std::sync::Arc::new(MacProbe)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::sync::Arc::new(WinProbe)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // Linux is a build host, not a target. `None` would mean "not idle",
+        // which stops processing forever, so this reports a machine that is idle
+        // and plugged in — the only sensible reading for a dev build whose
+        // recordings come from fixtures rather than a person at a keyboard.
+        std::sync::Arc::new(FakeProbe {
+            state: Some(PowerState {
+                idle_secs: u64::MAX,
+                on_ac: true,
+                battery_pct: None,
+            }),
+        })
     }
 }
 
