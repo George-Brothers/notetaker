@@ -361,8 +361,12 @@ mod tests {
     fn create_lands_in_unsorted_with_meta() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Lecture 3", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Lecture 3", Mode::InPerson, created)
+            .unwrap();
         assert!(r.dir.ends_with("Unsorted/2026-08-04 10.02 Lecture 3"));
         assert!(r.dir.join("meta.json").exists());
         assert!(matches!(r.meta.status, Status::Recorded));
@@ -374,8 +378,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
         s.create_task("Accounting 302").unwrap();
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Lecture 3", Mode::Meeting, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Lecture 3", Mode::Meeting, created)
+            .unwrap();
         let r = s.assign_task(&r, "Accounting 302").unwrap();
         assert_eq!(r.task.as_deref(), Some("Accounting 302"));
         let all = s.scan().unwrap();
@@ -388,11 +396,15 @@ mod tests {
     fn task_names_with_separators_are_flattened_and_dotdot_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
 
         // A "/" in a task name must not create a nested Tasks/CS/Fall that
         // scan() (one level deep) would miss — the recording must stay findable.
-        let r = s.create_recording("Lecture", Mode::InPerson, created).unwrap();
+        let r = s
+            .create_recording("Lecture", Mode::InPerson, created)
+            .unwrap();
         let moved = s.assign_task(&r, "CS/Fall").unwrap();
         assert_eq!(moved.task.as_deref(), Some("CSFall"));
         assert!(moved.dir.starts_with(dir.path().join("Tasks")));
@@ -409,14 +421,18 @@ mod tests {
     fn rename_moves_the_folder_updates_the_title_and_keeps_the_recording_findable() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
         let r = s
             .create_recording("Meeting — Aug 4, 10:02 AM", Mode::Meeting, created)
             .unwrap();
         let old_dir = r.dir.clone();
         let id = r.meta.id.clone();
 
-        let renamed = s.rename_recording(&r, "Accounting 302 midterm review").unwrap();
+        let renamed = s
+            .rename_recording(&r, "Accounting 302 midterm review")
+            .unwrap();
 
         assert!(!old_dir.exists(), "the old folder must not be left behind");
         assert!(
@@ -440,8 +456,12 @@ mod tests {
     fn rename_rejects_titles_that_are_not_names_without_touching_the_disk() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Lecture 3", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Lecture 3", Mode::InPerson, created)
+            .unwrap();
 
         for bad in ["", "   ", ".", "..", "CS/Fall", "..\\escape"] {
             assert!(
@@ -459,9 +479,15 @@ mod tests {
     fn rename_onto_a_colliding_folder_name_destroys_neither_recording() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let keep = s.create_recording("Taken", Mode::InPerson, created).unwrap();
-        let rename_me = s.create_recording("Other", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let keep = s
+            .create_recording("Taken", Mode::InPerson, created)
+            .unwrap();
+        let rename_me = s
+            .create_recording("Other", Mode::InPerson, created)
+            .unwrap();
 
         // Same timestamp prefix + same title = the same folder name.
         let renamed = s.rename_recording(&rename_me, "Taken").unwrap();
@@ -478,11 +504,17 @@ mod tests {
     fn renaming_a_recording_filed_under_a_task_keeps_it_in_that_task() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Lecture 3", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Lecture 3", Mode::InPerson, created)
+            .unwrap();
         let filed = s.assign_task(&r, "Accounting 302").unwrap();
 
-        let renamed = s.rename_recording(&filed, "Depreciation deep dive").unwrap();
+        let renamed = s
+            .rename_recording(&filed, "Depreciation deep dive")
+            .unwrap();
 
         assert_eq!(renamed.task.as_deref(), Some("Accounting 302"));
         assert!(renamed
@@ -498,8 +530,12 @@ mod tests {
     fn renaming_to_the_same_title_is_a_no_op_rather_than_a_numbered_duplicate() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Lecture 3", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Lecture 3", Mode::InPerson, created)
+            .unwrap();
 
         let renamed = s.rename_recording(&r, "Lecture 3").unwrap();
 
@@ -513,8 +549,12 @@ mod tests {
     fn capture_note_round_trips_through_save_and_scan() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let mut r = s.create_recording("Lecture", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let mut r = s
+            .create_recording("Lecture", Mode::InPerson, created)
+            .unwrap();
         assert_eq!(r.meta.capture_note, None, "a clean capture leaves no note");
 
         r.meta.capture_note = Some("The microphone stopped working.".to_string());
@@ -532,7 +572,10 @@ mod tests {
         // own values intact — a recording that stopped parsing on upgrade is
         // indistinguishable from a lecture that vanished.
         let dir = tempfile::tempdir().unwrap();
-        let rec_dir = dir.path().join(UNSORTED_DIR).join("2026-08-04 10.02 Lecture");
+        let rec_dir = dir
+            .path()
+            .join(UNSORTED_DIR)
+            .join("2026-08-04 10.02 Lecture");
         fs::create_dir_all(&rec_dir).unwrap();
         fs::write(
             rec_dir.join(META_FILE),
@@ -563,8 +606,12 @@ mod tests {
     fn stages_field_round_trips_through_save_and_scan() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let mut r = s.create_recording("Lecture", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let mut r = s
+            .create_recording("Lecture", Mode::InPerson, created)
+            .unwrap();
         r.meta.stages.push(StageTiming {
             stage: "transcribe".to_string(),
             ms: 42,

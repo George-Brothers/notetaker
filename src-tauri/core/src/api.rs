@@ -280,8 +280,7 @@ pub fn get_settings(path: &Path) -> Result<Settings> {
 
 pub fn set_settings(path: &Path, settings: &Settings) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(settings)?;
     fs::write(path, json).with_context(|| format!("writing settings to {}", path.display()))
@@ -341,8 +340,12 @@ mod tests {
     }
 
     fn create(store: &Store, title: &str) -> RecordingRef {
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        store.create_recording(title, Mode::Meeting, created).unwrap()
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        store
+            .create_recording(title, Mode::Meeting, created)
+            .unwrap()
     }
 
     // --- rename_speaker -----------------------------------------------
@@ -363,10 +366,16 @@ mod tests {
         let transcript = fs::read_to_string(rec.dir.join("transcript.md")).unwrap();
         assert!(transcript.contains("**Jamie:**"), "{transcript}");
         assert!(!transcript.contains("**Speaker 1:**"), "{transcript}");
-        assert!(transcript.contains("**Speaker 2:**"), "unrelated speaker must be untouched: {transcript}");
+        assert!(
+            transcript.contains("**Speaker 2:**"),
+            "unrelated speaker must be untouched: {transcript}"
+        );
 
         let refreshed = find_by_id(&s, &rec.meta.id).unwrap();
-        assert_eq!(refreshed.meta.speakers.get("spk1"), Some(&"Jamie".to_string()));
+        assert_eq!(
+            refreshed.meta.speakers.get("spk1"),
+            Some(&"Jamie".to_string())
+        );
     }
 
     #[test]
@@ -374,7 +383,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
         let rec = create(&s, "Standup");
-        fs::write(rec.dir.join("transcript.md"), "[00:00:01] **Speaker 1:** hello\n").unwrap();
+        fs::write(
+            rec.dir.join("transcript.md"),
+            "[00:00:01] **Speaker 1:** hello\n",
+        )
+        .unwrap();
 
         rename_speaker(&s, &rec.meta.id, "spk1", "Jamie").unwrap();
         rename_speaker(&s, &rec.meta.id, "spk1", "Sam").unwrap();
@@ -385,7 +398,10 @@ mod tests {
         assert!(!transcript.contains("**Speaker 1:**"), "{transcript}");
 
         let refreshed = find_by_id(&s, &rec.meta.id).unwrap();
-        assert_eq!(refreshed.meta.speakers.get("spk1"), Some(&"Sam".to_string()));
+        assert_eq!(
+            refreshed.meta.speakers.get("spk1"),
+            Some(&"Sam".to_string())
+        );
     }
 
     #[test]
@@ -397,7 +413,10 @@ mod tests {
         rename_speaker(&s, &rec.meta.id, "spk1", "Jamie").unwrap();
 
         let refreshed = find_by_id(&s, &rec.meta.id).unwrap();
-        assert_eq!(refreshed.meta.speakers.get("spk1"), Some(&"Jamie".to_string()));
+        assert_eq!(
+            refreshed.meta.speakers.get("spk1"),
+            Some(&"Jamie".to_string())
+        );
     }
 
     // --- assign_task -----------------------------------------------------
@@ -407,7 +426,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
         let rec = create(&s, "Budget sync");
-        fs::write(rec.dir.join("transcript.md"), "the quarterly budget is late").unwrap();
+        fs::write(
+            rec.dir.join("transcript.md"),
+            "the quarterly budget is late",
+        )
+        .unwrap();
 
         let mut ix = Index::open(&dir.path().join("ix.sqlite")).unwrap();
         ix.rebuild(&s).unwrap();
@@ -421,7 +444,9 @@ mod tests {
 
         let moved = find_by_id(&s, &rec.meta.id).unwrap();
         assert_eq!(moved.task.as_deref(), Some("Accounting 302"));
-        assert!(moved.dir.starts_with(dir.path().join("Tasks").join("Accounting 302")));
+        assert!(moved
+            .dir
+            .starts_with(dir.path().join("Tasks").join("Accounting 302")));
     }
 
     // --- rename_recording ------------------------------------------------
@@ -483,7 +508,10 @@ mod tests {
             detail.capture_note.as_deref(),
             Some("Recording stopped because the disk was almost full.")
         );
-        assert_eq!(detail.error, None, "a capture note is not a processing error");
+        assert_eq!(
+            detail.error, None,
+            "a capture note is not a processing error"
+        );
     }
 
     // --- process_now -------------------------------------------------
@@ -496,19 +524,28 @@ mod tests {
         let recorded = create(&s, "Recorded one");
         assert_eq!(recorded.meta.status, Status::Recorded);
         process_now(&s, &recorded.meta.id).unwrap();
-        assert_eq!(find_by_id(&s, &recorded.meta.id).unwrap().meta.status, Status::Queued);
+        assert_eq!(
+            find_by_id(&s, &recorded.meta.id).unwrap().meta.status,
+            Status::Queued
+        );
 
         let mut failed = create(&s, "Failed one");
         failed.meta.status = Status::Failed;
         s.save_meta(&failed).unwrap();
         process_now(&s, &failed.meta.id).unwrap();
-        assert_eq!(find_by_id(&s, &failed.meta.id).unwrap().meta.status, Status::Queued);
+        assert_eq!(
+            find_by_id(&s, &failed.meta.id).unwrap().meta.status,
+            Status::Queued
+        );
 
         let mut ready = create(&s, "Ready one");
         ready.meta.status = Status::Ready;
         s.save_meta(&ready).unwrap();
         process_now(&s, &ready.meta.id).unwrap();
-        assert_eq!(find_by_id(&s, &ready.meta.id).unwrap().meta.status, Status::Queued);
+        assert_eq!(
+            find_by_id(&s, &ready.meta.id).unwrap().meta.status,
+            Status::Queued
+        );
     }
 
     #[test]
@@ -520,7 +557,10 @@ mod tests {
         s.save_meta(&processing).unwrap();
 
         process_now(&s, &processing.meta.id).unwrap();
-        assert_eq!(find_by_id(&s, &processing.meta.id).unwrap().meta.status, Status::Processing);
+        assert_eq!(
+            find_by_id(&s, &processing.meta.id).unwrap().meta.status,
+            Status::Processing
+        );
     }
 
     // --- get_recording -----------------------------------------------
@@ -614,7 +654,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
         let rec = create(&s, "Budget sync");
-        fs::write(rec.dir.join("transcript.md"), "the quarterly budget is late").unwrap();
+        fs::write(
+            rec.dir.join("transcript.md"),
+            "the quarterly budget is late",
+        )
+        .unwrap();
         let mut ix = Index::open(&dir.path().join("ix.sqlite")).unwrap();
         ix.rebuild(&s).unwrap();
 

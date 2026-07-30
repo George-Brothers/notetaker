@@ -140,7 +140,8 @@ impl Index {
         tx.commit()?;
 
         for rec in &recs {
-            let transcript = std::fs::read_to_string(rec.dir.join("transcript.md")).unwrap_or_default();
+            let transcript =
+                std::fs::read_to_string(rec.dir.join("transcript.md")).unwrap_or_default();
             let summary = std::fs::read_to_string(rec.dir.join("summary.md")).unwrap_or_default();
             self.upsert(rec, &transcript, &summary)?;
         }
@@ -223,8 +224,12 @@ mod tests {
     fn multi_word_query_matches_words_that_are_not_adjacent() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Budget sync", Mode::Meeting, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Budget sync", Mode::Meeting, created)
+            .unwrap();
         std::fs::write(
             r.dir.join("transcript.md"),
             "George: the budget is late\nSpeaker 1: and the hiring plan slipped too",
@@ -243,10 +248,18 @@ mod tests {
     fn cjk_word_stays_one_phrase_and_is_not_split_into_loose_characters() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Lecture", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Lecture", Mode::InPerson, created)
+            .unwrap();
         // Contains 预 and 算 far apart, but never the word 预算.
-        std::fs::write(r.dir.join("transcript.md"), "Speaker 1: 预计的方案还要再算一次").unwrap();
+        std::fs::write(
+            r.dir.join("transcript.md"),
+            "Speaker 1: 预计的方案还要再算一次",
+        )
+        .unwrap();
         let mut ix = Index::open(&dir.path().join("ix.sqlite")).unwrap();
         ix.rebuild(&s).unwrap();
 
@@ -257,13 +270,24 @@ mod tests {
     fn rebuild_indexes_transcripts_and_survives_db_delete() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Budget sync", Mode::Meeting, created).unwrap();
-        std::fs::write(r.dir.join("transcript.md"), "George: the quarterly budget is late").unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Budget sync", Mode::Meeting, created)
+            .unwrap();
+        std::fs::write(
+            r.dir.join("transcript.md"),
+            "George: the quarterly budget is late",
+        )
+        .unwrap();
         let db = dir.path().join("ix.sqlite");
         let mut ix = Index::open(&db).unwrap();
         assert_eq!(ix.rebuild(&s).unwrap(), 1);
-        assert_eq!(ix.search("quarterly budget").unwrap()[0].title, "Budget sync");
+        assert_eq!(
+            ix.search("quarterly budget").unwrap()[0].title,
+            "Budget sync"
+        );
         drop(ix);
         std::fs::remove_file(&db).unwrap(); // index is disposable
         let mut ix2 = Index::open(&db).unwrap();
@@ -275,8 +299,11 @@ mod tests {
     fn indexes_recordings_without_transcript_or_summary() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        s.create_recording("Untouched lecture", Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        s.create_recording("Untouched lecture", Mode::InPerson, created)
+            .unwrap();
         let db = dir.path().join("ix.sqlite");
         let mut ix = Index::open(&db).unwrap();
         assert_eq!(ix.rebuild(&s).unwrap(), 1);
@@ -289,8 +316,12 @@ mod tests {
     fn finds_two_character_chinese_term_and_english_term_in_bilingual_corpus() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Planning sync", Mode::Meeting, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Planning sync", Mode::Meeting, created)
+            .unwrap();
         std::fs::write(
             r.dir.join("transcript.md"),
             "We reviewed the quarterly budget today. 我们今天讨论预算和招聘计划",
@@ -305,18 +336,30 @@ mod tests {
         assert_eq!(cn_hits[0].title, "Planning sync");
 
         let cn_hits2 = ix.search("招聘计划").unwrap();
-        assert_eq!(cn_hits2.len(), 1, "four-character Chinese phrase should match");
+        assert_eq!(
+            cn_hits2.len(),
+            1,
+            "four-character Chinese phrase should match"
+        );
 
         let en_hits = ix.search("quarterly").unwrap();
-        assert_eq!(en_hits.len(), 1, "English term should still match in the same bilingual corpus");
+        assert_eq!(
+            en_hits.len(),
+            1,
+            "English term should still match in the same bilingual corpus"
+        );
     }
 
     #[test]
     fn snippet_strips_inserted_cjk_spacing() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Planning sync", Mode::Meeting, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Planning sync", Mode::Meeting, created)
+            .unwrap();
         std::fs::write(r.dir.join("transcript.md"), "我们今天讨论预算和招聘计划").unwrap();
         let db = dir.path().join("ix.sqlite");
         let mut ix = Index::open(&db).unwrap();
@@ -340,8 +383,12 @@ mod tests {
     fn search_handles_quotes_and_operators_without_error() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Budget sync", Mode::Meeting, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Budget sync", Mode::Meeting, created)
+            .unwrap();
         std::fs::write(r.dir.join("transcript.md"), "the quarterly budget is late").unwrap();
         let db = dir.path().join("ix.sqlite");
         let mut ix = Index::open(&db).unwrap();
@@ -359,13 +406,18 @@ mod tests {
     fn upsert_reindexes_without_duplicating_rows() {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::new(dir.path().join("root"));
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let r = s.create_recording("Budget sync", Mode::Meeting, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Budget sync", Mode::Meeting, created)
+            .unwrap();
         let db = dir.path().join("ix.sqlite");
         let mut ix = Index::open(&db).unwrap();
 
         ix.upsert(&r, "first draft transcript", "").unwrap();
-        ix.upsert(&r, "revised transcript about pricing", "").unwrap();
+        ix.upsert(&r, "revised transcript about pricing", "")
+            .unwrap();
 
         assert_eq!(ix.search("pricing").unwrap().len(), 1);
         assert_eq!(ix.search("first draft").unwrap().len(), 0);

@@ -216,10 +216,7 @@ mod tests {
     fn windows_names_match_regardless_of_case() {
         assert_eq!(app_for_process("ZOOM.EXE").map(|a| a.id), Some("zoom"));
         assert_eq!(app_for_process("slack.EXE").map(|a| a.id), Some("slack"));
-        assert_eq!(
-            app_for_process("MS-TEAMS.EXE").map(|a| a.id),
-            Some("teams")
-        );
+        assert_eq!(app_for_process("MS-TEAMS.EXE").map(|a| a.id), Some("teams"));
     }
 
     /// No process name may be claimed by two apps — an overlap would make
@@ -232,7 +229,10 @@ mod tests {
             for name in app.process_names {
                 let lower = name.to_ascii_lowercase();
                 if let Some((_, other)) = seen.iter().find(|(n, _)| *n == lower) {
-                    panic!("process name {name:?} is claimed by both {other} and {}", app.id);
+                    panic!(
+                        "process name {name:?} is claimed by both {other} and {}",
+                        app.id
+                    );
                 }
                 seen.push((lower, app.id));
             }

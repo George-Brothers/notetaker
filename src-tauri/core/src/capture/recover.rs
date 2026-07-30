@@ -237,7 +237,10 @@ pub fn recover_orphans(store: &Store, keep_wav: bool) -> Result<Vec<String>> {
                 if let Err(e) = store.save_meta(&rec) {
                     // The audio is repaired on disk either way; only the
                     // bookkeeping failed, and the next start will redo it.
-                    log::warn!("recovered {} but could not save its meta: {e:#}", rec.meta.id);
+                    log::warn!(
+                        "recovered {} but could not save its meta: {e:#}",
+                        rec.meta.id
+                    );
                     continue;
                 }
                 recovered.push(rec.meta.id.clone());
@@ -342,8 +345,12 @@ mod tests {
 
     /// A recording folder on disk in whatever state the test needs.
     fn seed(store: &Store, title: &str, status: Status) -> RecordingRef {
-        let created = chrono::Local.with_ymd_and_hms(2026, 7, 27, 9, 0, 0).unwrap();
-        let mut rec = store.create_recording(title, Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 7, 27, 9, 0, 0)
+            .unwrap();
+        let mut rec = store
+            .create_recording(title, Mode::InPerson, created)
+            .unwrap();
         rec.meta.status = status;
         store.save_meta(&rec).unwrap();
         rec
@@ -432,7 +439,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let cases: [(&str, Vec<u8>); 3] = [
-            ("garbage", b"this was never audio, it is somebody's notes".to_vec()),
+            (
+                "garbage",
+                b"this was never audio, it is somebody's notes".to_vec(),
+            ),
             ("stub", b"RIFF".to_vec()),
             // Right preamble, nothing behind it: the shape a half-created file
             // takes, and the one most likely to fool a lazy parser.
@@ -498,13 +508,19 @@ mod tests {
         );
         assert!(!crashed_wav.exists(), "keep_wav = false reclaims the space");
         assert_eq!(
-            load_mono_16k(&crashed.dir.join("audio-mic.flac")).unwrap().len(),
+            load_mono_16k(&crashed.dir.join("audio-mic.flac"))
+                .unwrap()
+                .len(),
             frames.len(),
             "the recovered audio must survive the encode intact"
         );
 
         let healthy_meta = meta_on_disk(&store, &healthy.meta.id);
-        assert_eq!(healthy_meta.status, Status::Ready, "a finished recording is not re-run");
+        assert_eq!(
+            healthy_meta.status,
+            Status::Ready,
+            "a finished recording is not re-run"
+        );
         assert_eq!(healthy_meta.duration_s, 0.5);
         assert_eq!(
             std::fs::read(healthy.dir.join("audio-mic.flac")).unwrap(),
@@ -563,14 +579,21 @@ mod tests {
 
         assert_eq!(ids, vec![rec.meta.id.clone()]);
         assert_eq!(
-            load_mono_16k(&rec.dir.join("audio-mic.flac")).unwrap().len(),
+            load_mono_16k(&rec.dir.join("audio-mic.flac"))
+                .unwrap()
+                .len(),
             SAMPLE_RATE as usize
         );
         assert_eq!(
-            load_mono_16k(&rec.dir.join("audio-system.flac")).unwrap().len(),
+            load_mono_16k(&rec.dir.join("audio-system.flac"))
+                .unwrap()
+                .len(),
             2 * SAMPLE_RATE as usize
         );
-        assert!(mic.exists() && system.exists(), "keep_wav = true keeps both");
+        assert!(
+            mic.exists() && system.exists(),
+            "keep_wav = true keeps both"
+        );
         assert!(
             (meta_on_disk(&store, &rec.meta.id).duration_s - 2.0).abs() < 1e-9,
             "duration is the longer track — one can die before the other"
@@ -582,7 +605,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
 
-        for status in [Status::Queued, Status::Processing, Status::Ready, Status::Failed] {
+        for status in [
+            Status::Queued,
+            Status::Processing,
+            Status::Ready,
+            Status::Failed,
+        ] {
             let rec = seed(&store, &format!("{status:?}"), status);
             write_wav(&rec.dir.join("audio-mic.wav"), &tone(0.3, 0.4));
         }

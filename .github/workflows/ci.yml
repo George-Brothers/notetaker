@@ -1,0 +1,194 @@
+name: CI
+
+# The only machine that can tell the truth about the platform code.
+#
+# Everything in this repo is developed on Linux, where the Tauri app crate does
+# not build at all and neither macOS nor Windows capture code is ever compiled.
+# `scripts/check-platforms.sh` type-checks the platform crate against both real
+# targets from Linux, which catches most mistakes in seconds — but it cannot
+# link, cannot run a test, and cannot compile `notetaker-core` for a foreign
+# target at all (its bundled SQLite, whisper.cpp and sherpa-onnx need the
+# target's C++ toolchain; verified — it fails looking for MSVC's `lib.exe`).
+#
+# So this matrix is the first and only place where:
+#   * `capture::platform`'s Windows and macOS arms are compiled at all,
+#   * `power::probe`'s WinProbe / MacProbe are compiled at all,
+#   * the Tauri app crate is compiled at all,
+#   * any test runs on a real Windows or macOS machine.
+#
+# Worth knowing: anarlog, whose capture code parts of this adapt, runs CI on
+# ubuntu-latest only. Their Windows code has never been compiled by its authors
+# either. This is the first thing to try it.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A CI failure should say what broke, not just that something did.
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # The fast gate. Everything that can be checked without a Mac or a PC, run
+  # first so an obvious mistake does not wait on the slow native jobs.
+  # -------------------------------------------------------------------------
+  linux:
+    name: Linux — core, frontend, cross-target checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: x86_64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install libclang (bindgen, for whisper-rs)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Core tests
+        working-directory: src-tauri
+        run: cargo test -p notetaker-core
+
+      - name: Platform tests (the pure layer — convert, resample, ring)
+        working-directory: src-tauri
+        run: cargo test -p notetaker-platform
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy -p notetaker-core -p notetaker-platform --all-targets -- -D warnings
+
+      - name: Formatting
+        working-directory: src-tauri
+        run: cargo fmt --check -p notetaker-core -p notetaker-platform
+
+      # The same check a developer runs locally, so a drift between the two is
+      # visible here rather than discovered on someone's machine.
+      - name: Cross-target type-check (Windows + macOS platform layer)
+        run: ./scripts/check-platforms.sh
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Frontend tests
+        run: pnpm test --run
+      # `pnpm build` is the only typecheck in this project — vitest does not
+      # typecheck, so a contract change can pass every test and still be broken.
+      - name: Frontend typecheck + build
+        run: pnpm build
+
+  # -------------------------------------------------------------------------
+  # The jobs that actually matter for this plan. Each compiles and runs the
+  # platform code on its own operating system.
+  # -------------------------------------------------------------------------
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Never cancel the other platform because one failed — when both are
+      # broken, seeing both failures in one run is the whole point.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows — capture, power probe, app crate
+          - os: macos-14
+            name: macOS — capture, power probe, app crate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.os }}
+
+      # whisper-rs runs bindgen, which needs libclang. macOS runners ship it
+      # with Xcode; Windows runners need LLVM installed and pointed at.
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows'
+        run: choco install llvm --no-progress -y
+
+      - name: Point bindgen at libclang (Windows)
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      # This is the step that exists for this plan. On Linux these targets are
+      # never compiled: capture::platform's per-OS arms, WinProbe / MacProbe,
+      # the cpal microphone, and on Windows the WASAPI loopback source.
+      - name: Build core + platform for this OS
+        working-directory: src-tauri
+        run: cargo build -p notetaker-core -p notetaker-platform --all-targets
+
+      - name: Test core + platform on this OS
+        working-directory: src-tauri
+        run: cargo test -p notetaker-core -p notetaker-platform
+
+      - name: Clippy on this OS
+        working-directory: src-tauri
+        run: cargo clippy -p notetaker-core -p notetaker-platform --all-targets -- -D warnings
+
+      # The frontend has to be built before the Tauri app crate, which embeds
+      # dist/ at compile time via tauri::generate_context!.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # The Tauri shell never compiles on Linux (libdbus-sys needs pkg-config
+      # unavailable in the dev environment), so this is its only check.
+      - name: Build the Tauri app crate
+        working-directory: src-tauri
+        run: cargo build -p notetaker
+
+  # -------------------------------------------------------------------------
+  # What CI still cannot tell us. Printed rather than left implicit, because a
+  # green run is easy to read as "it works".
+  # -------------------------------------------------------------------------
+  caveats:
+    name: What a green run does not prove
+    runs-on: ubuntu-latest
+    needs: [linux, native]
+    if: always()
+    steps:
+      - run: |
+          cat <<'NOTE'
+          A green CI run proves the code compiles and its tests pass on all
+          three operating systems. It does NOT prove:
+
+            * that a microphone or system-audio stream produces real audio —
+              CI runners have no audio devices, so every capture test runs
+              against fakes;
+            * that macOS Screen Recording permission is requested, granted or
+              refused correctly — that only happens in front of a real user;
+            * that transcription quality is what the bake-off measured — no
+              model is downloaded here;
+            * anything at all about how the UI looks.
+
+          Those need a human at a real machine. See the "verified vs assumed"
+          section of docs/MAP.md.
+          NOTE

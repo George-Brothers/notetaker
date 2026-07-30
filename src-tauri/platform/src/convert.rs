@@ -140,7 +140,7 @@ mod tests {
 
     /// The bug this guards: reading the left channel twice, or reading across
     /// a frame boundary. Left and right differ in every frame so either
-        /// mistake changes the answer.
+    /// mistake changes the answer.
     #[test]
     fn f32_stereo_averages_the_two_channels() {
         let frames: &[(f32, f32)] = &[(1.0, 0.0), (0.0, 1.0), (0.5, -0.5), (-1.0, 1.0)];

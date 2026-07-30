@@ -133,8 +133,12 @@ mod tests {
     }
 
     fn wav_recording(store: &Store, title: &str) -> crate::storage::RecordingRef {
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
-        let rec = store.create_recording(title, Mode::InPerson, created).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let rec = store
+            .create_recording(title, Mode::InPerson, created)
+            .unwrap();
         // Minimal valid 16 kHz mono WAV (0.1 s of silence) so load_mono_16k
         // succeeds and the run reaches the LLM step.
         write_silence_wav(&rec.dir.join("audio-mic.wav"));

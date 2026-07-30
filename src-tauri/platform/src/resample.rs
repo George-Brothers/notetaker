@@ -20,8 +20,7 @@
 
 use anyhow::{Context, Result};
 use rubato::{
-    Resampler as _, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
-    WindowFunction,
+    Resampler as _, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 
 /// Input frames consumed per resampler pass. A compromise: large enough that

@@ -36,7 +36,11 @@ impl WhisperTranscriber {
     /// Runs whisper on one contiguous span of samples, re-basing the
     /// resulting segment timestamps by `offset_s` so they're absolute
     /// w.r.t. the original audio.
-    fn transcribe_span(&self, span_samples: &[f32], offset_s: f32) -> Result<Vec<(f32, f32, String)>> {
+    fn transcribe_span(
+        &self,
+        span_samples: &[f32],
+        offset_s: f32,
+    ) -> Result<Vec<(f32, f32, String)>> {
         let mut state = self.ctx.create_state().context("creating whisper state")?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -106,13 +110,24 @@ mod tests {
                 .unwrap();
         let t = WhisperTranscriber::load(model).unwrap();
         let out = t.transcribe(&samples, &[]).unwrap();
-        let all: String = out.iter().map(|(_, _, s)| s.as_str()).collect::<Vec<_>>().join(" ");
-        assert!(all.to_lowercase().contains("budget"), "english missing: {all}");
+        let all: String = out
+            .iter()
+            .map(|(_, _, s)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            all.to_lowercase().contains("budget"),
+            "english missing: {all}"
+        );
         assert!(
             all.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "chinese missing: {all}"
         );
-        assert!(out.len() >= 2, "expected at least 2 segments, got {}: {all}", out.len());
+        assert!(
+            out.len() >= 2,
+            "expected at least 2 segments, got {}: {all}",
+            out.len()
+        );
     }
 
     #[test]
@@ -140,7 +155,11 @@ mod tests {
             );
             assert!(*end_s <= 12.5 + 0.5, "segment end {end_s} exceeds span");
         }
-        let all: String = out.iter().map(|(_, _, s)| s.as_str()).collect::<Vec<_>>().join(" ");
+        let all: String = out
+            .iter()
+            .map(|(_, _, s)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             all.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "chinese missing from span transcript: {all}"

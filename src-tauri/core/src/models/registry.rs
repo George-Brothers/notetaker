@@ -202,7 +202,9 @@ mod tests {
             let h = spec.sha256;
             assert!(
                 h.is_empty()
-                    || (h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())),
+                    || (h.len() == 64
+                        && h.chars()
+                            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())),
                 "{} has a malformed sha256: {:?}",
                 spec.name,
                 h

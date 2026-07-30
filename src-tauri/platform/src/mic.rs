@@ -117,9 +117,9 @@ impl MicSource {
                     None,
                 )
             }
-            other => anyhow::bail!(
-                "{name} uses an audio format Notetaker cannot read yet ({other:?})."
-            ),
+            other => {
+                anyhow::bail!("{name} uses an audio format Notetaker cannot read yet ({other:?}).")
+            }
         }
         .with_context(|| format!("Notetaker could not start recording from {name}."))?;
 
@@ -127,7 +127,9 @@ impl MicSource {
             .play()
             .with_context(|| format!("Notetaker could not start {name}."))?;
 
-        log::info!("microphone: {name}, {sample_rate} Hz, {channels} channel(s), {sample_format:?}");
+        log::info!(
+            "microphone: {name}, {sample_rate} Hz, {channels} channel(s), {sample_format:?}"
+        );
 
         Ok(Self {
             reader,

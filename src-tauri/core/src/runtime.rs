@@ -124,30 +124,102 @@ pub struct Command {
 ///
 /// The order matches `ipc.ts` so a human diff of the two reads straight down.
 pub const COMMANDS: &[Command] = &[
-    Command { name: "list_tasks", args: &[] },
-    Command { name: "create_task", args: &["name"] },
-    Command { name: "list_recordings", args: &[] },
-    Command { name: "get_recording", args: &["id"] },
-    Command { name: "search", args: &["query"] },
-    Command { name: "process_now", args: &["id"] },
-    Command { name: "update_summary", args: &["id", "summaryMd"] },
-    Command { name: "assign_task", args: &["id", "task"] },
-    Command { name: "rename_recording", args: &["id", "title"] },
-    Command { name: "rename_speaker", args: &["id", "key", "name"] },
-    Command { name: "get_settings", args: &[] },
-    Command { name: "set_settings", args: &["settings"] },
-    Command { name: "start_capture", args: &["mode", "title"] },
-    Command { name: "pause_capture", args: &[] },
-    Command { name: "resume_capture", args: &[] },
-    Command { name: "stop_capture", args: &[] },
-    Command { name: "capture_status", args: &[] },
-    Command { name: "poll_meetings", args: &[] },
-    Command { name: "set_auto_record", args: &["appId", "policy"] },
-    Command { name: "ollama_status", args: &[] },
-    Command { name: "pull_model", args: &["model"] },
-    Command { name: "pull_progress", args: &[] },
-    Command { name: "download_models", args: &[] },
-    Command { name: "detected_tier", args: &[] },
+    Command {
+        name: "list_tasks",
+        args: &[],
+    },
+    Command {
+        name: "create_task",
+        args: &["name"],
+    },
+    Command {
+        name: "list_recordings",
+        args: &[],
+    },
+    Command {
+        name: "get_recording",
+        args: &["id"],
+    },
+    Command {
+        name: "search",
+        args: &["query"],
+    },
+    Command {
+        name: "process_now",
+        args: &["id"],
+    },
+    Command {
+        name: "update_summary",
+        args: &["id", "summaryMd"],
+    },
+    Command {
+        name: "assign_task",
+        args: &["id", "task"],
+    },
+    Command {
+        name: "rename_recording",
+        args: &["id", "title"],
+    },
+    Command {
+        name: "rename_speaker",
+        args: &["id", "key", "name"],
+    },
+    Command {
+        name: "get_settings",
+        args: &[],
+    },
+    Command {
+        name: "set_settings",
+        args: &["settings"],
+    },
+    Command {
+        name: "start_capture",
+        args: &["mode", "title"],
+    },
+    Command {
+        name: "pause_capture",
+        args: &[],
+    },
+    Command {
+        name: "resume_capture",
+        args: &[],
+    },
+    Command {
+        name: "stop_capture",
+        args: &[],
+    },
+    Command {
+        name: "capture_status",
+        args: &[],
+    },
+    Command {
+        name: "poll_meetings",
+        args: &[],
+    },
+    Command {
+        name: "set_auto_record",
+        args: &["appId", "policy"],
+    },
+    Command {
+        name: "ollama_status",
+        args: &[],
+    },
+    Command {
+        name: "pull_model",
+        args: &["model"],
+    },
+    Command {
+        name: "pull_progress",
+        args: &[],
+    },
+    Command {
+        name: "download_models",
+        args: &[],
+    },
+    Command {
+        name: "detected_tier",
+        args: &[],
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -524,7 +596,8 @@ impl Runtime {
     /// Refuses while that recording is the live one, for the reason spelled
     /// out on [`Inner::refuse_while_capturing`].
     pub fn assign_task(&self, id: &str, task: &str) -> Result<()> {
-        self.inner.refuse_while_capturing(id, "filed under a task")?;
+        self.inner
+            .refuse_while_capturing(id, "filed under a task")?;
         api::assign_task(&self.inner.store, &mut lock(&self.inner.index), id, task)
     }
 
@@ -650,14 +723,18 @@ impl Runtime {
 
     pub fn pause_capture(&self) -> Result<CaptureStatus> {
         let mut slot = lock(&self.inner.session);
-        let session = slot.as_mut().context("nothing is being recorded right now")?;
+        let session = slot
+            .as_mut()
+            .context("nothing is being recorded right now")?;
         session.pause();
         Ok(session.status())
     }
 
     pub fn resume_capture(&self) -> Result<CaptureStatus> {
         let mut slot = lock(&self.inner.session);
-        let session = slot.as_mut().context("nothing is being recorded right now")?;
+        let session = slot
+            .as_mut()
+            .context("nothing is being recorded right now")?;
         session.resume();
         Ok(session.status())
     }
@@ -823,9 +900,7 @@ impl Runtime {
             .tier_override
             .as_deref()
             .and_then(tier_from_name)
-            .unwrap_or_else(|| {
-                tier_from_name(&self.detected_tier()).unwrap_or(Tier::CpuSmall)
-            });
+            .unwrap_or_else(|| tier_from_name(&self.detected_tier()).unwrap_or(Tier::CpuSmall));
         let specs = registry::required_models(&tier);
 
         {
@@ -956,7 +1031,9 @@ impl Runtime {
                     llm: &llm,
                     tasks: inner.store.list_tasks().unwrap_or_default(),
                 };
-                let queue = Queue { store: &inner.store };
+                let queue = Queue {
+                    store: &inner.store,
+                };
 
                 scheduler::run_loop(&queue, &inner.idle, &deps, stop_for_thread, |outcome| {
                     if *outcome == RunOutcome::Ran {
@@ -970,7 +1047,9 @@ impl Runtime {
             })
             .context("starting the scheduler thread")?;
 
-        let thread = rx.recv().context("the scheduler thread never reported in")?;
+        let thread = rx
+            .recv()
+            .context("the scheduler thread never reported in")?;
         *slot = Some(SchedulerHandle {
             thread,
             stop,
@@ -1640,7 +1719,10 @@ mod tests {
         // must already be true.
         assert_eq!(status_of(&rt, &id), Status::Queued);
         let rec = rt.inner.find(&id).unwrap();
-        assert!(rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
+        assert!(rec
+            .dir
+            .join(format!("{}.flac", capture::MIC_TRACK))
+            .exists());
         assert!(!rec.dir.join(format!("{}.wav", capture::MIC_TRACK)).exists());
     }
 
@@ -1657,7 +1739,10 @@ mod tests {
         let id = record(&rt, Mode::InPerson, "Lecture");
         let rec = rt.inner.find(&id).unwrap();
         assert!(rec.dir.join(format!("{}.wav", capture::MIC_TRACK)).exists());
-        assert!(rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
+        assert!(rec
+            .dir
+            .join(format!("{}.flac", capture::MIC_TRACK))
+            .exists());
     }
 
     /// Start-up must repair a recording whose writer died mid-capture. The
@@ -1801,7 +1886,8 @@ mod tests {
         // leaves silent) stays a WAV. `pipeline::run` opens both, so "the
         // track is there" is the invariant, not which container it is in.
         let track_exists = |stem: &str| {
-            rec_dir.join(format!("{stem}.flac")).exists() || rec_dir.join(format!("{stem}.wav")).exists()
+            rec_dir.join(format!("{stem}.flac")).exists()
+                || rec_dir.join(format!("{stem}.wav")).exists()
         };
         assert!(track_exists(capture::MIC_TRACK));
         assert!(
@@ -1943,7 +2029,10 @@ mod tests {
 
         rt.start_capture(Mode::InPerson, "Lecture").unwrap();
         let err = rt.start_capture(Mode::InPerson, "Another").unwrap_err();
-        assert!(format!("{err:#}").contains("already in progress"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("already in progress"),
+            "{err:#}"
+        );
 
         rt.stop_capture().unwrap();
         assert_eq!(rt.capture_status().state, CaptureState::Idle);
@@ -2410,8 +2499,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rt = runtime(dir.path(), 0.1);
 
-        rt.set_auto_record("zoom", AutoRecordPolicy::Always).unwrap();
-        rt.set_auto_record("slack", AutoRecordPolicy::Never).unwrap();
+        rt.set_auto_record("zoom", AutoRecordPolicy::Always)
+            .unwrap();
+        rt.set_auto_record("slack", AutoRecordPolicy::Never)
+            .unwrap();
 
         let settings = rt.get_settings().unwrap();
         assert_eq!(
@@ -2427,7 +2518,8 @@ mod tests {
     fn poll_meetings_reports_a_debounced_start_and_applies_the_saved_policy() {
         let dir = tempfile::tempdir().unwrap();
         let rt = runtime(dir.path(), 0.1);
-        rt.set_auto_record("zoom", AutoRecordPolicy::Always).unwrap();
+        rt.set_auto_record("zoom", AutoRecordPolicy::Always)
+            .unwrap();
 
         let frames = vec![vec!["zoom.us".to_string()]; 4];
         rt.set_watcher(Watcher::new(Box::new(FakeProcessSource::new(frames))));

@@ -189,10 +189,12 @@ fn sha256_hex_of_file(path: &Path) -> anyhow::Result<String> {
 /// Lowercase-hex-encodes bytes without pulling in a `hex` crate dependency.
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 #[cfg(test)]
@@ -403,7 +405,11 @@ mod tests {
 
         let result = downloader.ensure(&spec, |_, _| {}).unwrap();
 
-        assert_eq!(mock.calls(), 0, "should not hit the network for an already-complete file");
+        assert_eq!(
+            mock.calls(),
+            0,
+            "should not hit the network for an already-complete file"
+        );
         assert_eq!(fs::read(&result).unwrap(), body);
     }
 }

@@ -24,9 +24,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use wasapi::{
-    initialize_mta, Direction, SampleType, ShareMode, StreamMode, WaveFormat,
-};
+use wasapi::{initialize_mta, Direction, SampleType, ShareMode, StreamMode, WaveFormat};
 
 use crate::convert::{to_mono_f32, SampleFormat};
 use crate::resample::Resampler;

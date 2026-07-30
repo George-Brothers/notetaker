@@ -254,7 +254,9 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
         let rec = store
             .create_recording("Lecture 3", Mode::InPerson, created)
             .unwrap();
@@ -291,7 +293,9 @@ mod tests {
             "expected speaker labels: {transcript}"
         );
         assert!(
-            transcript.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            transcript
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "expected Chinese characters: {transcript}"
         );
         assert!(
@@ -318,7 +322,9 @@ mod tests {
     fn requeue_stale_resets_processing_to_queued_only() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
 
         let mut stuck = store
             .create_recording("Stuck", Mode::InPerson, created)
@@ -348,7 +354,9 @@ mod tests {
     fn meeting_mode_missing_system_track_errors_with_stage_name() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        let created = chrono::Local.with_ymd_and_hms(2026, 8, 4, 10, 2, 0).unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
         let rec = store
             .create_recording("Call", Mode::Meeting, created)
             .unwrap();

@@ -86,7 +86,11 @@ fn encode(samples: &[f32], flac_path: &Path) -> Result<()> {
     // files repaired from a crash, which nobody promised were well-formed.
     let pcm: Vec<i32> = samples
         .iter()
-        .map(|s| (s * FULL_SCALE).round().clamp(-FULL_SCALE, FULL_SCALE - 1.0) as i32)
+        .map(|s| {
+            (s * FULL_SCALE)
+                .round()
+                .clamp(-FULL_SCALE, FULL_SCALE - 1.0) as i32
+        })
         .collect();
 
     let config = flacenc::config::Encoder::default()
@@ -306,8 +310,9 @@ mod tests {
 
         let err = finalize_to_flac(&wav, false).unwrap_err();
         assert!(format!("{err:#}").contains("no audio"), "{err:#}");
-        assert!(wav.exists(), "even an empty recording is never deleted here");
+        assert!(
+            wav.exists(),
+            "even an empty recording is never deleted here"
+        );
     }
 }
-
-

@@ -82,7 +82,12 @@ fn load_flac(path: &Path) -> Result<Vec<f32>> {
     hint.with_extension("flac");
 
     let mut format = symphonia::default::get_probe()
-        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
         .with_context(|| format!("probing flac format for {}", path.display()))?;
 
     let track = format

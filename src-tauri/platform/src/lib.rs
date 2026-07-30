@@ -67,11 +67,11 @@ pub mod windows;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "macos")]
+pub use macos::power::read_power_state;
 /// The platform's power/idle probe, on platforms that have one.
 #[cfg(target_os = "windows")]
 pub use windows::power::read_power_state;
-#[cfg(target_os = "macos")]
-pub use macos::power::read_power_state;
 
 /// A reading of the machine's idle time and power state.
 ///

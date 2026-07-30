@@ -316,7 +316,9 @@ mod tests {
         let mut rec = recorded(&store, "Standup", 2026, 8, 4, 9, 0);
         queue.enqueue(&mut rec).unwrap();
         for _ in 0..3 {
-            queue.run_one(&AlwaysIdle, |_r| Err(anyhow!("boom"))).unwrap();
+            queue
+                .run_one(&AlwaysIdle, |_r| Err(anyhow!("boom")))
+                .unwrap();
         }
         let mut failed = store.scan().unwrap().into_iter().next().unwrap();
         assert_eq!(failed.meta.status, Status::Failed);
@@ -339,7 +341,8 @@ mod tests {
         let queue = Queue { store: &store };
 
         let mut rec = recorded(&store, "Lecture", 2026, 8, 4, 9, 0);
-        rec.meta.capture_note = Some("Recording stopped because the disk was almost full.".to_string());
+        rec.meta.capture_note =
+            Some("Recording stopped because the disk was almost full.".to_string());
         store.save_meta(&rec).unwrap();
 
         queue.enqueue(&mut rec).unwrap();
@@ -374,7 +377,9 @@ mod tests {
 
         queue.enqueue(&mut rec).unwrap();
         for _ in 0..3 {
-            queue.run_one(&AlwaysIdle, |_r| Err(anyhow!("boom"))).unwrap();
+            queue
+                .run_one(&AlwaysIdle, |_r| Err(anyhow!("boom")))
+                .unwrap();
         }
         let mut failed = store.scan().unwrap().into_iter().next().unwrap();
         assert_eq!(failed.meta.status, Status::Failed);
@@ -382,7 +387,10 @@ mod tests {
 
         queue.enqueue(&mut failed).unwrap();
         let on_disk = store.scan().unwrap();
-        assert_eq!(on_disk[0].meta.error, None, "the retryable error still clears");
+        assert_eq!(
+            on_disk[0].meta.error, None,
+            "the retryable error still clears"
+        );
         assert_eq!(
             on_disk[0].meta.capture_note.as_deref(),
             Some("The microphone stopped working partway through."),

@@ -297,7 +297,7 @@ pub fn ensure_model<F: FnMut(PullProgress)>(
 ) -> Result<()> {
     if status(base_url, model).model_ready {
         on_progress(PullProgress {
-                kind: PullKind::Ollama,
+            kind: PullKind::Ollama,
             name: model.to_string(),
             percent: 100.0,
             error: None,
@@ -538,7 +538,10 @@ mod tests {
         // This sentence is rendered verbatim in the UI, and it is written
         // across a line continuation — so guard the joins, not just the words.
         assert!(!INSTALL_HINT.contains("  "), "double space: {INSTALL_HINT}");
-        assert!(!INSTALL_HINT.contains('\n'), "stray newline: {INSTALL_HINT}");
+        assert!(
+            !INSTALL_HINT.contains('\n'),
+            "stray newline: {INSTALL_HINT}"
+        );
     }
 
     // --- binary detection -----------------------------------------------
@@ -706,8 +709,14 @@ mod tests {
         );
         // Also shown verbatim to the user, and also built across a line
         // continuation.
-        assert!(err.contains("Check your connection"), "advice missing: {err}");
-        assert!(!err.contains("  "), "double space in user-facing text: {err}");
+        assert!(
+            err.contains("Check your connection"),
+            "advice missing: {err}"
+        );
+        assert!(
+            !err.contains("  "),
+            "double space in user-facing text: {err}"
+        );
         assert!(seen.borrow().last().unwrap().done);
         assert!(seen.borrow().last().unwrap().error.is_some());
     }

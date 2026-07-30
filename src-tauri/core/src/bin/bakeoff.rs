@@ -41,7 +41,10 @@ fn run() -> anyhow::Result<()> {
     let samples = load_mono_16k(Path::new(&audio))?;
     let reference = std::fs::read_to_string(&reference_path)?;
 
-    println!("audio:     {audio} ({:.1}s)", samples.len() as f32 / 16_000.0);
+    println!(
+        "audio:     {audio} ({:.1}s)",
+        samples.len() as f32 / 16_000.0
+    );
     println!("reference: {reference_path}\n");
 
     if let Some(model) = whisper_model {
