@@ -6,15 +6,16 @@ Read `docs/MAP.md` first; this file only covers what is in flight right now.
 
 - **`main`** — one commit, the Plan A spec. Effectively empty.
 - **`claude/cross-platform-mac-pc-web-e3af6f`** — everything: Plan B, Plan C,
-  the Windows installer. 100 commits, carried by **PR #1**, which has never
-  merged. An attempt to merge it on 2026-07-30 was **blocked by the permission
-  classifier**; that was surfaced rather than worked around, and it is still
-  open. Mr. Brothers can merge it himself with
-  `gh pr merge 1 --merge --repo George-Brothers/notetaker`.
-- **`claude/real-use-fixes`** — *current*. Branched off the above on
-  2026-07-30 at his instruction, because a 100-commit branch is not a review
-  unit. New work goes here. A PR from it can target the big branch (small
-  diff, reviewable) or `main` once #1 lands.
+  the Windows installer. **PR #1 was merged by Mr. Brothers on 2026-07-30**, so
+  `main` is finally the real project rather than a spec. Note it merged at an
+  *older* tip than the branch reached — the last three commits (the honest
+  setup state and its docs) were not in it, and arrived on `main` through the
+  branch below instead. The branch can be deleted; nothing on it is unique.
+- **`claude/real-use-fixes`** — *current*, and the only branch that matters.
+  Branched on 2026-07-30 at his instruction, because a 100-commit branch is not
+  a review unit. `main` is merged into it, so it sits **4 commits ahead and 0
+  behind**: a PR from it to `main` is a genuinely small, readable diff. All new
+  work goes here.
 
 Everything is pushed. Tree clean. CI green on all three platforms.
 
