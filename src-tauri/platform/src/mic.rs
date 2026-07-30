@@ -13,6 +13,21 @@
 //! from Linux. `cpal` is not built on Linux at all (its `alsa-sys` needs
 //! pkg-config we have no sudo for), so this module is absent there and the
 //! capture logic above it is tested against core's `FakeSource` instead.
+//!
+//! # Why the stream lives on its own thread
+//!
+//! `cpal::Stream` is **not `Send` on macOS** — CoreAudio ties it to the thread
+//! that created it — while `AudioSource` requires `Send`. Holding the stream in
+//! this struct therefore compiled on Windows and failed on macOS, which is
+//! precisely the class of bug the cross-target `cargo check` cannot catch: the
+//! platform crate alone is fine, and the error only appears where *core* uses
+//! `MicSource` as a `dyn AudioSource`. Core cannot be cross-checked, so CI found
+//! it on the first macOS build this project ever ran.
+//!
+//! The fix is not a `cfg` or an `unsafe impl Send`: the stream is never stored
+//! at all. A worker thread opens the device, plays it, and parks until asked to
+//! stop, so everything left in `MicSource` is `Send` by construction on every
+//! platform rather than by luck on one of them.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -29,114 +44,177 @@ use crate::TARGET_SAMPLE_RATE;
 pub struct MicSource {
     reader: RingReader,
     resampler: Resampler,
-    /// Held to keep the stream alive — dropping it closes the device.
-    stream: Option<cpal::Stream>,
+    /// Tells the worker thread to release the device. See the module note.
+    stop: Arc<AtomicBool>,
+    /// Joined on `stop`, so the device is actually released before we return.
+    worker: Option<std::thread::JoinHandle<()>>,
     /// Set by the error callback when the OS reports the device is gone.
     device_lost: Arc<AtomicBool>,
     label: String,
 }
 
+/// What the worker reports back once the device is open, so `start` can fail
+/// with the device's own error rather than succeeding into a silent recording.
+struct Opened {
+    name: String,
+    sample_rate: u32,
+}
+
+/// How often the worker checks whether it has been asked to stop. Short enough
+/// that releasing the microphone feels immediate, long enough to cost nothing.
+const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl MicSource {
     /// Opens the system default input device and starts capturing.
+    ///
+    /// Blocks until the worker has either opened the device or failed, so a
+    /// missing or busy microphone is an error from this call rather than a
+    /// recording that turns out to be silent.
     pub fn start() -> Result<Self> {
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .context("No microphone is available on this computer.")?;
-        let name = device
-            .name()
-            .unwrap_or_else(|_| "the microphone".to_string());
-        let config = device
-            .default_input_config()
-            .with_context(|| format!("Notetaker could not read the settings for {name}."))?;
-
-        let sample_rate = config.sample_rate().0;
-        let channels = config.channels() as usize;
-        let sample_format = config.sample_format();
-
         let (mut writer, reader) = ring::channel(ring::DEFAULT_CAPACITY);
         let device_lost = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
 
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<Opened>>();
         let err_lost = device_lost.clone();
-        let on_error = move |e: cpal::StreamError| {
-            log::warn!("microphone stream error: {e}");
-            err_lost.store(true, Ordering::Release);
-        };
+        let worker_stop = stop.clone();
 
-        // One closure per sample format cpal may hand us. Each does the same
-        // two steps: widen to `f32`, then downmix to mono. The arithmetic lives
-        // in `convert`, which is tested; nothing here touches samples except to
-        // widen them. Buffers are declared per arm and reused across callbacks,
-        // so a steady stream does not allocate on the audio thread.
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => {
-                let mut mono = Vec::new();
-                device.build_input_stream(
-                    &config.into(),
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        mono.clear();
-                        interleaved_f32_to_mono(data, channels, &mut mono);
-                        writer.write(&mono);
-                    },
-                    on_error,
-                    None,
-                )
-            }
-            cpal::SampleFormat::I16 => {
-                let (mut wide, mut mono) = (Vec::new(), Vec::new());
-                device.build_input_stream(
-                    &config.into(),
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        wide.clear();
-                        // 32768, not 32767, so i16::MIN maps to exactly -1.0.
-                        wide.extend(data.iter().map(|s| *s as f32 / 32_768.0));
-                        mono.clear();
-                        interleaved_f32_to_mono(&wide, channels, &mut mono);
-                        writer.write(&mono);
-                    },
-                    on_error,
-                    None,
-                )
-            }
-            cpal::SampleFormat::U16 => {
-                let (mut wide, mut mono) = (Vec::new(), Vec::new());
-                device.build_input_stream(
-                    &config.into(),
-                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                        wide.clear();
-                        // u16 is offset binary: 32768 is silence, not zero.
-                        // Getting this wrong yields a colossal DC offset, which
-                        // sounds like silence but wrecks every level check
-                        // downstream.
-                        wide.extend(data.iter().map(|s| (*s as f32 - 32_768.0) / 32_768.0));
-                        mono.clear();
-                        interleaved_f32_to_mono(&wide, channels, &mut mono);
-                        writer.write(&mono);
-                    },
-                    on_error,
-                    None,
-                )
-            }
-            other => {
-                anyhow::bail!("{name} uses an audio format Notetaker cannot read yet ({other:?}).")
-            }
-        }
-        .with_context(|| format!("Notetaker could not start recording from {name}."))?;
+        // Everything cpal touches happens in here, and the stream never leaves.
+        let worker = std::thread::Builder::new()
+            .name("notetaker-mic".into())
+            .spawn(move || {
+                let opened = (|| -> Result<(cpal::Stream, Opened)> {
+                    let host = cpal::default_host();
+                    let device = host
+                        .default_input_device()
+                        .context("No microphone is available on this computer.")?;
+                    let name = device
+                        .name()
+                        .unwrap_or_else(|_| "the microphone".to_string());
+                    let config = device.default_input_config().with_context(|| {
+                        format!("Notetaker could not read the settings for {name}.")
+                    })?;
 
-        stream
-            .play()
-            .with_context(|| format!("Notetaker could not start {name}."))?;
+                    let sample_rate = config.sample_rate().0;
+                    let channels = config.channels() as usize;
+                    let sample_format = config.sample_format();
 
-        log::info!(
-            "microphone: {name}, {sample_rate} Hz, {channels} channel(s), {sample_format:?}"
-        );
+                    let on_error = move |e: cpal::StreamError| {
+                        log::warn!("microphone stream error: {e}");
+                        err_lost.store(true, Ordering::Release);
+                    };
+
+                    // One closure per sample format cpal may hand us. Each does
+                    // the same two steps: widen to `f32`, then downmix to mono.
+                    // The arithmetic lives in `convert`, which is tested;
+                    // nothing here touches samples except to widen them.
+                    // Buffers are declared per arm and reused across callbacks,
+                    // so a steady stream does not allocate on the audio thread.
+                    let stream = match sample_format {
+                        cpal::SampleFormat::F32 => {
+                            let mut mono = Vec::new();
+                            device.build_input_stream(
+                                &config.into(),
+                                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                                    mono.clear();
+                                    interleaved_f32_to_mono(data, channels, &mut mono);
+                                    writer.write(&mono);
+                                },
+                                on_error,
+                                None,
+                            )
+                        }
+                        cpal::SampleFormat::I16 => {
+                            let (mut wide, mut mono) = (Vec::new(), Vec::new());
+                            device.build_input_stream(
+                                &config.into(),
+                                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                                    wide.clear();
+                                    // 32768, not 32767, so i16::MIN maps to
+                                    // exactly -1.0.
+                                    wide.extend(data.iter().map(|s| *s as f32 / 32_768.0));
+                                    mono.clear();
+                                    interleaved_f32_to_mono(&wide, channels, &mut mono);
+                                    writer.write(&mono);
+                                },
+                                on_error,
+                                None,
+                            )
+                        }
+                        cpal::SampleFormat::U16 => {
+                            let (mut wide, mut mono) = (Vec::new(), Vec::new());
+                            device.build_input_stream(
+                                &config.into(),
+                                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                                    wide.clear();
+                                    // u16 is offset binary: 32768 is silence,
+                                    // not zero. Getting this wrong yields a
+                                    // colossal DC offset, which sounds like
+                                    // silence but wrecks every level check
+                                    // downstream.
+                                    wide.extend(
+                                        data.iter().map(|s| (*s as f32 - 32_768.0) / 32_768.0),
+                                    );
+                                    mono.clear();
+                                    interleaved_f32_to_mono(&wide, channels, &mut mono);
+                                    writer.write(&mono);
+                                },
+                                on_error,
+                                None,
+                            )
+                        }
+                        other => anyhow::bail!(
+                            "{name} uses an audio format Notetaker cannot read yet ({other:?})."
+                        ),
+                    }
+                    .with_context(|| format!("Notetaker could not start recording from {name}."))?;
+
+                    stream
+                        .play()
+                        .with_context(|| format!("Notetaker could not start {name}."))?;
+
+                    log::info!(
+                        "microphone: {name}, {sample_rate} Hz, {channels} channel(s), \
+                         {sample_format:?}"
+                    );
+                    Ok((stream, Opened { name, sample_rate }))
+                })();
+
+                match opened {
+                    Ok((stream, info)) => {
+                        // If the receiver is gone the caller gave up; drop the
+                        // stream rather than holding the device open forever.
+                        if ready_tx.send(Ok(info)).is_err() {
+                            return;
+                        }
+                        while !worker_stop.load(Ordering::Acquire) {
+                            std::thread::sleep(STOP_POLL);
+                        }
+                        // Pausing first makes sure no callback is mid-write
+                        // when the stream goes.
+                        let _ = stream.pause();
+                        drop(stream);
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                    }
+                }
+            })
+            .context("Notetaker could not start the microphone thread.")?;
+
+        // A worker that died before reporting leaves a disconnected channel;
+        // say something a user can act on rather than surfacing a recv error.
+        let opened = ready_rx.recv().map_err(|_| {
+            anyhow::anyhow!("The microphone stopped before it started recording.")
+        })??;
 
         Ok(Self {
             reader,
-            resampler: Resampler::new(sample_rate, TARGET_SAMPLE_RATE)?,
-            stream: Some(stream),
+            resampler: Resampler::new(opened.sample_rate, TARGET_SAMPLE_RATE)?,
+            stop,
+            worker: Some(worker),
             device_lost,
-            label: name,
+            label: opened.name,
         })
     }
 
@@ -161,12 +239,16 @@ impl MicSource {
     }
 
     /// Closes the device.
+    ///
+    /// Joins the worker rather than only signalling it, so that when this
+    /// returns the microphone really is released — otherwise starting a second
+    /// recording could race the first one's teardown for the device.
     pub fn stop(&mut self) -> Result<()> {
-        // Dropping the stream is what actually releases the microphone, and
-        // pausing first makes sure no callback is mid-write when it goes.
-        if let Some(stream) = self.stream.take() {
-            let _ = stream.pause();
-            drop(stream);
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            // A panicked worker has already dropped its stream by unwinding;
+            // there is nothing left to report and nothing to clean up.
+            let _ = worker.join();
         }
         Ok(())
     }

@@ -1,2 +1,9 @@
+# Single-package repo. `packages` is here because pnpm refuses a workspace file
+# without it — "ERROR packages field missing or empty" — which fails
+# `pnpm store path`, and therefore setup-node's cache step, before any install
+# runs. That is what turned every CI job red on the first run.
+packages:
+  - .
+
 allowBuilds:
   esbuild: true
