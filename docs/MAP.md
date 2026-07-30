@@ -46,8 +46,12 @@ first two is load-bearing — see "How this is verified".
     `macos/` (CoreGraphics idle; ScreenCaptureKit **not yet written**).
 - **`server/`** — `notetaker-server`: serves the UI over HTTP.
   `notetaker-serve` is a working Notetaker on a PC with no Tauri at all.
-- **`.` (app crate)** — the Tauri shell. **Still the generated scaffold.** Does
-  not build on Linux (`libdbus-sys` needs pkg-config we have no sudo for).
+- **`.` (app crate)** — the Tauri shell: thirty one-line `#[tauri::command]`
+  wrappers over `core::dispatch`, so the desktop app and the served UI run the
+  same code. Does not build on Linux (`libdbus-sys` needs pkg-config we have no
+  sudo for), so a **test in core reads `src-tauri/src/lib.rs`** and fails if the
+  handler list drifts from `COMMANDS` or a camelCase argument loses its
+  `rename_all`. That is the only check of this crate that runs here.
 - `src/` — React/TS UI, in Granola's shape: a left rail that is both the
   navigation and the library, and a note that is your own typing at full
   contrast above the AI's expansion of it in grey.
@@ -182,13 +186,17 @@ rendered as two stacked boxes, and the narrow layout squeezed the note into a
 155px column.
 
 ## Next
-1. **Tauri shell** — the app crate is still the generated scaffold. Now much
-   smaller than it was: `core::dispatch` already does the work, so the ~23
-   wrappers collapse into thin forwarding. Plus capabilities and per-OS bundling
-   (DMG / MSI+NSIS).
+1. **Nothing processes recordings.** `Runtime::start_scheduler` exists, is
+   tested, and is called by **no production binary** — only by tests. Neither
+   the Tauri shell nor `notetaker-serve` ever loads the speech models, so a
+   recording is captured, queued, and then sits there. Every layer beneath this
+   works, which is exactly why it went unnoticed: the gap is the wiring, not the
+   engine. Needs a shared `SchedulerModels` loader (which model file for which
+   tier, what to say when they are not downloaded yet) used by both binaries.
+   **This is the difference between the app running and the app working.**
 2. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
    was not written blind are in `platform/src/macos/speaker.rs`. Everything below
    it (ring, downmix, resample) is already shared and tested.
 3. **On the hardware**: run CI, then real capture on both machines, Metal build
-   and tier detection, permissions, the screenshot pass, re-run the bake-off, and
-   one real bilingual call end to end.
+   and tier detection, permissions, re-run the bake-off, and one real bilingual
+   call end to end.

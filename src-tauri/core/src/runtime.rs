@@ -2858,6 +2858,134 @@ mod tests {
             .unwrap_or_else(|e| panic!("reading the UI contract at {}: {e}", path.display()))
     }
 
+    fn tauri_shell_rs() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib.rs");
+        fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading the desktop shell at {}: {e}", path.display()))
+    }
+
+    /// The command names inside `tauri::generate_handler![ ... ]`.
+    ///
+    /// A brace-matched scan rather than a regex, for the same reason the ipc.ts
+    /// scanner is one: the list spans thirty lines and contains comments.
+    fn handler_names(source: &str) -> Vec<String> {
+        let Some(start) = source.find("generate_handler![") else {
+            return Vec::new();
+        };
+        let body = &source[start + "generate_handler![".len()..];
+        let Some(end) = body.find(']') else {
+            return Vec::new();
+        };
+        // Drop comment lines *before* splitting. Splitting first would leave a
+        // `// note\nget_recording` glued together as one entry, which is how
+        // the first version of this scanner silently reported a command
+        // missing.
+        let cleaned: String = body[..end]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        cleaned
+            .split(',')
+            .map(|s| s.trim())
+            // The trailing comma leaves one empty entry.
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// The desktop shell is the one crate CI alone can compile, so this is the
+    /// only check of it that runs on the development machine — and it catches
+    /// the failure that actually happens: a command added to `COMMANDS` and to
+    /// `ipc.ts` but never given a `#[tauri::command]` wrapper. On the desktop
+    /// that button would return "Unknown command" while working perfectly in
+    /// the served UI, which is a maddening thing to debug and an easy thing to
+    /// pin.
+    #[test]
+    fn the_desktop_shell_exposes_exactly_the_documented_commands() {
+        let found = handler_names(&tauri_shell_rs());
+        assert!(
+            !found.is_empty(),
+            "the generate_handler! scanner found nothing — the scanner is broken, \
+             not the shell"
+        );
+
+        let declared: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+
+        let mut problems = Vec::new();
+        for name in &declared {
+            if !found.iter().any(|f| f == name) {
+                problems.push(format!(
+                    "{name} is in COMMANDS but the desktop shell has no wrapper for it"
+                ));
+            }
+        }
+        for name in &found {
+            if !declared.contains(&name.as_str()) {
+                problems.push(format!(
+                    "{name} is registered in the desktop shell but is not a documented command"
+                ));
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "src-tauri/src/lib.rs and runtime::COMMANDS have drifted:\n  {}",
+            problems.join("\n  ")
+        );
+    }
+
+    /// Proof the scan above can fail, and that it reads a realistic list.
+    #[test]
+    fn the_handler_scanner_reads_names_and_ignores_punctuation() {
+        let source = "
+            .invoke_handler(tauri::generate_handler![
+                list_tasks,
+                // a comment in the middle
+                get_recording,
+                save_notes,
+            ])
+        ";
+        assert_eq!(
+            handler_names(source),
+            vec!["list_tasks", "get_recording", "save_notes"]
+        );
+        assert!(handler_names("no handler here").is_empty());
+    }
+
+    /// Every wrapper that takes a multi-word argument must carry
+    /// `rename_all = "camelCase"`, or the invoke rejects at runtime with a
+    /// deserialization error the user reads as "nothing happened".
+    #[test]
+    fn every_camel_case_argument_has_a_wrapper_that_renames() {
+        let shell = tauri_shell_rs();
+        for command in COMMANDS {
+            let needs_rename = command
+                .args
+                .iter()
+                .any(|a| a.chars().any(|c| c.is_uppercase()));
+            if !needs_rename {
+                continue;
+            }
+            // Find this command's `fn` and look at the attribute above it.
+            let marker = format!("fn {}(", command.name);
+            let at = shell
+                .find(&marker)
+                .unwrap_or_else(|| panic!("no wrapper found for {}", command.name));
+            let preceding = &shell[..at];
+            let attr_start = preceding
+                .rfind("#[tauri::command")
+                .unwrap_or_else(|| panic!("{} has no #[tauri::command]", command.name));
+            let attr = &preceding[attr_start..];
+            assert!(
+                attr.contains("rename_all = \"camelCase\""),
+                "{} takes {:?} but its wrapper does not rename to camelCase",
+                command.name,
+                command.args
+            );
+        }
+    }
+
     #[test]
     fn ipc_contract_matches_the_documented_command_table() {
         // The bug this exists to catch is invisible: a renamed argument makes

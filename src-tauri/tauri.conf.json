@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "notetaker",
+  "productName": "Notetaker",
   "version": "0.1.0",
   "identifier": "com.georgebrothers.notetaker",
   "build": {
@@ -12,24 +12,39 @@
   "app": {
     "windows": [
       {
-        "title": "notetaker",
-        "width": 800,
-        "height": 600
+        "title": "Notetaker",
+        "width": 1180,
+        "height": 800,
+        "minWidth": 380,
+        "minHeight": 480
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/Notetaker/**"
+        ]
+      }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "dmg",
+      "app",
+      "msi",
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "shortDescription": "A fully local notetaker",
+    "longDescription": "Records your meetings and classes, transcribes and summarizes them on this computer, and never sends anything anywhere."
   }
 }
