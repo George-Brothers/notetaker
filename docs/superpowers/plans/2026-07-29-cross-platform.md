@@ -93,10 +93,10 @@ the first thing to try it.
 
 ## Where this stands (2026-07-30, end of the second session)
 
-**Done: 1–4, 6, 7, 8, 9. Left: 5 (macOS system audio) — and one thing not on
-this list at all, see "The gap" below.**
+**Done: 1–4, 6, 7, 8, 9, plus the scheduler wiring that was on no list at all.
+Left: 5 (macOS system audio).**
 
-Ten commits on `claude/cross-platform-mac-pc-web-e3af6f`. Working tree clean.
+Eleven commits on `claude/cross-platform-mac-pc-web-e3af6f`. Working tree clean.
 
 **It is on GitHub now.** `George-Brothers/notetaker`, **private**, created
 2026-07-30 on Mr. Brothers' word. Before that the repo had no remote at all —
@@ -108,7 +108,8 @@ it.
 Verified at the end of this session:
 
 ```
-482 Rust tests (348 core, 51 platform, 58 server, 5 bakeoff, 20 e2e) + 72 frontend
+471 Rust tests (357 core, 51 platform, 47 server, 11 e2e, 5 bakeoff) + 72 frontend
+   (an earlier "482" here double-counted the server's e2e binary)
 clippy --all-targets -D warnings   clean
 cargo fmt --check                  clean
 scripts/check-platforms.sh         all three targets OK
@@ -122,7 +123,7 @@ To pick this up:
 cd src-tauri
 export PATH="$HOME/.cargo/bin:$PATH" LIBCLANG_PATH="$HOME/.local/lib/libclang"
 cargo test -p notetaker-core -p notetaker-platform -p notetaker-server
-cd .. && pnpm test --run && pnpm build   # pnpm build is the only typecheck
+cd .. && pnpm test && pnpm build   # pnpm build is the only typecheck
 ./scripts/check-platforms.sh
 ```
 
@@ -143,21 +144,44 @@ trick: **`cargo check` cross-targeting cannot catch a trait-bound error that
 only appears in core**, because core is the crate that cannot be cross-checked.
 The platform crate type-checked for `aarch64-apple-darwin` the whole time.
 
-### The gap that matters more than task 5
+### The gap that mattered more than task 5 — closed 2026-07-30
 
-**No production binary starts the scheduler.** `Runtime::start_scheduler` is
-written and tested, and is called by *tests only*; neither the Tauri shell nor
-`notetaker-serve` ever constructs `SchedulerModels`, because nothing anywhere
-loads the speech models outside `bin/bakeoff.rs`. A recording is therefore
-captured, finalized to FLAC, queued — and then sits there forever.
+**No production binary started the scheduler.** `Runtime::start_scheduler` was
+written and tested and called by *tests only*; neither front end ever
+constructed `SchedulerModels`, because nothing loaded the speech models outside
+`bin/bakeoff.rs`. A recording was captured, finalized to FLAC, queued — and then
+sat there forever. Every layer beneath it worked, which is exactly why it went
+unnoticed for two plans: the gap was the wiring, not the engine.
 
-Every layer beneath this works and is tested, which is exactly why it went
-unnoticed for two plans: the gap is the wiring, not the engine.
+It turned out to be three gaps, not one. `Runtime::start_processing` loads the
+models and starts the loop; `Runtime::launch` is the single startup call both
+front ends now make (`notetaker-serve` had been calling *no* startup housekeeping
+at all, so its search index was whatever the previous run left behind); and
+`models::ensure_segmentation_unpacked` extracts the segmentation model from the
+`.tar.bz2` sherpa-onnx ships it in — nothing did, so the models could download in
+full and the diarizer would still have no `.onnx` to load. Full write-up in
+`docs/MAP.md` → "The scheduler, now wired".
 
-What it needs: a shared loader (which model file for which tier, where the
-segmentation archive extracts to, and an honest message when the models have not
-been downloaded yet) called by both binaries. Deliberately not half-done in the
-Tauri shell, which cannot be compiled here.
+Two things worth carrying forward:
+
+- **Absent models are a return value, not an error.** `Processing::ModelsMissing`
+  names them the way the first-run checklist does. A first launch is not a
+  failure, and the app stays perfectly usable for recording and reading while
+  they download.
+- **A negative control caught a bad test.** The launch test passed with
+  `start_up` disabled, because the SQLite index survived on disk and search
+  worked without a rebuild. It now deletes the index first. Two other new tests
+  were confirmed the same way and were fine — which is the point: the ratio is
+  never zero.
+
+### CI can lie, and did
+
+A **documentation-only** commit turned all three jobs red with
+`unable to find library -lonnxruntime`. `sherpa-rs`'s build script downloads its
+native libraries into a per-user directory *outside* `target/`; caching `target/`
+alone means cargo thinks the build script is fresh and never re-downloads, while
+the linker has nothing to link against. The fix is three lines of workflow. The
+habit is the lesson: **check what changed before believing a red run.**
 
 ### Task 6, as built
 
@@ -189,7 +213,7 @@ player can read a recording off disk without exposing the rest of the filesystem
    `GetLastInputInfo` + `GetSystemPowerStatus` (both already compile-verified).
    Meeting detection is **ours to write** — anarlog's `detect/list/` covers
    macOS and Linux only.
-5. ⬜ **macOS — PARTLY DONE.** (Still the only task on this list left.) The mic (`cpal`, shared with Windows) and the
+5. ⬜ **macOS — PARTLY DONE.** (The only task on this list left.) The mic (`cpal`, shared with Windows) and the
    `SystemProbe` are done: `MacProbe` now takes idle time from
    `CGEventSourceSecondsSinceLastEventType` via `objc2-core-graphics`, which
    retired "verified vs assumed" risk #1 in `docs/MAP.md`. `pmset -g batt` still

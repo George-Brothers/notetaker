@@ -17,9 +17,10 @@ and summarization later, organized by tasks. No cloud, ever.
   Done: portable paths, the `CpuBig` tier, the `notetaker-platform` crate,
   the **complete Windows layer** (WASAPI loopback, cpal mic, `WinProbe`,
   meeting detection), the core adapter, the **served web UI**, CI, the
-  **Granola-shaped frontend** with the live notepad, and the **Tauri shell**.
-  Remaining: **macOS system audio** (ScreenCaptureKit) — and the scheduler,
-  which is item 1 under "Next" and matters more.
+  **Granola-shaped frontend** with the live notepad, the **Tauri shell**, and
+  (2026-07-30) the **scheduler wiring** — recordings are now actually
+  transcribed instead of queueing forever.
+  Remaining: **macOS system audio** (ScreenCaptureKit).
   Plan and decisions: `docs/superpowers/plans/2026-07-29-cross-platform.md`.
 
 ## Where this lives
@@ -98,6 +99,7 @@ scripts/check-platforms.sh      # all three targets, ~30s
 | The Tauri app crate | **CI only.** Never compiles on Linux |
 | `notetaker-server` + `dispatch` | **Fully verified here**, including a real binary over a real socket |
 | The whole UI, visually | **Seen and screenshotted** (2026-07-30) — real binary, real files, real audio, in Chrome. See below |
+| The scheduler wiring | **Decisions tested; the happy path is not.** A real model load is not a unit test — see "The scheduler, now wired" |
 
 The cross-check was itself confirmed with a negative control: a deliberate type
 error in `windows/power.rs` *is* caught.
@@ -161,9 +163,10 @@ error in `windows/power.rs` *is* caught.
   a checkbox line in `summary.md`, so the list cannot drift from the markdown
   the user can edit by hand.
 - The app runs on Mac *and* PC, so **no user-facing string may say "your Mac"**.
-- Speech = SenseVoice (default) / Whisper (fallback); diarization = sherpa-onnx;
-  summaries = Ollama+Qwen. Diarization is verified on real human audio only —
-  synthetic TTS voices don't separate.
+- Speech = **Whisper, as shipped** — SenseVoice won the bake-off and is *not*
+  wired (item 2 under "Next"); diarization = sherpa-onnx; summaries =
+  Ollama+Qwen. Diarization is verified on real human audio only — synthetic TTS
+  voices don't separate.
 - Every message a user can hit is written for someone who is not an engineer.
 
 ## Verified vs assumed
@@ -216,6 +219,17 @@ clean, as does the Tauri app crate on both platforms.
 - **macOS clippy**: a deprecated CoreGraphics function and an unnecessary
   `unsafe` block, both errors under `-D warnings`.
 
+**A fourth, found 2026-07-30 after the above: the cache made CI lie.** A
+documentation-only commit turned all three jobs red with
+`unable to find library -lonnxruntime`. `sherpa-rs` does not build its native
+libraries — its build script *downloads* them into a per-user directory outside
+`target/` and puts that on the linker's search path. Caching `target/` alone
+gives the worst of both: cargo considers the build script fresh so it never
+re-downloads, and the linker then has nothing to link against. The workflow now
+caches those directories too, and `prefix-key` was bumped to discard the caches
+saved in the broken state. **A red CI run is not automatically a code problem —
+check what changed before believing it.**
+
 **The technique that came out of it: `scripts/check-platforms.sh` runs clippy,
 not `cargo check`.** Clippy cross-targets exactly the way `check` does — which
 nobody had tried. CI runs clippy `-D warnings` on every OS, so a deprecation in
@@ -234,18 +248,46 @@ before pushing; a CI round trip is about ten minutes.
 - Everything else passes on Windows, including the whole capture engine above
   the finalize step.
 
+## The scheduler, now wired (2026-07-30)
+`Runtime::start_scheduler` used to be reachable only from tests: no production
+binary ever built a `SchedulerModels`, so a recording was captured, finalized,
+queued — and left there forever. Every layer beneath it worked, which is exactly
+why it went unnoticed for two plans. Three things were needed, not one:
+
+- **`Runtime::start_processing`** — resolves the tier, checks the model files,
+  loads Whisper and the diarizer, starts the loop. Missing models are a **return
+  value (`Processing::ModelsMissing`), not an error**: on a first launch they are
+  legitimately absent and the first-run checklist is what fixes it.
+- **`Runtime::launch`** — recovery, re-index, and processing in the one call both
+  front ends make. `notetaker-serve` previously called *none* of it, so the
+  served library's search index was whatever the last run happened to leave
+  behind. One shared call because the Tauri shell cannot be compiled here;
+  anything it does alone is unverified until CI.
+- **`models::ensure_segmentation_unpacked`** — sherpa-onnx ships
+  `segmentation-3.0` as a `.tar.bz2`, and nothing unpacked it, so the models
+  could download *in full* and the diarizer would still find no `.onnx`.
+  **The archive never names the destination**: one member is taken by file name
+  and written to a path we chose, so tarball path traversal is not a check that
+  has to be right — it is a question that cannot be asked.
+
+The download thread starts processing when it finishes, so a user does not have
+to quit and reopen after the checklist goes green.
+
+What is **not** proven: the happy path. Loading a real 500 MB Whisper model is
+not a unit test, and no recording has been transcribed end to end by a shipped
+binary. The tests pin the decisions around it — before the models arrive, a
+second call, and a launch on a machine with nothing downloaded.
+
 ## Next
-1. **Nothing processes recordings.** `Runtime::start_scheduler` exists, is
-   tested, and is called by **no production binary** — only by tests. Neither
-   the Tauri shell nor `notetaker-serve` ever loads the speech models, so a
-   recording is captured, queued, and then sits there. Every layer beneath this
-   works, which is exactly why it went unnoticed: the gap is the wiring, not the
-   engine. Needs a shared `SchedulerModels` loader (which model file for which
-   tier, what to say when they are not downloaded yet) used by both binaries.
-   **This is the difference between the app running and the app working.**
-2. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
+1. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
    was not written blind are in `platform/src/macos/speaker.rs`. Everything below
    it (ring, downmix, resample) is already shared and tested.
-3. **On the hardware**: run CI, then real capture on both machines, Metal build
-   and tier detection, permissions, re-run the bake-off, and one real bilingual
-   call end to end.
+2. **The speech engine does not match the bake-off.** `SenseVoice` won on
+   Chinese by 9% vs 53% CER and is described throughout as the default — but it
+   exists only in `core/src/bin/bakeoff.rs`. The only production `Transcriber` is
+   `WhisperTranscriber`, and `models/registry.rs` has no SenseVoice entry. Either
+   wire it (a `Transcriber` impl plus a registry entry with a hand-verified
+   sha256) or stop calling it the default.
+3. **On the hardware**: real capture on both machines, `tauri build` (never once
+   run — no installer has ever been produced), Metal build and tier detection,
+   permissions, re-run the bake-off, and one real bilingual call end to end.
