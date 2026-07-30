@@ -66,13 +66,20 @@ jobs:
         working-directory: src-tauri
         run: cargo test -p notetaker-platform
 
+      # The served web UI, including its end-to-end tests over real sockets.
+      # Fully verifiable on Linux — it needs no microphone, no models and no
+      # OS-specific API — so it is a real gate here, not a compile check.
+      - name: Server tests (routing, auth, traversal, end-to-end HTTP)
+        working-directory: src-tauri
+        run: cargo test -p notetaker-server
+
       - name: Clippy
         working-directory: src-tauri
-        run: cargo clippy -p notetaker-core -p notetaker-platform --all-targets -- -D warnings
+        run: cargo clippy -p notetaker-core -p notetaker-platform -p notetaker-server --all-targets -- -D warnings
 
       - name: Formatting
         working-directory: src-tauri
-        run: cargo fmt --check -p notetaker-core -p notetaker-platform
+        run: cargo fmt --check -p notetaker-core -p notetaker-platform -p notetaker-server
 
       # The same check a developer runs locally, so a drift between the two is
       # visible here rather than discovered on someone's machine.
@@ -137,15 +144,15 @@ jobs:
       # the cpal microphone, and on Windows the WASAPI loopback source.
       - name: Build core + platform for this OS
         working-directory: src-tauri
-        run: cargo build -p notetaker-core -p notetaker-platform --all-targets
+        run: cargo build -p notetaker-core -p notetaker-platform -p notetaker-server --all-targets
 
       - name: Test core + platform on this OS
         working-directory: src-tauri
-        run: cargo test -p notetaker-core -p notetaker-platform
+        run: cargo test -p notetaker-core -p notetaker-platform -p notetaker-server
 
       - name: Clippy on this OS
         working-directory: src-tauri
-        run: cargo clippy -p notetaker-core -p notetaker-platform --all-targets -- -D warnings
+        run: cargo clippy -p notetaker-core -p notetaker-platform -p notetaker-server --all-targets -- -D warnings
 
       # The frontend has to be built before the Tauri app crate, which embeds
       # dist/ at compile time via tauri::generate_context!.

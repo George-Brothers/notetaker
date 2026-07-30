@@ -1,0 +1,30 @@
+[package]
+name = "notetaker-server"
+version = "0.1.0"
+description = "Serves the Notetaker UI over loopback or LAN, so the library can be read from a phone or any browser"
+authors = ["George Brothers"]
+edition = "2021"
+
+[lib]
+name = "notetaker_server"
+
+[[bin]]
+name = "notetaker-serve"
+path = "src/bin/serve.rs"
+
+[dependencies]
+notetaker-core = { path = "../core" }
+anyhow = "1.0.104"
+log = "0.4.33"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# Blocking, thread-per-request, no async runtime. Deliberate: `Runtime` is
+# synchronous and guarded by mutexes, so axum would drag tokio through a
+# codebase that has no use for it. This server handles one user on their own
+# machine, not a fleet.
+tiny_http = "0.12.0"
+# Token generation for LAN mode.
+uuid = { version = "1.24.0", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

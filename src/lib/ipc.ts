@@ -6,7 +6,10 @@
  * here without changing it there breaks silently at runtime, so this file is
  * the single place both sides agree on.
  */
-import { invoke } from "@tauri-apps/api/core";
+// Tauri IPC on the desktop, HTTP when this UI is served to a browser. Same
+// command names and the same camelCase arguments either way, so nothing below
+// changes. See transport.ts.
+import { invoke } from "./transport";
 
 export type Status = "recorded" | "queued" | "processing" | "ready" | "failed";
 export type Mode = "meeting" | "in_person";

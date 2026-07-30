@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod capture;
+pub mod dispatch;
 pub mod index;
 pub mod models;
 pub mod ollama;
