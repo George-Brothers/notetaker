@@ -51,16 +51,24 @@ jobs:
           components: clippy, rustfmt
           targets: x86_64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
 
-      # `sherpa-rs` does not build its native libraries — its build script
+      # `sherpa-rs` does not build its native libraries. Its build script
       # downloads a prebuilt `libonnxruntime` / `libsherpa-onnx-c-api` into a
-      # per-user cache directory outside `target/`, and puts that directory on
-      # the linker's search path. Cache `target/` without it and the next run
-      # gets the worst of both: cargo considers the build script fresh so it
-      # never re-downloads, and the linker then fails with
-      # `unable to find library -lonnxruntime` on code that did not change.
-      # That is exactly what happened on a documentation-only commit.
+      # per-user cache directory outside `target/`, then copies the shared
+      # objects loose into `target/debug/` and `target/debug/deps/` — where
+      # cargo puts them on the loader path when it runs a test.
       #
-      # `prefix-key` is bumped to discard the caches saved in that broken state.
+      # Those copies are not cargo-tracked artifacts, so the cache save step
+      # sweeps them, and a restored cache is missing them while cargo still
+      # considers the build script fresh and never re-runs it. A commit that
+      # changed nothing but documentation therefore turned the whole matrix red
+      # — first at link time, then (once the download directory was cached too)
+      # at load time, with `error while loading shared libraries`.
+      #
+      # So: cache the downloads, *and* force that one build script to re-run so
+      # it re-copies. Reproduced locally by deleting the same files by hand —
+      # same `exit code 127` — and the clean is what repairs it.
+      #
+      # `prefix-key` is bumped to discard the caches saved in the broken state.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -71,6 +79,11 @@ jobs:
 
       - name: Install libclang (bindgen, for whisper-rs)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Restore sherpa's shared libraries (see comment above)
+        shell: bash
+        working-directory: src-tauri
+        run: cargo clean -p sherpa-rs-sys || true
 
       - name: Core tests
         working-directory: src-tauri
@@ -157,6 +170,11 @@ jobs:
       - name: Point bindgen at libclang (Windows)
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      - name: Restore sherpa's shared libraries (see the Linux job's comment)
+        shell: bash
+        working-directory: src-tauri
+        run: cargo clean -p sherpa-rs-sys || true
 
       # This is the step that exists for this plan. On Linux these targets are
       # never compiled: capture::platform's per-OS arms, WinProbe / MacProbe,

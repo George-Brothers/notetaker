@@ -225,15 +225,22 @@ clean, as does the Tauri app crate on both platforms.
   `unsafe` block, both errors under `-D warnings`.
 
 **A fourth, found 2026-07-30 after the above: the cache made CI lie.** A
-documentation-only commit turned all three jobs red with
-`unable to find library -lonnxruntime`. `sherpa-rs` does not build its native
-libraries — its build script *downloads* them into a per-user directory outside
-`target/` and puts that on the linker's search path. Caching `target/` alone
-gives the worst of both: cargo considers the build script fresh so it never
-re-downloads, and the linker then has nothing to link against. The workflow now
-caches those directories too, and `prefix-key` was bumped to discard the caches
-saved in the broken state. **A red CI run is not automatically a code problem —
-check what changed before believing it.**
+documentation-only commit turned all three jobs red. `sherpa-rs` does not build
+its native libraries — its build script downloads them, then copies the shared
+objects loose into `target/debug/` and `target/debug/deps/`, which is where cargo
+finds them when it runs a test. Those copies are **not cargo-tracked artifacts**,
+so the cache sweeps them, while cargo still thinks the build script is fresh and
+never re-runs it.
+
+It took two passes to fix, because fixing half of it just moved the symptom:
+caching the download directory made the *link* succeed and left the test binary
+dying at startup with `error while loading shared libraries` (exit 127). The
+workflow now caches the downloads **and** runs `cargo clean -p sherpa-rs-sys`,
+which forces the one build script to re-copy. Both the failure and the repair
+were reproduced locally by deleting the same files by hand.
+
+**A red CI run is not automatically a code problem — check what changed before
+believing it.**
 
 **The technique that came out of it: `scripts/check-platforms.sh` runs clippy,
 not `cargo check`.** Clippy cross-targets exactly the way `check` does — which
