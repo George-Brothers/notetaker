@@ -4,7 +4,8 @@ Read `docs/MAP.md` first; this file only covers what is in flight right now.
 
 ## Where the branches are
 
-- **`main`** — one commit, the Plan A spec. Effectively empty.
+- **`main`** — the real project, as of 2026-07-30. Plan A, B and C plus the
+  Windows installer.
 - **`claude/cross-platform-mac-pc-web-e3af6f`** — everything: Plan B, Plan C,
   the Windows installer. **PR #1 was merged by Mr. Brothers on 2026-07-30**, so
   `main` is finally the real project rather than a spec. Note it merged at an
@@ -133,11 +134,13 @@ a `#[tauri::command]` wrapper and `generate_handler!` in `src-tauri/src/lib.rs`
 
 ## Open, waiting on Mr. Brothers
 
-1. **Merge PR #1**, or say to leave it. The merge is blocked for this agent.
-2. **Was anything playing during those recordings?** Decides whether the
-   0-byte system track is a bug or a non-event.
-3. **Signing.** The installer is unsigned, so SmartScreen warns once. Fine for
+1. **Was anything playing through his speakers during those recordings?**
+   Decides whether the 0-byte system track is a bug or a non-event. Asked, not
+   yet answered — do not guess either way.
+2. **Signing.** The installer is unsigned, so SmartScreen warns once. Fine for
    one user, a wall for anyone else. Costs money.
+
+Merging PR #1 was on this list and is done.
 
 ## The one sentence that matters
 
