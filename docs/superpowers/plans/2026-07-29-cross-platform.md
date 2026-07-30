@@ -91,22 +91,29 @@ Worth knowing: **anarlog's own CI is `ubuntu-latest` only**, so the Windows code
 we are adapting has never been compiled by its authors either. Our matrix is
 the first thing to try it.
 
-## Where this stands (2026-07-29, end of the first session)
+## Where this stands (2026-07-30, end of the second session)
 
-**Done: 1–4, 7, 8, 9. Left: 5 (macOS system audio), 6 (Tauri shell).**
+**Done: 1–4, 6, 7, 8, 9. Left: 5 (macOS system audio) — and one thing not on
+this list at all, see "The gap" below.**
 
-Six commits on `claude/cross-platform-mac-pc-web-e3af6f`. Working tree clean,
-**nothing pushed** — see the blocker below. Note the branch carries 76 commits
-not on `main`, because the earlier Plan B1 work never landed there either.
+Ten commits on `claude/cross-platform-mac-pc-web-e3af6f`. Working tree clean.
 
-Verified at the end of that session:
+**It is on GitHub now.** `George-Brothers/notetaker`, **private**, created
+2026-07-30 on Mr. Brothers' word. Before that the repo had no remote at all —
+the earlier note in this file blamed a broken push gate, which was wrong: the
+allowlist was fine, there was simply nowhere to push. Everything is pushed;
+**PR #1** carries all 81 commits since Plan A, and CI ran for the first time on
+it.
+
+Verified at the end of this session:
 
 ```
-366 Rust tests (258 core, 51 platform, 52 server, 5 bakeoff) + 72 frontend
+482 Rust tests (348 core, 51 platform, 58 server, 5 bakeoff, 20 e2e) + 72 frontend
 clippy --all-targets -D warnings   clean
 cargo fmt --check                  clean
 scripts/check-platforms.sh         all three targets OK
-notetaker-serve                    exercised for real over a socket with curl
+notetaker-serve                    exercised for real over a socket, with audio
+the UI                             driven in a real browser, screenshotted
 ```
 
 To pick this up:
@@ -119,17 +126,36 @@ cd .. && pnpm test --run && pnpm build   # pnpm build is the only typecheck
 ./scripts/check-platforms.sh
 ```
 
-**The one blocker that needs Mr. Brothers.** The CI workflow has never run, and
-it is the *only* verification for `capture::platform`'s and `power::probe`'s
-per-OS arms and for the Tauri app crate — none of which compile on Linux.
-Running it needs a push, which fires only on his word, and the ledger separately
-reports the push gate is broken for every project repo
-(`gate-allowlist-missing`). Until then those files are written-and-unrun.
+The visual loop — new this session, and the reason two layout bugs were caught —
+is written up in `docs/MAP.md` under "Build environment". Short version: there
+*is* a usable Chromium on this box, contrary to what every earlier note assumed.
 
-Recommended order when resuming: **task 6 before task 5.** The Tauri shell is
-now small (`core::dispatch` already does the work, so the wrappers are thin
-forwarding) and it unblocks a real app on both platforms; macOS system audio
-needs the hardware regardless.
+### The gap that matters more than task 5
+
+**No production binary starts the scheduler.** `Runtime::start_scheduler` is
+written and tested, and is called by *tests only*; neither the Tauri shell nor
+`notetaker-serve` ever constructs `SchedulerModels`, because nothing anywhere
+loads the speech models outside `bin/bakeoff.rs`. A recording is therefore
+captured, finalized to FLAC, queued — and then sits there forever.
+
+Every layer beneath this works and is tested, which is exactly why it went
+unnoticed for two plans: the gap is the wiring, not the engine.
+
+What it needs: a shared loader (which model file for which tier, where the
+segmentation archive extracts to, and an honest message when the models have not
+been downloaded yet) called by both binaries. Deliberately not half-done in the
+Tauri shell, which cannot be compiled here.
+
+### Task 6, as built
+
+The shell is thirty one-line `#[tauri::command]` wrappers over
+`core::dispatch` — longhand rather than macro-generated, because this crate
+cannot be compiled on the dev box and boring code a human can check by eye is
+the right trade when the compiler is unavailable. Three tests in **core** read
+`src-tauri/src/lib.rs` as text and pin the handler list to `COMMANDS` and the
+`rename_all` attributes; all three were confirmed with a negative control.
+`protocol-asset` is enabled and scoped to `$HOME/Notetaker/**` so the audio
+player can read a recording off disk without exposing the rest of the filesystem.
 
 ## Tasks
 
@@ -150,7 +176,7 @@ needs the hardware regardless.
    `GetLastInputInfo` + `GetSystemPowerStatus` (both already compile-verified).
    Meeting detection is **ours to write** — anarlog's `detect/list/` covers
    macOS and Linux only.
-5. ⬜ **macOS — PARTLY DONE.** The mic (`cpal`, shared with Windows) and the
+5. ⬜ **macOS — PARTLY DONE.** (Still the only task on this list left.) The mic (`cpal`, shared with Windows) and the
    `SystemProbe` are done: `MacProbe` now takes idle time from
    `CGEventSourceSecondsSinceLastEventType` via `objc2-core-graphics`, which
    retired "verified vs assumed" risk #1 in `docs/MAP.md`. `pmset -g batt` still
@@ -163,10 +189,10 @@ needs the hardware regardless.
    hardware. The full design, and that reasoning, is in
    `platform/src/macos/speaker.rs`. Everything below it — ring buffer, downmix,
    resample — is already shared with Windows and tested.
-6. ⬜ NOT DONE — **Cross-platform Tauri shell.** The app crate is still the generated
-   scaffold (a `greet` command). Needs the ~23 `#[tauri::command]` wrappers over
-   `runtime::COMMANDS` — whose argument names a test already pins against
-   `src/lib/ipc.ts` — plus capabilities and per-OS bundling (DMG / MSI+NSIS).
+6. ✅ **Cross-platform Tauri shell.** Thirty one-line wrappers over
+   `core::dispatch`, per-OS bundling (dmg/app, msi/nsis), a real CSP, and the
+   asset protocol scoped to the library folder. Pinned from Linux by three
+   tests that read the shell's source — see "Task 6, as built" above.
 7. ✅ **Served web UI.** HTTP server in core exposing `runtime::COMMANDS` and the
    built `dist/`, against the same contract as `src/lib/ipc.ts`. **Loopback by
    default; LAN exposure is an explicit opt-in.** The one piece fully testable

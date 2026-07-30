@@ -16,9 +16,20 @@ and summarization later, organized by tasks. No cloud, ever.
   `claude/cross-platform-mac-pc-web-e3af6f`.
   Done: portable paths, the `CpuBig` tier, the `notetaker-platform` crate,
   the **complete Windows layer** (WASAPI loopback, cpal mic, `WinProbe`,
-  meeting detection), the core adapter, the **served web UI**, and CI.
-  Remaining: **macOS system audio** (ScreenCaptureKit) and the **Tauri shell**.
+  meeting detection), the core adapter, the **served web UI**, CI, the
+  **Granola-shaped frontend** with the live notepad, and the **Tauri shell**.
+  Remaining: **macOS system audio** (ScreenCaptureKit) — and the scheduler,
+  which is item 1 under "Next" and matters more.
   Plan and decisions: `docs/superpowers/plans/2026-07-29-cross-platform.md`.
+
+## Where this lives
+- **GitHub: `George-Brothers/notetaker`, private.** Created 2026-07-30 on Mr.
+  Brothers' word; before that the repo had no remote at all and nothing had ever
+  been pushed.
+- Branches: `main` (Plan A spec only, one commit), the working branch above,
+  plus `plan-a-core` and `plan-b-capture` kept for the record.
+- **PR #1** carries everything since Plan A. Opened for the record and to give
+  CI something to run on, not for line-by-line review of 81 commits.
 - **Spec:** `docs/superpowers/specs/2026-07-23-notetaker-design.md`.
 - **Bake-off:** `docs/superpowers/specs/bakeoff-result.md` — SenseVoice beats
   Whisper-tiny on Chinese. Re-run against `large-v3-turbo` on the Mac.
