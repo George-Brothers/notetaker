@@ -183,9 +183,8 @@ Still assumed:
 - Meeting detection means "the app is open", not "a call started" — except
   Windows' `CptHost.exe`, which only exists during a Zoom meeting. Browsers are
   deliberately not detected; see `watch/apps.rs`.
-- **The CI workflow has never run**, and **this repo has no git remote at
-  all** — so nothing has ever been pushed and no PR exists. Creating a remote
-  publishes a private notetaker's source, which is Mr. Brothers' call.
+- **Windows FLAC finalize**, per "CI has run now" above — the one place where a
+  green local suite and a red CI disagree.
 
 Retired 2026-07-30: "the whole UI, visually" is no longer assumed. Every screen
 was driven in a real browser against a real `notetaker-serve` over a real
@@ -195,6 +194,31 @@ command palette, the ask panel, settings, both themes, and a 420px phone width.
 Two bugs were found and fixed that way and no other way: the first-run card
 rendered as two stacked boxes, and the narrow layout squeezed the note into a
 155px column.
+
+## CI has run now — what it found (2026-07-30)
+The first run in this project's life, on PR #1. It caught three things no local
+check could, which is exactly what the cross-platform plan built it for.
+
+**Fixed:**
+- **macOS: `MicSource` was not `Send`.** `cpal::Stream` is `!Send` on macOS
+  while `AudioSource` requires `Send`. The cross-target `cargo check` cannot see
+  this — the platform crate alone is fine, and the error only appears where
+  *core* uses `MicSource` as a `dyn AudioSource`, and **core cannot be
+  cross-checked**. The stream now lives on a worker thread and is never stored,
+  so the type is `Send` by construction everywhere. See `platform/src/mic.rs`.
+- **All jobs: `pnpm-workspace.yaml` had no `packages` key**, so `pnpm store
+  path` failed in setup-node's cache step before any install ran.
+
+**Open — Windows, 8 of 348 tests. Needs a Windows to diagnose; do not guess.**
+- Seven are the FLAC finalize path: `finalize_to_flac` fails, correctly removes
+  its half-written output, and the tests then look for an `audio-mic.flac` that
+  was never written (`The system cannot find the file specified (os error 2)`).
+  Suspect the WAV is read before `hound`'s writer has finalized its RIFF header,
+  which would make `load_mono_16k` return empty and hit the "holds no audio"
+  bail — but that is a hypothesis, not a finding.
+- One is `SysinfoDisk` reading free space for a path that does not exist yet.
+- Everything else passes on Windows, including the whole capture engine above
+  the finalize step.
 
 ## Next
 1. **Nothing processes recordings.** `Runtime::start_scheduler` exists, is

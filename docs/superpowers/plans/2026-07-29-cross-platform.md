@@ -130,6 +130,19 @@ The visual loop — new this session, and the reason two layout bugs were caught
 is written up in `docs/MAP.md` under "Build environment". Short version: there
 *is* a usable Chromium on this box, contrary to what every earlier note assumed.
 
+### CI ran, and it earned its keep
+
+See `docs/MAP.md` → "CI has run now" for the detail. Two bugs fixed (macOS
+`MicSource` was `!Send`; `pnpm-workspace.yaml` had no `packages` key and broke
+every job before install). One left open: **8 of 348 Windows tests**, seven in
+the FLAC finalize path and one in the disk probe. Those need a Windows to
+diagnose — CI is the only loop, at roughly ten minutes a cycle.
+
+The macOS failure is worth remembering as a limit of this plan's own central
+trick: **`cargo check` cross-targeting cannot catch a trait-bound error that
+only appears in core**, because core is the crate that cannot be cross-checked.
+The platform crate type-checked for `aarch64-apple-darwin` the whole time.
+
 ### The gap that matters more than task 5
 
 **No production binary starts the scheduler.** `Runtime::start_scheduler` is
