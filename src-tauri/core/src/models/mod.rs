@@ -186,6 +186,87 @@ fn sha256_hex_of_file(path: &Path) -> anyhow::Result<String> {
     Ok(hex_encode(hasher.finalize().as_slice()))
 }
 
+/// What the segmentation model is called once it has been unpacked.
+///
+/// A name we choose, not one taken from the archive — see
+/// [`ensure_segmentation_unpacked`].
+pub const SEGMENTATION_ONNX: &str = "pyannote-segmentation-3-0.onnx";
+
+/// The name of the single file worth taking out of the segmentation archive.
+const SEGMENTATION_MEMBER: &str = "model.onnx";
+
+/// Unpacks the segmentation model and returns the path to it.
+///
+/// The sherpa-onnx project ships `segmentation-3.0` as a `.tar.bz2` holding the
+/// `.onnx` alongside a licence and the export scripts, but [`SherpaDiarizer`]
+/// needs a path to the `.onnx` itself. Nothing did this unpacking, which is why
+/// the models could be downloaded in full and diarization would still fail to
+/// load — the archive was the last unwired step between "downloaded" and
+/// "usable".
+///
+/// [`SherpaDiarizer`]: crate::pipeline::diarize::SherpaDiarizer
+///
+/// **The archive never names the destination.** Entry paths inside a tarball
+/// are attacker-controlled in the general case (`../../` escapes the directory
+/// being extracted into), so this takes the *one* member whose file name is
+/// `model.onnx` and writes it to a path this function chose. Nothing else in
+/// the archive is written anywhere. That removes the traversal question
+/// entirely rather than answering it with a check that has to be right.
+///
+/// Idempotent: an already-unpacked model is returned without re-reading the
+/// archive, and a crash midway leaves only a `.part` file behind.
+pub fn ensure_segmentation_unpacked(models_dir: &Path) -> anyhow::Result<PathBuf> {
+    let dest = models_dir.join(SEGMENTATION_ONNX);
+    if dest.exists() {
+        return Ok(dest);
+    }
+
+    let archive_path = models_dir.join(registry::DIARIZATION_SEGMENTATION.dest);
+    let archive = fs::File::open(&archive_path).with_context(|| {
+        format!(
+            "opening the speaker-segmentation archive {}",
+            archive_path.display()
+        )
+    })?;
+
+    let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(archive));
+    let entries = tar
+        .entries()
+        .with_context(|| format!("reading {}", archive_path.display()))?;
+
+    let part = models_dir.join(format!("{SEGMENTATION_ONNX}.part"));
+    for entry in entries {
+        let mut entry = entry.with_context(|| format!("reading {}", archive_path.display()))?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let is_the_model = entry
+            .path()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n == SEGMENTATION_MEMBER))
+            .unwrap_or(false);
+        if !is_the_model {
+            continue;
+        }
+
+        let mut out =
+            fs::File::create(&part).with_context(|| format!("creating {}", part.display()))?;
+        std::io::copy(&mut entry, &mut out)
+            .with_context(|| format!("unpacking {SEGMENTATION_MEMBER} to {}", part.display()))?;
+        out.sync_all().ok();
+        drop(out);
+
+        fs::rename(&part, &dest).with_context(|| format!("finalizing {}", dest.display()))?;
+        return Ok(dest);
+    }
+
+    anyhow::bail!(
+        "{} does not contain a {SEGMENTATION_MEMBER}, so speaker separation cannot start. \
+         Deleting it and downloading the models again should fix it.",
+        archive_path.display()
+    )
+}
+
 /// Lowercase-hex-encodes bytes without pulling in a `hex` crate dependency.
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -204,6 +285,124 @@ mod tests {
 
     fn leak_url(path: &str, server: &MockServer) -> &'static str {
         Box::leak(server.url(path).into_boxed_str())
+    }
+
+    // --- unpacking the segmentation archive ---------------------------------
+
+    /// Writes a `.tar.bz2` under the name the registry expects, containing one
+    /// file at `inner_path` with `body`.
+    fn write_archive(models_dir: &Path, inner_path: &str, body: &[u8]) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        // The name is written into the raw header rather than through
+        // `set_path`, which refuses to produce a path containing `..`. A
+        // hostile archive is not built with the polite API either, and an
+        // escape this function will not construct is an escape it cannot test
+        // against.
+        let name = header.as_old_mut();
+        let bytes = inner_path.as_bytes();
+        name.name[..bytes.len()].copy_from_slice(bytes);
+        header.set_cksum();
+
+        let mut tar = tar::Builder::new(Vec::new());
+        tar.append(&header, body).unwrap();
+        let tar_bytes = tar.into_inner().unwrap();
+
+        let mut bz = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+        bz.write_all(&tar_bytes).unwrap();
+        let bz_bytes = bz.finish().unwrap();
+
+        fs::write(
+            models_dir.join(registry::DIARIZATION_SEGMENTATION.dest),
+            bz_bytes,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn unpacking_lifts_the_onnx_out_of_the_release_tarball() {
+        let dir = tempfile::tempdir().unwrap();
+        write_archive(
+            dir.path(),
+            "sherpa-onnx-pyannote-segmentation-3-0/model.onnx",
+            b"onnx bytes",
+        );
+
+        let path = ensure_segmentation_unpacked(dir.path()).unwrap();
+
+        assert_eq!(path, dir.path().join(SEGMENTATION_ONNX));
+        assert_eq!(fs::read(&path).unwrap(), b"onnx bytes");
+        assert!(
+            !dir.path()
+                .join(format!("{SEGMENTATION_ONNX}.part"))
+                .exists(),
+            "the partial file must not survive a successful unpack"
+        );
+    }
+
+    #[test]
+    fn the_archive_never_chooses_where_a_file_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let models_dir = dir.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+
+        // A member that tries to escape into a sibling directory.
+        write_archive(&models_dir, "../outside/model.onnx", b"escaped");
+
+        let path = ensure_segmentation_unpacked(&models_dir).unwrap();
+
+        assert_eq!(
+            path,
+            models_dir.join(SEGMENTATION_ONNX),
+            "the destination must be ours, not the archive's"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"escaped");
+        assert!(
+            !outside.join("model.onnx").exists(),
+            "nothing may be written outside the models directory"
+        );
+    }
+
+    #[test]
+    fn an_already_unpacked_model_does_not_need_the_archive_again() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(SEGMENTATION_ONNX), b"already here").unwrap();
+        // No archive on disk at all.
+
+        let path = ensure_segmentation_unpacked(dir.path()).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"already here");
+    }
+
+    #[test]
+    fn a_missing_archive_says_which_file_it_wanted() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = ensure_segmentation_unpacked(dir.path()).unwrap_err();
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains(registry::DIARIZATION_SEGMENTATION.dest),
+            "unhelpful message: {message}"
+        );
+    }
+
+    #[test]
+    fn an_archive_without_the_model_says_so_rather_than_half_succeeding() {
+        let dir = tempfile::tempdir().unwrap();
+        write_archive(dir.path(), "sherpa-onnx-pyannote/LICENSE", b"MIT");
+
+        let err = ensure_segmentation_unpacked(dir.path()).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("model.onnx"),
+            "unhelpful message: {err:#}"
+        );
+        assert!(!dir.path().join(SEGMENTATION_ONNX).exists());
     }
 
     fn body_1kb() -> Vec<u8> {

@@ -80,6 +80,11 @@ fn main() -> Result<()> {
     )
     .context("opening the Notetaker runtime")?;
 
+    // Recovery, the search index, and the background transcriber. This binary
+    // did none of it until now: it served a library whose index was whatever
+    // the last run left behind, and nothing it recorded was ever transcribed.
+    runtime.launch();
+
     serve(config, Arc::new(runtime))
 }
 

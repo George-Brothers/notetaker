@@ -460,6 +460,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bzip2"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
+dependencies = [
+ "libbz2-rs-sys",
+]
+
+[[package]]
 name = "bzip2-sys"
 version = "0.1.13+1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2437,6 +2446,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libbz2-rs-sys"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2694,6 +2709,7 @@ name = "notetaker-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bzip2 0.6.1",
  "chrono",
  "cpal",
  "flacenc",
@@ -2708,6 +2724,7 @@ dependencies = [
  "sherpa-rs",
  "symphonia",
  "sysinfo",
+ "tar",
  "tempfile",
  "ureq 3.3.0",
  "uuid",
@@ -4156,7 +4173,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "591c9432b20f41d47f622a73c2888b188c321e313d820824df7d9fa51dbada43"
 dependencies = [
  "bindgen 0.69.5",
- "bzip2",
+ "bzip2 0.4.4",
  "cmake",
  "dirs 5.0.1",
  "flate2",

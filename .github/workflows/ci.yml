@@ -51,9 +51,23 @@ jobs:
           components: clippy, rustfmt
           targets: x86_64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
 
+      # `sherpa-rs` does not build its native libraries — its build script
+      # downloads a prebuilt `libonnxruntime` / `libsherpa-onnx-c-api` into a
+      # per-user cache directory outside `target/`, and puts that directory on
+      # the linker's search path. Cache `target/` without it and the next run
+      # gets the worst of both: cargo considers the build script fresh so it
+      # never re-downloads, and the linker then fails with
+      # `unable to find library -lonnxruntime` on code that did not change.
+      # That is exactly what happened on a documentation-only commit.
+      #
+      # `prefix-key` is bumped to discard the caches saved in that broken state.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          prefix-key: v2-sherpa
+          cache-directories: |
+            ~/.cache/sherpa-rs
+            ~/Library/Caches/sherpa-rs
 
       - name: Install libclang (bindgen, for whisper-rs)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
@@ -128,6 +142,11 @@ jobs:
         with:
           workspaces: src-tauri
           key: ${{ matrix.os }}
+          prefix-key: v2-sherpa
+          cache-directories: |
+            ~/.cache/sherpa-rs
+            ~/Library/Caches/sherpa-rs
+            ~/AppData/Local/sherpa-rs
 
       # whisper-rs runs bindgen, which needs libclang. macOS runners ship it
       # with Xcode; Windows runners need LLVM installed and pointed at.

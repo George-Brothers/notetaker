@@ -74,22 +74,28 @@ pub fn all() -> &'static [ModelSpec] {
     REGISTRY
 }
 
+/// The speech model this tier transcribes with.
+///
+/// Split out of [`required_models`] because the scheduler needs to name this
+/// one file — it loads the transcriber from it — while the downloader only
+/// needs the whole set. Keeping one function the source of both means the
+/// model that gets downloaded is necessarily the model that gets loaded.
+pub fn speech_model(tier: &super::Tier) -> &'static ModelSpec {
+    use super::Tier::*;
+    match tier {
+        AppleSiliconBig | CpuBig => &WHISPER_LARGE_V3_TURBO,
+        AppleSiliconSmall | CpuSmall => &WHISPER_SMALL_Q5_1,
+    }
+}
+
 /// The models required for a given hardware tier: the tier-appropriate
 /// Whisper model plus the two (tier-independent) diarization models.
 pub fn required_models(tier: &super::Tier) -> Vec<&'static ModelSpec> {
-    use super::Tier::*;
-    match tier {
-        AppleSiliconBig | CpuBig => vec![
-            &WHISPER_LARGE_V3_TURBO,
-            &DIARIZATION_SEGMENTATION,
-            &DIARIZATION_EMBEDDING,
-        ],
-        AppleSiliconSmall | CpuSmall => vec![
-            &WHISPER_SMALL_Q5_1,
-            &DIARIZATION_SEGMENTATION,
-            &DIARIZATION_EMBEDDING,
-        ],
-    }
+    vec![
+        speech_model(tier),
+        &DIARIZATION_SEGMENTATION,
+        &DIARIZATION_EMBEDDING,
+    ]
 }
 
 #[cfg(test)]

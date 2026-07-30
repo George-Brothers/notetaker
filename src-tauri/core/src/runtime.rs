@@ -50,12 +50,12 @@ use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
 use crate::capture::{self, CaptureState, CaptureStatus, DiskSpace};
 use crate::index::Index;
-use crate::models::{detect_tier, registry, Downloader, Tier};
+use crate::models::{detect_tier, ensure_segmentation_unpacked, registry, Downloader, Tier};
 use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
-use crate::pipeline::diarize::Diarizer;
+use crate::pipeline::diarize::{Diarizer, SherpaDiarizer};
 use crate::pipeline::llm::LlmClient;
 use crate::pipeline::run::{requeue_stale, PipelineDeps};
-use crate::pipeline::transcribe::Transcriber;
+use crate::pipeline::transcribe::{Transcriber, WhisperTranscriber};
 use crate::power::{PowerPolicy, PowerState, SystemProbe};
 use crate::queue::{IdleSource, Queue, RunOutcome};
 use crate::scheduler;
@@ -296,6 +296,18 @@ impl CaptureSources for FakeSources {
     fn system(&self) -> Result<Box<dyn AudioSource>> {
         Ok(Box::new(FakeSource::tone("system audio", self.secs)))
     }
+}
+
+/// What [`Runtime::start_processing`] found when it tried to start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Processing {
+    /// Models loaded; recordings will now be transcribed in the background.
+    Started,
+    /// Already running — a second call is a no-op, not a mistake.
+    AlreadyRunning,
+    /// The models are not on disk yet, named as the first-run checklist names
+    /// them. Expected on a fresh install, so it is not an error.
+    ModelsMissing(Vec<String>),
 }
 
 /// The loaded speech and speaker models the scheduler runs recordings through.
@@ -1003,13 +1015,7 @@ impl Runtime {
     /// reported complete without re-downloading, so pressing the button twice
     /// is harmless.
     pub fn download_models(&self) -> Result<()> {
-        let settings = self.get_settings()?;
-        let tier = settings
-            .tier_override
-            .as_deref()
-            .and_then(tier_from_name)
-            .unwrap_or_else(|| tier_from_name(&self.detected_tier()).unwrap_or(Tier::CpuSmall));
-        let specs = registry::required_models(&tier);
+        let specs = registry::required_models(&self.resolved_tier());
 
         {
             let mut pulls = lock(&self.inner.pulls);
@@ -1070,9 +1076,37 @@ impl Runtime {
                         }
                     }
                 }
+
+                // The models just arrived, so the thing that was waiting on
+                // them can start now. Without this the user would download the
+                // models, see the checklist go green, and still have to quit
+                // and reopen the app before anything was transcribed.
+                let runtime = Runtime {
+                    inner: Arc::clone(&inner),
+                };
+                match runtime.start_processing() {
+                    Ok(Processing::Started) => log::info!("processing started"),
+                    Ok(other) => log::info!("processing not started: {other:?}"),
+                    Err(e) => log::warn!("starting processing after the download: {e:#}"),
+                }
             })
             .context("starting the speech-model download")?;
         Ok(())
+    }
+
+    /// The tier this machine actually uses: the user's override when they have
+    /// set one, the detected tier otherwise.
+    ///
+    /// One function so that the tier the downloader fetches for and the tier
+    /// the scheduler loads for cannot disagree — a mismatch there would
+    /// download the large model and then fail to find the small one.
+    fn resolved_tier(&self) -> Tier {
+        self.get_settings()
+            .unwrap_or_default()
+            .tier_override
+            .as_deref()
+            .and_then(tier_from_name)
+            .unwrap_or_else(|| tier_from_name(&self.detected_tier()).unwrap_or(Tier::CpuSmall))
     }
 
     /// The hardware tier detected for this machine, as the same string
@@ -1098,6 +1132,88 @@ impl Runtime {
     }
 
     // --- scheduler --------------------------------------------------------
+
+    /// Everything an app does between opening the runtime and showing itself:
+    /// recover what a crash left behind, rebuild the index, and start
+    /// processing.
+    ///
+    /// Both front ends call exactly this, rather than each writing the same
+    /// three steps — the desktop shell cannot be compiled on the development
+    /// machine, so anything it does that `notetaker-serve` does not is
+    /// unverifiable until CI. Nothing here is fatal: a damaged recording must
+    /// not stop the other hundred from opening, and absent models are a first
+    /// launch, not a failure.
+    pub fn launch(&self) {
+        match self.start_up() {
+            Ok(s) => log::info!(
+                "ready: {} recovered, {} requeued, {} indexed",
+                s.recovered,
+                s.requeued,
+                s.indexed
+            ),
+            Err(e) => log::warn!("startup housekeeping did not finish: {e:#}"),
+        }
+        match self.start_processing() {
+            Ok(Processing::Started) => log::info!("transcribing in the background"),
+            Ok(Processing::AlreadyRunning) => {}
+            Ok(Processing::ModelsMissing(missing)) => log::info!(
+                "not transcribing yet — these are not downloaded: {}",
+                missing.join(", ")
+            ),
+            Err(e) => log::warn!("could not start transcribing: {e:#}"),
+        }
+    }
+
+    /// Loads this machine's models and starts background processing.
+    ///
+    /// **This is the call that makes the app work rather than merely run.**
+    /// Everything under it — the queue, the scheduler, the pipeline — was
+    /// written, tested and then reached by nothing: [`Runtime::start_scheduler`]
+    /// takes an already-loaded [`SchedulerModels`], and no binary ever built
+    /// one, so a recording was captured, queued, and left there. This is the
+    /// missing half-inch of wiring, put somewhere both the desktop shell and
+    /// `notetaker-serve` can call it so the two cannot drift.
+    ///
+    /// Missing models are a **return value, not an error**: on first launch
+    /// they are legitimately absent, and the first-run checklist is the thing
+    /// that fixes it. Callers log the outcome and carry on — the app is still
+    /// perfectly usable for recording and for reading old notes while the
+    /// models download.
+    pub fn start_processing(&self) -> Result<Processing> {
+        // Only ever called at startup and at the end of a download, so the
+        // window between this check and the start below is not one two callers
+        // realistically race through. `start_scheduler` refuses a second start
+        // anyway; this check exists to make "already running" an ordinary
+        // answer rather than an error.
+        if lock(&self.inner.scheduler).is_some() {
+            return Ok(Processing::AlreadyRunning);
+        }
+
+        let tier = self.resolved_tier();
+        let models_dir = &self.inner.models_dir;
+
+        let missing: Vec<String> = registry::required_models(&tier)
+            .iter()
+            .filter(|spec| !models_dir.join(spec.dest).exists())
+            .map(|spec| spec.name.to_string())
+            .collect();
+        if !missing.is_empty() {
+            return Ok(Processing::ModelsMissing(missing));
+        }
+
+        let speech_path = models_dir.join(registry::speech_model(&tier).dest);
+        let segmentation_path = ensure_segmentation_unpacked(models_dir)?;
+        let embedding_path = models_dir.join(registry::DIARIZATION_EMBEDDING.dest);
+
+        let transcriber = WhisperTranscriber::load(&speech_path)?;
+        let diarizer = SherpaDiarizer::load(&segmentation_path, &embedding_path)?;
+
+        self.start_scheduler(SchedulerModels {
+            transcriber: Box::new(transcriber),
+            diarizer: Box::new(diarizer),
+        })?;
+        Ok(Processing::Started)
+    }
 
     /// Spawns the background processing loop.
     ///
@@ -2062,6 +2178,95 @@ mod tests {
         let err = rt.start_scheduler(models("hello")).unwrap_err();
         assert!(format!("{err:#}").contains("already running"), "{err:#}");
         rt.join_scheduler();
+    }
+
+    // --- starting processing ----------------------------------------------
+    //
+    // These cover the wiring that was missing entirely: `start_scheduler` was
+    // reachable only from tests, so a shipped app captured recordings and
+    // never transcribed one. What cannot be tested here is the happy path —
+    // loading a real 500 MB Whisper model is not a unit test — so these pin
+    // the decisions around it: what happens before the models arrive, that a
+    // second call is harmless, and that the front ends' one startup call is
+    // safe on a machine with nothing downloaded.
+
+    #[test]
+    fn processing_will_not_start_before_the_models_are_downloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.1);
+
+        let outcome = rt.start_processing().unwrap();
+
+        let Processing::ModelsMissing(missing) = outcome else {
+            panic!("expected the models to be reported missing, got {outcome:?}");
+        };
+        // Every model this tier needs, named the way the first-run checklist
+        // names them — a caller must be able to say which one to fetch.
+        let expected: Vec<String> = registry::required_models(&rt.resolved_tier())
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        assert_eq!(missing, expected);
+        assert!(
+            lock(&rt.inner.scheduler).is_none(),
+            "nothing may be started when the models are absent"
+        );
+    }
+
+    #[test]
+    fn a_missing_model_is_not_an_error_because_a_first_launch_is_normal() {
+        // The distinction that matters for the UI: `Err` would surface as a
+        // failure the user has to understand, when the honest state is "you
+        // have not downloaded these yet" and the checklist already says so.
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.1);
+
+        assert!(rt.start_processing().is_ok());
+    }
+
+    #[test]
+    fn starting_processing_when_it_is_already_running_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.1);
+        rt.start_scheduler(models("hello")).unwrap();
+
+        assert_eq!(rt.start_processing().unwrap(), Processing::AlreadyRunning);
+
+        rt.join_scheduler();
+    }
+
+    #[test]
+    fn launch_recovers_and_indexes_even_though_the_models_are_absent() {
+        // What both front ends call. A machine with no models downloaded must
+        // still come up with a working library and search — the app is usable
+        // for recording and reading long before it can transcribe.
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.1);
+        let server = fake_llm();
+        use_llm(&rt, &server.base_url());
+        let id = record(&rt, Mode::InPerson, "Budget review");
+        rt.tick_once(&models("the numbers are fine")).unwrap();
+
+        // Throw the index away. The recording's files are untouched, so only a
+        // rebuild can make it findable again — without this the search below
+        // passes on the index left behind by the first runtime, and the test
+        // proves nothing. (It did, until a negative control said so.)
+        fs::remove_file(dir.path().join("app").join(INDEX_FILE)).unwrap();
+
+        // A fresh runtime over the same folder, as if the app had reopened.
+        let reopened = runtime(dir.path(), 0.1);
+        reopened.launch();
+
+        assert_eq!(
+            reopened.search("numbers").unwrap().len(),
+            1,
+            "launch must rebuild the search index"
+        );
+        assert_eq!(status_of(&reopened, &id), Status::Ready);
+        assert!(
+            lock(&reopened.inner.scheduler).is_none(),
+            "no models on disk, so nothing to run them with"
+        );
     }
 
     // --- settings change rebuilds the power policy ------------------------

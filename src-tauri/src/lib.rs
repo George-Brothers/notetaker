@@ -269,19 +269,12 @@ pub fn run() {
         .setup(|app| {
             let runtime = open_runtime()?;
 
-            // Recovers anything a crash left behind and rebuilds the search
-            // index. A failure here is logged rather than fatal: refusing to
-            // open over one damaged recording would take the other hundred down
-            // with it, which is the reasoning on `start_up` itself.
-            match runtime.start_up() {
-                Ok(s) => log::info!(
-                    "ready: {} recovered, {} requeued, {} indexed",
-                    s.recovered,
-                    s.requeued,
-                    s.indexed
-                ),
-                Err(e) => log::warn!("startup housekeeping did not finish: {e:#}"),
-            }
+            // Recovers what a crash left behind, rebuilds the search index, and
+            // starts transcribing in the background. One call, shared with
+            // `notetaker-serve`, because this crate never compiles on the
+            // development machine — anything written here and nowhere else is
+            // unverified until CI.
+            runtime.launch();
 
             app.manage(runtime);
             Ok(())
