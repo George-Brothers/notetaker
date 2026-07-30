@@ -5,6 +5,9 @@ also **served to a browser** so the library can be read from a phone. High-quali
 dual-track recording now, idle-time local transcription (EN/ZH, Speaker 1/2/3)
 and summarization later, organized by tasks. No cloud, ever.
 
+**In flight? Read `docs/HANDOVER.md` first** — branches, what is done, what
+is next, and what is waiting on Mr. Brothers.
+
 ## State
 - **Plan A (portable core): COMPLETE** (2026-07-23) — storage, index, queue,
   pipeline, models, UI library view.
