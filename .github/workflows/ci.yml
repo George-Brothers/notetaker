@@ -205,7 +205,14 @@ jobs:
 
       # The Tauri shell never compiles on Linux (libdbus-sys needs pkg-config
       # unavailable in the dev environment), so this is its only check.
+      #
+      # macOS only. `tauri-build` evaluates `bundle.resources` globs at compile
+      # time and fails when one matches nothing, and the Windows overlay points
+      # at `target/release` — so a *debug* build of this crate on Windows cannot
+      # succeed by design. The Windows compile happens in `package-windows`
+      # instead, in release, which is the build that ships anyway.
       - name: Build the Tauri app crate
+        if: runner.os == 'macOS'
         working-directory: src-tauri
         run: cargo build -p notetaker
 
@@ -266,12 +273,48 @@ jobs:
       # has to exist before the app crate is compiled.
       - run: pnpm build
 
+      # `notetaker.exe` and the prebuilt `onnxruntime.dll` both import
+      # MSVCP140 / VCRUNTIME140 — the Microsoft Visual C++ redistributable,
+      # which is *not* part of Windows. Most PCs have it because something else
+      # installed it; a fresh one does not, and there the app would fail to
+      # start with a dialog naming a DLL rather than anything a user could act
+      # on. Copying the runtime beside the executable is Microsoft's supported
+      # "app-local deployment", and costs about 1.5 MB.
+      #
+      # This runs *before* the compile on purpose: `tauri-build` checks the
+      # resource globs while building the app crate, and a glob matching
+      # nothing is a hard error, so the files have to exist first.
+      - name: Put the MSVC runtime where the app can find it
+        shell: pwsh
+        run: |
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -property installationPath
+          if (-not $vs) { throw "vswhere found no Visual Studio installation" }
+          $version = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt").Trim()
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\$version\x64\Microsoft.VC*.CRT" -Directory |
+            Select-Object -First 1
+          if (-not $crt) { throw "no redistributable CRT under $vs\VC\Redist\MSVC\$version\x64" }
+
+          $dest = 'src-tauri/target/release'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item "$($crt.FullName)\*.dll" $dest -Force
+          Write-Host "copied from $($crt.FullName):"
+          Get-ChildItem $dest/*140*.dll | Select-Object Name, Length
+
       # Compiled as its own step rather than left to `tauri build`, so that the
       # listing below happens *between* the compile and the bundle. If the
       # bundler then cannot find a DLL, the run already shows what was there.
+      #
+      # Core first, and separately: sherpa's build script is what copies the
+      # ONNX libraries into `target/release`, and cargo is free to run the app
+      # crate's build script — the one that checks the resource globs — before
+      # it. Building the dependency first makes the order deterministic instead
+      # of a race that happens to have been winning.
       - name: Compile the app in release
         working-directory: src-tauri
-        run: cargo build --release -p notetaker
+        run: |
+          cargo build --release -p notetaker-core
+          cargo build --release -p notetaker
 
       - name: What sherpa left in the build folder
         shell: pwsh

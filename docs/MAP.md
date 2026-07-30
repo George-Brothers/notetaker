@@ -371,10 +371,35 @@ Three checks, because a config is not a result:
   as the loader finding what it asks for. The full import list is printed, since
   it is also where the MSVC-runtime dependency would show up.
 
+The import scan then earned its keep on the first run. `notetaker.exe` and the
+prebuilt `onnxruntime.dll` both import `MSVCP140` / `VCRUNTIME140` — **the
+Microsoft Visual C++ redistributable, which is not part of Windows.** Most PCs
+have it because something else installed it; a fresh one does not, and there the
+app would have failed to start showing a DLL name. The runtime is now copied
+beside the executable ("app-local deployment", which is what it is licensed
+for), about 1.5 MB. Nothing else in the chain is unresolved: `notetaker.exe` ->
+`sherpa-onnx-c-api.dll` -> `onnxruntime.dll`, all shipped.
+
+The same scan showed `cargs.dll` is imported by nothing at all. It is still
+bundled — 139 KB against the risk of being wrong about a library the build
+system chose to produce.
+
+Two ordering traps, both found by CI and both worth knowing, because the "a glob
+matching nothing is a hard error" property is checked by **`tauri-build` at
+compile time**, not only by the bundler:
+- a *debug* build of the app crate on Windows therefore cannot succeed, since
+  the overlay points at `target/release`. The debug build was dropped from the
+  Windows test job; the release build in `package-windows` is the one that
+  ships anyway. macOS still builds the app crate in the test job.
+- cargo may run the app crate's build script *before* sherpa's, since the two
+  are not related by a build dependency — so the globs can be checked before
+  the libraries they name exist. `package-windows` builds `notetaker-core`
+  first to make the order deterministic rather than a race that had been
+  winning.
+
 Still unknown: whether the installer installs, and whether the installed app
 starts. Nothing has run it. It is also **unsigned**, so SmartScreen will warn on
-first launch ("More info" -> "Run anyway"); the prebuilt sherpa DLLs also want
-the MSVC runtime, which any current Windows has.
+first launch ("More info" -> "Run anyway").
 
 macOS has the identical bug and is not fixed: `.app` resources land in
 `Contents/Resources/` while the binary is in `Contents/MacOS/`, so the dylibs
