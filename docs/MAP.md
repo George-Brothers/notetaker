@@ -201,12 +201,17 @@ rendered as two stacked boxes, and the narrow layout squeezed the note into a
 ## CI has run now — what it found (2026-07-30)
 The first runs in this project's life, on PR #1. Three rounds.
 
-**State: macOS ✅ · Linux ✅ · Windows — the 8 are gone.** The disk-probe fix was
-confirmed by a real Windows run. One failure replaced them, in a test written the
-same day: it deleted the SQLite index while the runtime still held it open, which
-Unix allows and Windows refuses (`os error 32`). Fixed by closing the runtime
-first. **Windows is a different operating system in the tests too, not only in
-the platform layer.**
+**State (2026-07-30): macOS ✅ · Linux ✅ · Windows ✅ — the first fully green run
+in this project's life.** Every job ran to the end, so for the first time the
+**Tauri app crate has been compiled on both Windows and macOS**, and clippy
+`-D warnings` passed on all three.
+
+Getting there took two Windows bugs and two CI bugs:
+- the disk probe (below) — one bug, eight failing tests, and no recording at all;
+- a test written the same day that deleted the SQLite index while the runtime
+  still held it open. Unix allows that, Windows refuses (`os error 32`).
+  **Windows is a different operating system in the tests too, not only in the
+  platform layer.**
 macOS had never been compiled before today; it now builds, tests and clippies
 clean, as does the Tauri app crate on both platforms.
 
