@@ -100,6 +100,7 @@ scripts/check-platforms.sh      # all three targets, ~30s
 | `notetaker-server` + `dispatch` | **Fully verified here**, including a real binary over a real socket |
 | The whole UI, visually | **Seen and screenshotted** (2026-07-30) — real binary, real files, real audio, in Chrome. See below |
 | The scheduler wiring | **Decisions tested; the happy path is not.** A real model load is not a unit test — see "The scheduler, now wired" |
+| Speech routing | **Measured on real bilingual meetings** (2026-07-30), both models loaded, against a Whisper-only baseline. See `specs/bakeoff-result.md` |
 
 The cross-check was itself confirmed with a negative control: a deliberate type
 error in `windows/power.rs` *is* caught.
@@ -163,10 +164,13 @@ error in `windows/power.rs` *is* caught.
   a checkbox line in `summary.md`, so the list cannot drift from the markdown
   the user can edit by hand.
 - The app runs on Mac *and* PC, so **no user-facing string may say "your Mac"**.
-- Speech = **Whisper, as shipped** — SenseVoice won the bake-off and is *not*
-  wired (item 2 under "Next"); diarization = sherpa-onnx; summaries =
-  Ollama+Qwen. Diarization is verified on real human audio only — synthetic TTS
-  voices don't separate.
+- Speech = **Whisper and SenseVoice, routed per segment** by the language
+  SenseVoice detects; diarization = sherpa-onnx; summaries = Ollama+Qwen.
+  **First run asks which languages the user speaks and downloads accordingly** —
+  SenseVoice is 239 MB an English-only user has no use for. Measured on real
+  bilingual meetings, not fixtures: `docs/superpowers/specs/bakeoff-result.md`.
+  Diarization is verified on real human audio only — synthetic TTS voices
+  don't separate.
 - Every message a user can hit is written for someone who is not an engineer.
 
 ## Verified vs assumed
@@ -324,12 +328,18 @@ second call, and a launch on a machine with nothing downloaded.
 1. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
    was not written blind are in `platform/src/macos/speaker.rs`. Everything below
    it (ring, downmix, resample) is already shared and tested.
-2. **The speech engine does not match the bake-off.** `SenseVoice` won on
-   Chinese by 9% vs 53% CER and is described throughout as the default — but it
-   exists only in `core/src/bin/bakeoff.rs`. The only production `Transcriber` is
-   `WhisperTranscriber`, and `models/registry.rs` has no SenseVoice entry. Either
-   wire it (a `Transcriber` impl plus a registry entry with a hand-verified
-   sha256) or stop calling it the default.
-3. **On the hardware**: real capture on both machines, `tauri build` (never once
+2. **Non-speech leaks into transcripts, from both engines.** Whisper writes
+   `[MUSIC PLAYING]` and `[BLANK_AUDIO]`; SenseVoice hallucinates a short
+   interjection (`あ。`) onto the same silence. Both were seen in real audio on
+   2026-07-30. Whisper's markers are trivially filterable; SenseVoice's are not
+   distinguishable from a real short utterance, so the honest fix is probably a
+   VAD gate before transcription rather than a text filter after it.
+3. **Whisper pads every call to a 30-second window.** A recording with many
+   short diarization segments therefore costs 30 s of compute per segment
+   regardless of length — 70 segments of a 4-minute recording took over ten
+   minutes. This predates routing and is the single biggest processing cost in
+   the app. Batching adjacent same-speaker spans would cut it directly.
+4. **On the hardware**: real capture on both machines, `tauri build` (never once
    run — no installer has ever been produced), Metal build and tier detection,
-   permissions, re-run the bake-off, and one real bilingual call end to end.
+   permissions, re-run the bake-off against `large-v3-turbo`, and one real
+   bilingual call end to end.
