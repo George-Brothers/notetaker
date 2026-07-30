@@ -397,6 +397,18 @@ compile time**, not only by the bundler:
   first to make the order deterministic rather than a race that had been
   winning.
 
+Green as of run `30584732846`. Every import of every shipped binary now resolves
+to a file inside the installer or to Windows itself — printed in full by the
+packaging job, so it is a reading rather than a belief.
+
+To get one: open the newest CI run on the branch, `notetaker-windows-installer`
+under Artifacts, unzip, run `Notetaker_0.1.0_x64-setup.exe`. Artifacts expire
+after 90 days.
+
+```bash
+gh run download --name notetaker-windows-installer
+```
+
 Still unknown: whether the installer installs, and whether the installed app
 starts. Nothing has run it. It is also **unsigned**, so SmartScreen will warn on
 first launch ("More info" -> "Run anyway").
