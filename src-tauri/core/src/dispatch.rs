@@ -102,6 +102,7 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         "pull_progress" => to_json(rt.pull_progress()),
         "download_models" => to_json(rt.download_models()?),
         "detected_tier" => to_json(rt.detected_tier()),
+        "setup_status" => to_json(rt.setup_status()),
 
         other => anyhow::bail!("unknown command {other:?}"),
     }
@@ -231,6 +232,7 @@ mod tests {
             "pull_progress",
             "download_models",
             "detected_tier",
+            "setup_status",
         ];
         let declared: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
         for arm in ARMS {

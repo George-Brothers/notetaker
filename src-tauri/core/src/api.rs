@@ -175,6 +175,46 @@ pub enum SpeechEngine {
     SenseVoice,
 }
 
+/// What the app can and cannot do right now.
+///
+/// Read from **disk and from the live scheduler**, never from what this session
+/// happens to remember. The download checklist used to be the only thing that
+/// knew whether setup had happened, and it is in-memory — so a restart made a
+/// fully set-up app claim it had never started, and an app with no models at
+/// all looked identical to a working one until you pressed something.
+///
+/// Nothing here blocks. The app records perfectly well with none of these
+/// models; this exists so it can say so plainly instead of accepting work it
+/// will silently never do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStatus {
+    /// Is the transcription loop actually running? When false, recordings are
+    /// captured and kept, and nothing transcribes them.
+    pub transcribing: bool,
+    /// Required for this machine and these languages, and not on disk.
+    pub missing: Vec<MissingModel>,
+    /// What `missing` would cost to download, in bytes.
+    pub download_bytes: u64,
+    /// Recordings already waiting that this would unblock. The number that
+    /// makes the difference between a notice and a nag.
+    pub waiting: usize,
+    /// Which hardware tier the model choice was made for, so the app can name
+    /// it rather than presenting the size as arbitrary.
+    pub tier: String,
+}
+
+/// One model the app needs and does not have.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingModel {
+    /// The identifier, matching `ModelSpec::name`.
+    pub name: String,
+    /// What it is, in words meant for a person.
+    pub label: String,
+    pub bytes: u64,
+}
+
 fn default_languages() -> Vec<String> {
     vec!["en".to_string()]
 }

@@ -26,6 +26,19 @@ pub struct ModelSpec {
     pub url: &'static str,
     pub sha256: &'static str,
     pub dest: &'static str,
+    /// What this is, in words a user reads. `name` is an identifier and shows
+    /// up in settings files; this is the only string that should reach a
+    /// screen.
+    pub label: &'static str,
+    /// Download size in bytes, so the app can say what it is about to cost
+    /// someone before they agree to it.
+    ///
+    /// Every figure here was read from the `content-length` of the real URL
+    /// above on 2026-07-30, not estimated. It is used for display only —
+    /// nothing verifies a download against it, because the sha256 already
+    /// does that job properly. A number that drifts makes a label slightly
+    /// wrong; it can never let a bad file through.
+    pub bytes: u64,
 }
 
 /// Hardware capability tier, used to pick which models to fetch.
@@ -476,6 +489,8 @@ mod tests {
             url: leak_url("/model.bin", &server),
             sha256: Box::leak(expected_sha256.into_boxed_str()),
             dest: "model.bin",
+            label: "A model, for a test",
+            bytes: 0,
         };
 
         let result = downloader.ensure(&spec, |_, _| {}).unwrap();
@@ -506,6 +521,8 @@ mod tests {
             url: leak_url("/model.bin", &server),
             sha256: Box::leak(wrong_sha256.into_boxed_str()),
             dest: "model.bin",
+            label: "A model, for a test",
+            bytes: 0,
         };
 
         let err = downloader.ensure(&spec, |_, _| {}).unwrap_err();
@@ -545,6 +562,8 @@ mod tests {
             url: leak_url("/model.bin", &server),
             sha256: Box::leak(expected_sha256.into_boxed_str()),
             dest: "model.bin",
+            label: "A model, for a test",
+            bytes: 0,
         };
 
         let result = downloader.ensure(&spec, |_, _| {}).unwrap();
@@ -571,6 +590,8 @@ mod tests {
             url: leak_url("/model.bin", &server),
             sha256: "", // deliberate: unverified TODO entries skip the check
             dest: "model.bin",
+            label: "A model, for a test",
+            bytes: 0,
         };
 
         let result = downloader.ensure(&spec, |_, _| {}).unwrap();
@@ -600,6 +621,8 @@ mod tests {
             url: leak_url("/model.bin", &server),
             sha256: Box::leak(expected_sha256.into_boxed_str()),
             dest: "model.bin",
+            label: "A model, for a test",
+            bytes: 0,
         };
 
         let result = downloader.ensure(&spec, |_, _| {}).unwrap();

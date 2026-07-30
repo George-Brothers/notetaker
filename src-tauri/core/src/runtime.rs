@@ -258,6 +258,10 @@ pub const COMMANDS: &[Command] = &[
         name: "detected_tier",
         args: &[],
     },
+    Command {
+        name: "setup_status",
+        args: &[],
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1198,6 +1202,60 @@ impl Runtime {
     /// that fixes it. Callers log the outcome and carry on — the app is still
     /// perfectly usable for recording and for reading old notes while the
     /// models download.
+    /// The models this machine and these languages need, and does not have.
+    ///
+    /// One computation, used both by the code that decides whether processing
+    /// can start and by the code that tells the user why it did not. Two copies
+    /// would drift, and the symptom of that drift is an app cheerfully
+    /// insisting it is fine while transcribing nothing.
+    fn missing_models(&self) -> Vec<&'static crate::models::ModelSpec> {
+        let settings = self.get_settings().unwrap_or_default();
+        let tier = self.resolved_tier();
+        let models_dir = &self.inner.models_dir;
+        registry::required_models(&tier, &settings.languages)
+            .into_iter()
+            .filter(|spec| !models_dir.join(spec.dest).exists())
+            .collect()
+    }
+
+    /// What the app can and cannot do right now — see [`api::SetupStatus`].
+    ///
+    /// Deliberately infallible. This is the call the UI makes to find out
+    /// whether it should be honest with the user, and a status check that can
+    /// itself fail leaves the interface with nothing to say.
+    pub fn setup_status(&self) -> api::SetupStatus {
+        let missing = self.missing_models();
+
+        // Both states are "recorded, not transcribed". `Recorded` is one that
+        // never reached the queue because nothing was there to take it;
+        // `Queued` is one that did and is waiting. To the person looking at
+        // the screen they are the same thing, and lumping them is what makes
+        // the count match what they can see in the library.
+        let waiting = self
+            .list_recordings()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| matches!(row.status, Status::Queued | Status::Recorded))
+                    .count()
+            })
+            .unwrap_or(0);
+
+        api::SetupStatus {
+            transcribing: lock(&self.inner.scheduler).is_some(),
+            download_bytes: missing.iter().map(|spec| spec.bytes).sum(),
+            missing: missing
+                .iter()
+                .map(|spec| api::MissingModel {
+                    name: spec.name.to_string(),
+                    label: spec.label.to_string(),
+                    bytes: spec.bytes,
+                })
+                .collect(),
+            waiting,
+            tier: tier_name(self.resolved_tier()).to_string(),
+        }
+    }
+
     pub fn start_processing(&self) -> Result<Processing> {
         // Only ever called at startup and at the end of a download, so the
         // window between this check and the start below is not one two callers
@@ -1211,15 +1269,12 @@ impl Runtime {
         let settings = self.get_settings().unwrap_or_default();
         let tier = self.resolved_tier();
         let models_dir = &self.inner.models_dir;
-        let required = registry::required_models(&tier, &settings.languages);
 
-        let missing: Vec<String> = required
-            .iter()
-            .filter(|spec| !models_dir.join(spec.dest).exists())
-            .map(|spec| spec.name.to_string())
-            .collect();
+        let missing = self.missing_models();
         if !missing.is_empty() {
-            return Ok(Processing::ModelsMissing(missing));
+            return Ok(Processing::ModelsMissing(
+                missing.iter().map(|spec| spec.name.to_string()).collect(),
+            ));
         }
 
         let speech_path = models_dir.join(registry::speech_model(&tier).dest);
@@ -3112,11 +3167,27 @@ mod tests {
         rt.start_capture(Mode::InPerson, "Another").unwrap();
         rt.stop_capture().unwrap();
 
+        // The state this whole call exists to report: nothing was downloaded
+        // in this test, so it must say so rather than looking healthy. This is
+        // the exact shape of the bug it was written for — on a real machine
+        // with no models, "process now" reported success and transcribed
+        // nothing forever, because no code ever asked this question.
+        let setup = rt.setup_status();
+        assert!(!setup.transcribing, "no models were downloaded here");
+        assert!(
+            !setup.missing.is_empty() && setup.download_bytes > 0,
+            "a machine with no models must be able to say what it needs: {setup:?}"
+        );
+        assert!(
+            setup.waiting > 0,
+            "two recordings were made above and neither can be processed"
+        );
+
         // capture_status, pull_progress, detected_tier, list_templates,
-        // ask_recording, pause, resume, start, stop — nine not in the list
-        // above.
+        // ask_recording, setup_status, pause, resume, start, stop — ten not in
+        // the list above.
         assert_eq!(
-            called.len() + 9,
+            called.len() + 10,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

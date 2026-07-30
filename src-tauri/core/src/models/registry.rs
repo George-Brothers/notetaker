@@ -17,6 +17,8 @@ pub const WHISPER_LARGE_V3_TURBO: ModelSpec = ModelSpec {
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
     sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
     dest: "ggml-large-v3-turbo.bin",
+    label: "Speech model (high quality)",
+    bytes: 1624555275,
 };
 
 /// Whisper `small`, q5_1 quantized ggml. Used on the `AppleSiliconSmall` and
@@ -30,6 +32,8 @@ pub const WHISPER_SMALL_Q5_1: ModelSpec = ModelSpec {
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
     sha256: "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
     dest: "ggml-small-q5_1.bin",
+    label: "Speech model (fast)",
+    bytes: 190085487,
 };
 
 /// sherpa-onnx packaging of pyannote `segmentation-3.0` (a tarball
@@ -45,6 +49,8 @@ pub const DIARIZATION_SEGMENTATION: ModelSpec = ModelSpec {
     url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
     sha256: "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
     dest: "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+    label: "Telling speakers apart",
+    bytes: 6958444,
 };
 
 /// sherpa-onnx WeSpeaker `voxceleb-resnet34-LM` speaker-embedding model —
@@ -60,6 +66,8 @@ pub const DIARIZATION_EMBEDDING: ModelSpec = ModelSpec {
     url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx",
     sha256: "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012",
     dest: "wespeaker_en_voxceleb_resnet34_LM.onnx",
+    label: "Recognising each speaker",
+    bytes: 26530550,
 };
 
 /// SenseVoice Small, int8-quantized — the non-English speech model.
@@ -81,6 +89,8 @@ pub const SENSE_VOICE_MODEL: ModelSpec = ModelSpec {
     url: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx",
     sha256: "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
     dest: "sense-voice-model.int8.onnx",
+    label: "Speech model for Chinese, Japanese, Korean and Cantonese",
+    bytes: 239233841,
 };
 
 /// SenseVoice's token table. Useless without [`SENSE_VOICE_MODEL`] and vice
@@ -93,6 +103,8 @@ pub const SENSE_VOICE_TOKENS: ModelSpec = ModelSpec {
     url: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt",
     sha256: "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
     dest: "sense-voice-tokens.txt",
+    label: "Word list for the non-English model",
+    bytes: 315894,
 };
 
 const REGISTRY: &[ModelSpec] = &[

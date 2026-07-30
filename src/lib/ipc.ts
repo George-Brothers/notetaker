@@ -155,6 +155,33 @@ export interface Settings {
 
 export type SpeechEngine = "auto" | "whisper" | "senseVoice";
 
+/** One model the app needs and does not have. */
+export interface MissingModel {
+  name: string;
+  /** What it is, in words meant for a person. */
+  label: string;
+  bytes: number;
+}
+
+/**
+ * What the app can and cannot do right now.
+ *
+ * The app never refuses to record over this — recording works with nothing
+ * downloaded at all. This exists so the interface can say what will not happen
+ * rather than accepting work it will silently never do.
+ */
+export interface SetupStatus {
+  /** False means recordings are captured and kept, and nothing transcribes them. */
+  transcribing: boolean;
+  missing: MissingModel[];
+  /** What `missing` would cost to download. */
+  downloadBytes: number;
+  /** Recordings already waiting that downloading would unblock. */
+  waiting: number;
+  /** The hardware tier the model choice was made for. */
+  tier: string;
+}
+
 /**
  * The languages the app can be told about, and what choosing one costs.
  *
@@ -336,4 +363,10 @@ export const api = {
   downloadModels: () => invoke<void>("download_models"),
   /** The hardware tier detected for this machine ("small" | "medium" | "large"). */
   detectedTier: () => invoke<string>("detected_tier"),
+  /**
+   * What the app can and cannot do right now, read from disk rather than from
+   * whatever this session remembers downloading. Safe to poll; it does no
+   * network work.
+   */
+  setupStatus: () => invoke<SetupStatus>("setup_status"),
 };

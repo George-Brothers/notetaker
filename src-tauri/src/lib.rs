@@ -241,7 +241,12 @@ fn download_models(rt: State<'_, Runtime>) -> Result<Value, String> {
 
 #[tauri::command]
 fn detected_tier(rt: State<'_, Runtime>) -> Result<Value, String> {
-    call(&rt, "detected_tier", json!({}))
+    call(&rt, "detected_tier", json!({}
+
+#[tauri::command]
+fn setup_status(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "setup_status", json!({}))
+}))
 }
 
 /// Builds the runtime the whole app hangs off.
@@ -310,6 +315,7 @@ pub fn run() {
             pull_progress,
             download_models,
             detected_tier,
+            setup_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

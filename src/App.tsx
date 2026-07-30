@@ -18,6 +18,7 @@ import { RecordBar } from "./components/RecordBar";
 import { MeetingPrompt } from "./components/MeetingPrompt";
 import { Settings } from "./components/Settings";
 import { FirstRun } from "./components/FirstRun";
+import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { IconButton, Notice, TooltipProvider } from "./components/ui";
 import { api } from "./lib/ipc";
@@ -39,6 +40,7 @@ function App() {
   const capture = useCapture();
   const theme = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [processBlocked, setProcessBlocked] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
@@ -76,8 +78,21 @@ function App() {
     if (id) await lib.selectRecording(id);
   }, [capture, lib]);
 
+  // "Process now" queues the recording and wakes the scheduler. When there is
+  // no scheduler — because the speech models were never downloaded — that call
+  // still succeeds, the row flips to "queued", and it stays there forever. It
+  // did exactly that on a real machine for three recordings without one word of
+  // explanation. So: ask first, and say the true thing instead.
   const processNow = useCallback(
     async (id: string) => {
+      const setup = await api.setupStatus().catch(() => null);
+      if (setup && !setup.transcribing) {
+        setProcessBlocked(
+          setup.missing.length > 0
+            ? "Nothing can be transcribed yet — the speech models aren't downloaded. This recording is safe and will be processed as soon as they are."
+            : "Transcription isn't running. Your recording is safe; restarting the app usually fixes this.",
+        );
+      }
       await api.processNow(id);
       await lib.refreshRecordings();
     },
@@ -110,6 +125,19 @@ function App() {
 
         {capture.captureError && (
           <Notice className="mx-3 mt-2 shrink-0">{capture.captureError}</Notice>
+        )}
+        <SetupNotice onOpenSettings={() => setSettingsOpen(true)} />
+        {processBlocked && (
+          <Notice className="mx-3 mt-2 shrink-0">
+            {processBlocked}{" "}
+            <button
+              type="button"
+              onClick={() => setProcessBlocked(null)}
+              className="underline underline-offset-2"
+            >
+              Dismiss
+            </button>
+          </Notice>
         )}
         {lib.loadError && (
           <Notice className="mx-3 mt-2 shrink-0">
