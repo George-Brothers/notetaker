@@ -450,6 +450,43 @@ macOS has the identical bug and is not fixed: `.app` resources land in
 need `Contents/Frameworks` and an rpath instead. Left alone rather than guessed
 at, because it cannot be verified from here and the Mac work is blocked anyway.
 
+## First real use, 2026-07-30 — what a person found in ten minutes
+Mr. Brothers installed it and used it. **Capture works on real hardware**: three
+recordings, mic audio, meeting mode and in-person mode, FLAC written. That
+closes the oldest assumption in this document.
+
+Everything else he found is a real defect, and all of it was invisible to 488
+passing tests because none of it is a *failure* — it is the app being silent.
+
+1. **DONE.** "Process now" reported success and transcribed nothing, forever.
+   No models were on the machine, so no scheduler existed; `process_now` queued
+   the recording and woke nothing. Nothing in the app ever asked the disk — the
+   checklist reads `pull_progress()`, which is in-memory, so a restart made a
+   set-up app look unset-up and an empty machine look fine. Fixed by
+   `Runtime::setup_status` plus a notice that never blocks. **His rule for this
+   whole area: "dont force it — i just want the app to be like okay fine but
+   just so u know it wont work."**
+2. **Playback, on every recording, processed or not.** Currently it appears to
+   be reachable only through the transcript view, so an unprocessed recording
+   cannot be listened to at all.
+3. **Settings — all four are wrong**, his answer: nothing is pre-filled with
+   what the app already chose; no microphone picker; no model status
+   (downloaded, size, re-download, tier); storage location neither visible nor
+   changeable.
+4. **Ollama: detect an existing install** rather than pushing a download, and
+   let the user pick which of *their* models writes summaries.
+5. **Processing stays automatic** (idle-gated) with the manual button always
+   available. Already the design; only the honesty was missing.
+
+Two capture bugs found in his files, not yet chased:
+- `audio-system.flac` is **0 bytes on all three** recordings. WASAPI loopback
+  produced nothing. Unknown whether it is broken or he simply had no sound
+  playing — do not assume the second.
+- Two of the three kept `audio-mic.wav` **next to** the `.flac`. Per the ground
+  rules that means FLAC verification did not confirm — but `meta.error` is
+  `null`, so whatever happened was never reported. The silence is the bug
+  regardless of the cause.
+
 ## Next
 1. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
    was not written blind are in `platform/src/macos/speaker.rs`. Everything below
