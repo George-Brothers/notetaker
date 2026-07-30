@@ -210,13 +210,122 @@ jobs:
         run: cargo build -p notetaker
 
   # -------------------------------------------------------------------------
+  # The installer. Separate from `native` because it is a full release build of
+  # the whole C/C++ stack and should not slow down the test gate, and because a
+  # packaging failure is a different kind of news from a test failure.
+  #
+  # This exists so that getting a Windows build onto a Windows machine costs a
+  # download rather than an afternoon of installing MSVC. The artifact is a real
+  # NSIS installer; it is unsigned, so Windows SmartScreen will warn on first
+  # run ("More info" -> "Run anyway").
+  # -------------------------------------------------------------------------
+  package-windows:
+    name: Windows — the installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Its own cache key: this is the only job that builds `--release`, and
+      # sharing a key with the debug job would have each evict the other.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: windows-release
+          prefix-key: v2-sherpa
+          cache-directories: |
+            ~/AppData/Local/sherpa-rs
+
+      - name: Install LLVM (bindgen, for whisper-rs)
+        run: choco install llvm --no-progress -y
+
+      - name: Point bindgen at libclang
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      # See the Linux job's comment: the cache sweeps the shared libraries
+      # sherpa's build script copies, and this is what makes it copy them again.
+      # Both profiles, because this job needs the release ones.
+      - name: Restore sherpa's shared libraries (see the Linux job's comment)
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          cargo clean -p sherpa-rs-sys || true
+          cargo clean -p sherpa-rs-sys --release || true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # `tauri::generate_context!` embeds dist/ at compile time, so the frontend
+      # has to exist before the app crate is compiled.
+      - run: pnpm build
+
+      # Compiled as its own step rather than left to `tauri build`, so that the
+      # listing below happens *between* the compile and the bundle. If the
+      # bundler then cannot find a DLL, the run already shows what was there.
+      - name: Compile the app in release
+        working-directory: src-tauri
+        run: cargo build --release -p notetaker
+
+      - name: What sherpa left in the build folder
+        shell: pwsh
+        run: Get-ChildItem src-tauri/target/release/*.dll | Select-Object Name, Length
+
+      - name: Build the installer
+        run: pnpm tauri build
+
+      # The whole point of the job. `bundle.resources` in
+      # tauri.windows.conf.json is supposed to put every third-party runtime
+      # library next to Notetaker.exe; this opens the installer that was just
+      # built and checks that they are in there. Without it the app installs
+      # cleanly and then refuses to start, which is the failure this job was
+      # created to prevent — so it is checked on the artifact, not assumed from
+      # the config.
+      - name: Prove the installer carries the libraries the app needs
+        shell: pwsh
+        run: |
+          $expected = Get-ChildItem src-tauri/target/release/*.dll |
+            Where-Object { $_.Name -notlike 'notetaker*' } |
+            ForEach-Object { $_.Name }
+          if (-not $expected) { throw "no runtime DLLs in target/release — nothing to check against" }
+
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe |
+            Select-Object -First 1
+          if (-not $installer) { throw "no NSIS installer was produced" }
+          Write-Host "installer: $($installer.Name) ($([math]::Round($installer.Length/1MB,1)) MB)"
+
+          $listing = & 'C:\Program Files\7-Zip\7z.exe' l $installer.FullName
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip could not read the installer (exit $LASTEXITCODE)" }
+          $listing | Write-Host
+
+          $missing = $expected | Where-Object { -not ($listing -match [regex]::Escape($_)) }
+          if ($missing) {
+            throw "the installer does not contain: $($missing -join ', ') — the installed app would not start"
+          }
+          Write-Host "all $($expected.Count) runtime libraries are inside the installer"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notetaker-windows-installer
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
   # What CI still cannot tell us. Printed rather than left implicit, because a
   # green run is easy to read as "it works".
   # -------------------------------------------------------------------------
   caveats:
     name: What a green run does not prove
     runs-on: ubuntu-latest
-    needs: [linux, native]
+    needs: [linux, native, package-windows]
     if: always()
     steps:
       - run: |
@@ -231,6 +340,9 @@ jobs:
               refused correctly — that only happens in front of a real user;
             * that transcription quality is what the bake-off measured — no
               model is downloaded here;
+            * that the Windows installer installs. It is built, and its
+              contents are checked, but nothing runs it. The installer is
+              also unsigned, so SmartScreen will warn on first launch;
             * anything at all about how the UI looks.
 
           Those need a human at a real machine. See the "verified vs assumed"

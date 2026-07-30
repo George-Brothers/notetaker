@@ -19,7 +19,8 @@ and summarization later, organized by tasks. No cloud, ever.
   meeting detection), the core adapter, the **served web UI**, CI, the
   **Granola-shaped frontend** with the live notepad, the **Tauri shell**, and
   (2026-07-30) the **scheduler wiring** — recordings are now actually
-  transcribed instead of queueing forever.
+  transcribed instead of queueing forever — and the **Windows installer**, built
+  by CI on every push.
   Remaining: **macOS system audio** (ScreenCaptureKit).
   Plan and decisions: `docs/superpowers/plans/2026-07-29-cross-platform.md`.
 
@@ -101,6 +102,7 @@ scripts/check-platforms.sh      # all three targets, ~30s
 | The whole UI, visually | **Seen and screenshotted** (2026-07-30) — real binary, real files, real audio, in Chrome. See below |
 | The scheduler wiring | **Decisions tested; the happy path is not.** A real model load is not a unit test — see "The scheduler, now wired" |
 | Speech routing | **Measured on real bilingual meetings** (2026-07-30), both models loaded, against a Whisper-only baseline. See `specs/bakeoff-result.md` |
+| The Windows installer | **Built and its contents checked** by CI. Nobody has run it — see "The installer" |
 
 The cross-check was itself confirmed with a negative control: a deliberate type
 error in `windows/power.rs` *is* caught.
@@ -324,6 +326,48 @@ not a unit test, and no recording has been transcribed end to end by a shipped
 binary. The tests pin the decisions around it — before the models arrive, a
 second call, and a launch on a machine with nothing downloaded.
 
+## The installer (2026-07-30) — and the fourth time the same three files bit
+`tauri build` had **never been run, on any operating system**, so no installer
+had ever existed. CI now builds one on every push: the `package-windows` job
+produces an unsigned NSIS `.exe` and an `.msi`, uploaded as the
+`notetaker-windows-installer` artifact. Getting a build onto a PC is a download,
+not an afternoon of installing MSVC.
+
+Building it exposed a real bug before a single byte was packaged. `sherpa-rs`
+does not build ONNX Runtime; its build script copies the shared libraries loose
+into `target/<profile>/`, which is why a binary run from the build folder works.
+Tauri's bundler knows nothing about them, so the installer would have contained
+`Notetaker.exe` and nothing else — **it would have installed cleanly and then
+refused to start.** The same three files that broke the CI link step, then the
+CI load step, then this.
+
+Fixed in `src-tauri/tauri.windows.conf.json` — a Windows-only overlay Tauri
+merges over `tauri.conf.json`. Two glob patterns, chosen over explicit file
+names for two reasons: a name that changes on a version bump would not silently
+drop a library, and **a Tauri glob that matches nothing is a hard bundler
+error**, so an empty installer cannot be built. On Windows the resource root
+*is* the executable's directory, which is exactly where a DLL has to be.
+
+Two checks, because a config is not a result:
+- `core/tests/installer.rs` runs on Linux. It reads the shared libraries this
+  build actually produced, translates them to their Windows spelling
+  (`libonnxruntime.so` -> `onnxruntime.dll`) and fails if any is not covered by
+  a pattern. Confirmed by removing a pattern and watching it fail. If sherpa
+  ever ships a fourth library, this catches it here in seconds.
+- CI opens the installer it just built with 7-Zip and asserts every DLL from
+  `target/release` is inside it. The config is checked against the artifact, not
+  believed.
+
+Still unknown: whether the installer installs, and whether the installed app
+starts. Nothing has run it. It is also **unsigned**, so SmartScreen will warn on
+first launch ("More info" -> "Run anyway"); the prebuilt sherpa DLLs also want
+the MSVC runtime, which any current Windows has.
+
+macOS has the identical bug and is not fixed: `.app` resources land in
+`Contents/Resources/` while the binary is in `Contents/MacOS/`, so the dylibs
+need `Contents/Frameworks` and an rpath instead. Left alone rather than guessed
+at, because it cannot be verified from here and the Mac work is blocked anyway.
+
 ## Next
 1. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
    was not written blind are in `platform/src/macos/speaker.rs`. Everything below
@@ -339,7 +383,13 @@ second call, and a launch on a machine with nothing downloaded.
    regardless of length — 70 segments of a 4-minute recording took over ten
    minutes. This predates routing and is the single biggest processing cost in
    the app. Batching adjacent same-speaker spans would cut it directly.
-4. **On the hardware**: real capture on both machines, `tauri build` (never once
-   run — no installer has ever been produced), Metal build and tier detection,
-   permissions, re-run the bake-off against `large-v3-turbo`, and one real
+4. **On the PC**: download the installer from the CI run, install it, and find
+   out whether it records. **No audio device has ever produced a sample through
+   this code**, on any platform — that one sitting closes the largest remaining
+   unknown in the project. Then the first-run model download and one real
    bilingual call end to end.
+5. **On the Mac**: bundle the dylibs (above), Metal build and tier detection,
+   Screen Recording permission, and re-run the bake-off against
+   `large-v3-turbo`. Blocked behind ScreenCaptureKit either way.
+6. **Signing.** The installer is unsigned, so SmartScreen warns on first launch.
+   Fine for one user; a wall for anyone else. Needs a certificate, i.e. money.
