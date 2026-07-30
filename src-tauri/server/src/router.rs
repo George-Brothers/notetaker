@@ -40,10 +40,26 @@ pub enum Reply {
     },
     /// The app shell, for a client-side route like `/settings`.
     AppShell,
+    /// One of a recording's audio tracks. The router does not know where that
+    /// file is — only the `Runtime` can turn an id into a path — so this
+    /// carries the request and [`respond`] resolves it.
+    Audio {
+        id: String,
+        track: String,
+    },
 }
 
 /// The API path prefix. A command is `POST /api/<command_name>`.
 const API_PREFIX: &str = "/api/";
+
+/// Audio playback: `GET /audio/<recording-id>/<track>`.
+///
+/// A route of its own rather than a command, because a lecture's audio is tens
+/// of megabytes and marshalling that through a JSON reply would be absurd. It
+/// needs no path sanitizing: the id is matched against `meta.id` by a directory
+/// scan rather than joined onto a path, and the track name is checked against a
+/// fixed list, so neither segment can address a file of the caller's choosing.
+const AUDIO_PREFIX: &str = "/audio/";
 
 /// Decides what a request should get. Pure.
 pub fn handle(config: &Config, request: &Request) -> Reply {
@@ -61,6 +77,10 @@ pub fn handle(config: &Config, request: &Request) -> Reply {
 
     if let Some(command) = path.strip_prefix(API_PREFIX) {
         return route_api(request, command);
+    }
+
+    if let Some(rest) = path.strip_prefix(AUDIO_PREFIX) {
+        return route_audio(request, rest);
     }
 
     // Anything else is the UI.
@@ -100,6 +120,37 @@ fn route_api(request: &Request, command: &str) -> Reply {
     Reply::Json {
         status: 0, // sentinel: "run the command"
         body: request.body.clone().unwrap_or_else(|| json!({})),
+    }
+}
+
+/// Routes an `/audio/<id>/<track>` request.
+///
+/// Requires exactly two segments. Anything else is a 404 rather than a guess —
+/// a URL this route does not understand is a bug in the caller, and inventing
+/// a default track would play the wrong side of a conversation.
+fn route_audio(request: &Request, rest: &str) -> Reply {
+    if request.method != "GET" {
+        return Reply::Json {
+            status: 405,
+            body: json!({ "error": "Audio must be fetched with GET." }),
+        };
+    }
+    let mut parts = rest.split('/');
+    let (Some(id), Some(track), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Reply::Json {
+            status: 404,
+            body: json!({ "error": "Not found." }),
+        };
+    };
+    if id.is_empty() || track.is_empty() {
+        return Reply::Json {
+            status: 404,
+            body: json!({ "error": "Not found." }),
+        };
+    }
+    Reply::Audio {
+        id: id.to_string(),
+        track: track.to_string(),
     }
 }
 
@@ -196,6 +247,19 @@ pub fn respond(
         reply = run_command(runtime, &command, &args);
     }
 
+    // Only the runtime can turn a recording id into a file on disk.
+    if let Reply::Audio { id, track } = &reply {
+        reply = match runtime.audio_path(id, track) {
+            Ok(path) => Reply::File {
+                path: std::path::PathBuf::from(path),
+            },
+            Err(e) => Reply::Json {
+                status: 404,
+                body: json!({ "error": format!("{e:#}") }),
+            },
+        };
+    }
+
     match reply {
         Reply::Json { status, body } => {
             let data = serde_json::to_vec(&body)?;
@@ -220,6 +284,13 @@ pub fn respond(
             Err(_) => serve_shell(config, request)?,
         },
         Reply::AppShell => serve_shell(config, request)?,
+        // Converted to a File or a 404 just above; this arm exists only to keep
+        // the match exhaustive, and answering 404 is the safe direction if a
+        // future edit ever lets one through.
+        Reply::Audio { .. } => {
+            request
+                .respond(tiny_http::Response::from_string("Not found.").with_status_code(404))?;
+        }
     }
     Ok(())
 }
@@ -272,6 +343,82 @@ mod tests {
         match reply {
             Reply::Json { status, .. } => *status,
             _ => 0,
+        }
+    }
+
+    // --- audio playback --------------------------------------------------
+
+    #[test]
+    fn an_audio_url_routes_to_the_recording_and_track_it_names() {
+        let reply = handle(&loopback_with_ui(), &get("/audio/abc-123/mic"));
+        assert_eq!(
+            reply,
+            Reply::Audio {
+                id: "abc-123".into(),
+                track: "mic".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_query_string_on_an_audio_url_is_ignored() {
+        // The served UI appends `?token=` to everything.
+        let reply = handle(&loopback_with_ui(), &get("/audio/abc-123/system?token=x"));
+        assert_eq!(
+            reply,
+            Reply::Audio {
+                id: "abc-123".into(),
+                track: "system".into()
+            }
+        );
+    }
+
+    /// A URL this route does not understand must 404, never fall through to a
+    /// guessed track — playing the wrong side of a conversation is worse than
+    /// playing nothing.
+    #[test]
+    fn a_malformed_audio_url_is_not_guessed_at() {
+        for url in [
+            "/audio/",
+            "/audio/only-an-id",
+            "/audio/id/mic/extra",
+            "/audio//mic",
+            "/audio/id/",
+        ] {
+            let reply = handle(&loopback_with_ui(), &get(url));
+            assert_eq!(status_of(&reply), 404, "{url} was not refused: {reply:?}");
+        }
+    }
+
+    #[test]
+    fn audio_is_get_only() {
+        let reply = handle(&loopback_with_ui(), &post("/audio/abc-123/mic", json!({})));
+        assert_eq!(status_of(&reply), 405);
+    }
+
+    /// The whole point of the token gate: audio is a recording of a private
+    /// meeting, and it must be behind the same wall as everything else.
+    #[test]
+    fn audio_over_lan_without_a_token_is_refused() {
+        let mut config = Config::lan(0).with_ui_dir("/app/dist");
+        config.token = Some(Token::from_string("thecorrecttoken"));
+        assert_eq!(
+            status_of(&handle(&config, &get("/audio/abc-123/mic"))),
+            401,
+            "a recording's audio was served to an unauthenticated caller"
+        );
+    }
+
+    /// A recording id is matched against `meta.id` by a directory scan, never
+    /// joined onto a path — so a traversal attempt is simply an id that matches
+    /// no recording, and resolution fails later with a 404. Pinned here so a
+    /// future edit that starts treating the id as a path segment has to notice.
+    #[test]
+    fn a_traversal_shaped_id_is_carried_as_an_id_not_a_path() {
+        let reply = handle(&loopback_with_ui(), &get("/audio/..%2f..%2fetc/mic"));
+        match reply {
+            Reply::Audio { id, .. } => assert_eq!(id, "..%2f..%2fetc"),
+            other => panic!("expected an id lookup, got {other:?}"),
         }
     }
 

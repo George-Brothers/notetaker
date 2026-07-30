@@ -15,7 +15,7 @@
  * check the two sides agree.
  */
 
-import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 /** Where the LAN access code is kept once we've seen it. */
 const TOKEN_KEY = "notetaker.token";
@@ -63,6 +63,35 @@ export function accessToken(): string | null {
 /** The base URL for API calls — same origin as the served UI. */
 function apiBase(): string {
   return "/api";
+}
+
+/**
+ * A URL an `<audio>` element can actually load, for one track of one
+ * recording.
+ *
+ * This is the one place the two transports genuinely differ rather than just
+ * carrying the same JSON. A browser cannot open `C:\Users\george\Notetaker\...`,
+ * and the desktop shell has no HTTP server to fetch from, so:
+ *
+ * - **Desktop** — ask the core for the file's path and hand it to Tauri's asset
+ *   protocol, which is what lets the webview read a file outside the bundle.
+ * - **Browser** — hit the server's `/audio/<id>/<track>` route, which resolves
+ *   the same path server-side and streams the bytes.
+ *
+ * Async on both paths, because the desktop one has to ask where the file is.
+ */
+export async function audioSrc(id: string, track: string): Promise<string> {
+  if (isDesktop()) {
+    const path = await invoke<string>("audio_path", { id, track });
+    return convertFileSrc(path);
+  }
+
+  const token = accessToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : "";
+  // The id comes from the core and the track from a fixed list, but both are
+  // encoded anyway — a title-derived id would not be, and this is the kind of
+  // assumption that stops being true quietly.
+  return `/audio/${encodeURIComponent(id)}/${encodeURIComponent(track)}${query}`;
 }
 
 /**

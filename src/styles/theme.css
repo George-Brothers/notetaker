@@ -1,0 +1,293 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+/*
+ * The look: warm paper, not a dashboard.
+ *
+ * Every colour is a CSS custom property rather than a Tailwind literal, for one
+ * reason — there are two themes and they must stay in step. A `bg-white`
+ * sprinkled through a component is invisible in light mode and glaring in dark,
+ * and nothing catches it but a human looking at the screen. Tokens make the
+ * dark theme a property of this file instead of a property of every component.
+ *
+ * Theme selection is deliberately two-layer:
+ *   1. `prefers-color-scheme` — the OS setting, which is the default.
+ *   2. `:root[data-theme="..."]` — the user's explicit override, which wins.
+ * The override is written by `useTheme` and outranks the media query because a
+ * user who picked "dark" meant it, whatever Windows is set to.
+ */
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+
+  /* Radii. Granola's chrome is softly rounded, never pill-shaped except for
+     the record control, which is deliberately the odd one out. */
+  --radius-card: 0.75rem;
+  --radius-control: 0.5rem;
+}
+
+@layer base {
+  :root {
+    /* --- surfaces, lightest to darkest ----------------------------------
+       `app` is the window, `raised` is a card on it, `sunken` is a well
+       (search field, code block). Named by role rather than by shade so the
+       dark theme can invert the *order* without renaming anything. */
+    --c-app: #faf8f3;
+    --c-raised: #ffffff;
+    --c-sunken: #f2efe7;
+    --c-hover: #eeeae0;
+    --c-selected: #e6efe9;
+
+    --c-border: #e4dfd3;
+    --c-border-strong: #d2ccbc;
+
+    /* --- text -----------------------------------------------------------
+       `fg` is the user's own words and primary UI text. `fg-ai` is the one
+       that carries meaning: AI-written text renders in it, which is how the
+       enhanced note shows at a glance what you wrote and what the model
+       added. It must be legibly *softer* than fg, never merely smaller. */
+    --c-fg: #1c1b17;
+    --c-fg-ai: #6b665c;
+    --c-fg-muted: #8a857a;
+    --c-fg-faint: #a8a294;
+
+    /* --- accent ---------------------------------------------------------- */
+    --c-accent: #2f6f4e;
+    --c-accent-hover: #275e42;
+    --c-accent-fg: #ffffff;
+    --c-accent-soft: #e2eee8;
+
+    /* --- status ---------------------------------------------------------
+       Recording red is the only truly saturated colour in the app. It should
+       be the first thing your eye finds, because "am I still recording" is
+       the one question the UI must never make you hunt for. */
+    --c-recording: #cc3b33;
+    --c-recording-soft: #fbeae8;
+    --c-warn: #9a6b16;
+    --c-warn-soft: #fbf1dd;
+    --c-error: #b3271f;
+    --c-error-soft: #fbe9e7;
+    --c-ok: #2f6f4e;
+    --c-ok-soft: #e2eee8;
+
+    /* --- speaker lanes ---------------------------------------------------
+       Assigned by first appearance in the transcript, so they stay put
+       between visits. Chosen to stay distinguishable for the common forms of
+       colour blindness — they differ in lightness as well as hue, so they are
+       still telling apart in greyscale. */
+    --c-spk-1: #2f6f4e;
+    --c-spk-2: #6d4fa8;
+    --c-spk-3: #a15c1e;
+    --c-spk-4: #1f6d86;
+    --c-spk-5: #9a3b6d;
+
+    --shadow-card: 0 1px 2px rgb(28 27 23 / 0.04),
+      0 4px 12px rgb(28 27 23 / 0.04);
+    --shadow-pop: 0 4px 12px rgb(28 27 23 / 0.08),
+      0 16px 40px rgb(28 27 23 / 0.12);
+  }
+
+  /* The OS setting, which is the default. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --c-app: #16150f;
+      --c-raised: #1e1d17;
+      --c-sunken: #121109;
+      --c-hover: #292820;
+      --c-selected: #23302a;
+
+      --c-border: #302e26;
+      --c-border-strong: #45423a;
+
+      --c-fg: #efece3;
+      --c-fg-ai: #a19b8e;
+      --c-fg-muted: #8b8579;
+      --c-fg-faint: #6d6961;
+
+      --c-accent: #5fb888;
+      --c-accent-hover: #74c99a;
+      --c-accent-fg: #10231a;
+      --c-accent-soft: #1e3128;
+
+      --c-recording: #f0655c;
+      --c-recording-soft: #341c1a;
+      --c-warn: #d9a441;
+      --c-warn-soft: #322815;
+      --c-error: #f0655c;
+      --c-error-soft: #341c1a;
+      --c-ok: #5fb888;
+      --c-ok-soft: #1e3128;
+
+      --c-spk-1: #5fb888;
+      --c-spk-2: #a992e8;
+      --c-spk-3: #dda05a;
+      --c-spk-4: #6bb8d4;
+      --c-spk-5: #e08ab4;
+
+      --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 12px rgb(0 0 0 / 0.3);
+      --shadow-pop: 0 4px 12px rgb(0 0 0 / 0.5), 0 16px 40px rgb(0 0 0 / 0.6);
+    }
+  }
+
+  /* The user's explicit choice, which outranks the OS. Both blocks are
+     repeated in full rather than sharing a class: a partial override would
+     leave a few properties following the OS while the rest followed the
+     user, which is the "one stubbornly white panel in dark mode" bug. */
+  :root[data-theme="light"] {
+    --c-app: #faf8f3;
+    --c-raised: #ffffff;
+    --c-sunken: #f2efe7;
+    --c-hover: #eeeae0;
+    --c-selected: #e6efe9;
+    --c-border: #e4dfd3;
+    --c-border-strong: #d2ccbc;
+    --c-fg: #1c1b17;
+    --c-fg-ai: #6b665c;
+    --c-fg-muted: #8a857a;
+    --c-fg-faint: #a8a294;
+    --c-accent: #2f6f4e;
+    --c-accent-hover: #275e42;
+    --c-accent-fg: #ffffff;
+    --c-accent-soft: #e2eee8;
+    --c-recording: #cc3b33;
+    --c-recording-soft: #fbeae8;
+    --c-warn: #9a6b16;
+    --c-warn-soft: #fbf1dd;
+    --c-error: #b3271f;
+    --c-error-soft: #fbe9e7;
+    --c-ok: #2f6f4e;
+    --c-ok-soft: #e2eee8;
+    --c-spk-1: #2f6f4e;
+    --c-spk-2: #6d4fa8;
+    --c-spk-3: #a15c1e;
+    --c-spk-4: #1f6d86;
+    --c-spk-5: #9a3b6d;
+    --shadow-card: 0 1px 2px rgb(28 27 23 / 0.04),
+      0 4px 12px rgb(28 27 23 / 0.04);
+    --shadow-pop: 0 4px 12px rgb(28 27 23 / 0.08),
+      0 16px 40px rgb(28 27 23 / 0.12);
+  }
+
+  :root[data-theme="dark"] {
+    --c-app: #16150f;
+    --c-raised: #1e1d17;
+    --c-sunken: #121109;
+    --c-hover: #292820;
+    --c-selected: #23302a;
+    --c-border: #302e26;
+    --c-border-strong: #45423a;
+    --c-fg: #efece3;
+    --c-fg-ai: #a19b8e;
+    --c-fg-muted: #8b8579;
+    --c-fg-faint: #6d6961;
+    --c-accent: #5fb888;
+    --c-accent-hover: #74c99a;
+    --c-accent-fg: #10231a;
+    --c-accent-soft: #1e3128;
+    --c-recording: #f0655c;
+    --c-recording-soft: #341c1a;
+    --c-warn: #d9a441;
+    --c-warn-soft: #322815;
+    --c-error: #f0655c;
+    --c-error-soft: #341c1a;
+    --c-ok: #5fb888;
+    --c-ok-soft: #1e3128;
+    --c-spk-1: #5fb888;
+    --c-spk-2: #a992e8;
+    --c-spk-3: #dda05a;
+    --c-spk-4: #6bb8d4;
+    --c-spk-5: #e08ab4;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 12px rgb(0 0 0 / 0.3);
+    --shadow-pop: 0 4px 12px rgb(0 0 0 / 0.5), 0 16px 40px rgb(0 0 0 / 0.6);
+  }
+}
+
+/* Make the tokens usable as Tailwind utilities: `bg-app`, `text-fg-ai`,
+   `border-border`. Declared here rather than in `@theme` so they can reference
+   the custom properties above and therefore change with the theme at runtime
+   — a `@theme` value is baked in at build time and would not. */
+@theme inline {
+  --color-app: var(--c-app);
+  --color-raised: var(--c-raised);
+  --color-sunken: var(--c-sunken);
+  --color-hover: var(--c-hover);
+  --color-selected: var(--c-selected);
+  --color-border: var(--c-border);
+  --color-border-strong: var(--c-border-strong);
+  --color-fg: var(--c-fg);
+  --color-fg-ai: var(--c-fg-ai);
+  --color-fg-muted: var(--c-fg-muted);
+  --color-fg-faint: var(--c-fg-faint);
+  --color-accent: var(--c-accent);
+  --color-accent-hover: var(--c-accent-hover);
+  --color-accent-fg: var(--c-accent-fg);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-recording: var(--c-recording);
+  --color-recording-soft: var(--c-recording-soft);
+  --color-warn: var(--c-warn);
+  --color-warn-soft: var(--c-warn-soft);
+  --color-error: var(--c-error);
+  --color-error-soft: var(--c-error-soft);
+  --color-ok: var(--c-ok);
+  --color-ok-soft: var(--c-ok-soft);
+}
+
+@layer base {
+  html {
+    background-color: var(--c-app);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    html {
+      color-scheme: dark;
+    }
+  }
+  /* Keeps native form controls and scrollbars in step with an explicit
+     override, not just with the OS. */
+  html[data-theme="light"] {
+    color-scheme: light;
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--c-app);
+    color: var(--c-fg);
+    font-family: var(--font-sans);
+    font-synthesis-weight: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Focus is never removed, only restyled. This app is used by keyboard —
+     Cmd+K, Cmd+J, tab through the checklist — and an invisible focus ring
+     makes all of that unusable. */
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--c-accent-soft);
+    color: var(--c-fg);
+  }
+}
+
+/* Everyone who has asked not to be moved, isn't. The level meters and the
+   recording pulse are the only continuous animations, and both convey state,
+   so they degrade to a static form rather than disappearing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

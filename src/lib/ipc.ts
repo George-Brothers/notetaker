@@ -27,6 +27,13 @@ export interface RecordingRow {
   /** What the AI thinks this belongs to, awaiting one-click confirmation. */
   suggestedTask: string | null;
   /**
+   * A better title than the auto-generated timestamp, awaiting the same
+   * one-click confirmation. null when there is nothing better to offer.
+   */
+  suggestedTitle: string | null;
+  /** Whether the user typed notes on this recording. Just the flag. */
+  hasNotes: boolean;
+  /**
    * Why processing failed, in language a non-technical user can act on.
    * Present on list rows too, so a failed row can explain itself without
    * making the user open it.
@@ -41,11 +48,71 @@ export interface RecordingRow {
   captureNote: string | null;
 }
 
+/** One checkbox line parsed out of `summaryMd`. */
+export interface ActionItem {
+  /**
+   * Position among the checkbox lines, 0-based. What `setActionDone` takes.
+   * Not stable across an edit that adds or removes an item, which is why
+   * `setActionDone` returns the whole re-parsed list.
+   */
+  index: number;
+  /** The line with its `- [ ] ` marker stripped, owner prefix included. */
+  text: string;
+  /** The `Name:` prefix if the line has one that looks like a person. */
+  owner: string | null;
+  done: boolean;
+  /** 0-based line in `summaryMd`, for scrolling to the item. */
+  line: number;
+}
+
+/** One timed stretch of the transcript, for the player. */
+export interface Segment {
+  startS: number;
+  /** The next segment's start, or the recording's duration for the last. */
+  endS: number;
+  /** Empty for a line with no speaker tag. */
+  speaker: string;
+  text: string;
+  /** 0-based line in `transcriptMd`. */
+  line: number;
+}
+
+/** A note shape the summary can be written to. */
+export interface Template {
+  id: string;
+  name: string;
+  blurb: string;
+}
+
 export interface RecordingDetail extends RecordingRow {
   transcriptMd: string;
   summaryMd: string;
   /** Diarizer key ("spk1") to display name ("Jamie"). */
   speakers: Record<string, string>;
+  /**
+   * The user's own notes, typed during the meeting. Never rewritten by the
+   * app — the AI's output goes to `summaryMd` instead, which is what lets the
+   * UI show your words at full contrast and the model's in grey.
+   */
+  notesMd: string;
+  /** Which template shapes the summary. null means the default. */
+  template: string | null;
+  /**
+   * The checklist, parsed from `summaryMd` rather than stored separately, so
+   * it can never disagree with the markdown the user can edit by hand.
+   */
+  actions: ActionItem[];
+  /**
+   * The transcript as timed segments. Empty when the recording is
+   * unprocessed, or when its transcript has been rewritten as prose — render
+   * `transcriptMd` directly in that case.
+   */
+  segments: Segment[];
+  /**
+   * Which audio tracks exist on disk ("mic", "system"). Offer playback only
+   * for these: an in-person recording has no system track.
+   */
+  audioTracks: string[];
 }
 
 export interface SearchHit {
@@ -166,6 +233,45 @@ export const api = {
     invoke<void>("rename_recording", { id, title }),
   renameSpeaker: (id: string, key: string, name: string) =>
     invoke<void>("rename_speaker", { id, key, name }),
+
+  // --- The notepad (Plan C) ---
+  /**
+   * Saves what the user typed. Safe to call while the recording is still
+   * running — writing notes touches nothing the capture threads own, which is
+   * why this is allowed where renaming and filing are refused.
+   */
+  saveNotes: (id: string, notesMd: string) =>
+    invoke<void>("save_notes", { id, notesMd }),
+  /** Every note shape available in the picker. */
+  listTemplates: () => invoke<Template[]>("list_templates"),
+  /**
+   * Sets which template shapes this recording's summary. Takes effect on the
+   * next processing run, not retroactively — say so in the UI, or picking a
+   * template looks like it did nothing.
+   */
+  setTemplate: (id: string, template: string) =>
+    invoke<void>("set_template", { id, template }),
+  /**
+   * Ticks or unticks one action item, which rewrites that line of the
+   * summary. Returns the whole re-parsed list, because indices shift if the
+   * summary was edited in the meantime.
+   */
+  setActionDone: (id: string, index: number, done: boolean) =>
+    invoke<ActionItem[]>("set_action_done", { id, index, done }),
+  /**
+   * One question about one recording, answered locally from its own notes,
+   * summary and transcript. Stateless: no conversation history, the whole
+   * recording is re-sent each time.
+   */
+  askRecording: (id: string, question: string) =>
+    invoke<string>("ask_recording", { id, question }),
+  /**
+   * The absolute path to an audio track. Not playable as-is in a browser —
+   * pass it through `audioSrc` in transport.ts, which turns it into whatever
+   * the current transport can actually load.
+   */
+  audioPath: (id: string, track: string) =>
+    invoke<string>("audio_path", { id, track }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
 

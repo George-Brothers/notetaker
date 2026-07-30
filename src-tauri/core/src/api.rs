@@ -24,8 +24,16 @@ use crate::watch::AutoRecordPolicy;
 /// Living inside the recording directory means it moves for free whenever
 /// `Store::assign_task` renames that directory.
 const SUGGESTED_TASK_FILE: &str = "suggested_task.txt";
+/// Sidecar holding a better title than the timestamp the recording was created
+/// with. Same reasoning as `SUGGESTED_TASK_FILE`: a transient offer awaiting a
+/// one-click accept, not durable metadata.
+const SUGGESTED_TITLE_FILE: &str = "suggested_title.txt";
 const TRANSCRIPT_FILE: &str = "transcript.md";
 const SUMMARY_FILE: &str = "summary.md";
+
+/// The audio tracks a recording can have, as `<name>` in `audio-<name>.*`.
+/// `system` only exists for a meeting; an in-person recording is mic only.
+const TRACK_NAMES: &[&str] = &["mic", "system"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +46,10 @@ pub struct RecordingRow {
     pub mode: Mode,
     pub status: Status,
     pub suggested_task: Option<String>,
+    /// A better title than the auto-generated timestamp, awaiting a one-click
+    /// accept. On the row as well as the detail, so the library list can offer
+    /// it without the user opening every recording.
+    pub suggested_title: Option<String>,
     /// Why processing failed, so a failed row can explain itself in the list
     /// without the user having to open it.
     pub error: Option<String>,
@@ -45,6 +57,10 @@ pub struct RecordingRow {
     /// `error` because it outlives every processing attempt: a `Ready` row can
     /// still need to say "this lecture is short because the disk filled up".
     pub capture_note: Option<String>,
+    /// True if the user typed notes during or after this recording. Just the
+    /// flag, not the text — the list shows a marker, and shipping every
+    /// recording's full notes to render one icon would be wasteful.
+    pub has_notes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,11 +74,31 @@ pub struct RecordingDetail {
     pub mode: Mode,
     pub status: Status,
     pub suggested_task: Option<String>,
+    pub suggested_title: Option<String>,
     pub error: Option<String>,
     pub capture_note: Option<String>,
     pub transcript_md: String,
     pub summary_md: String,
     pub speakers: BTreeMap<String, String>,
+    /// The user's own notes, verbatim. Never rewritten by the app — see the
+    /// [`notes`](crate::notes) module note.
+    pub notes_md: String,
+    /// Which [template](crate::templates) shapes this recording's summary.
+    /// `None` means the default.
+    pub template: Option<String>,
+    /// The checklist, parsed out of `summary_md`. Derived rather than stored, so
+    /// it cannot disagree with the markdown the user can edit — see the
+    /// [`actions`](crate::actions) module note.
+    pub actions: Vec<crate::actions::ActionItem>,
+    /// The transcript as timed segments, for the player. Empty for a recording
+    /// that is unprocessed, or whose transcript the user has rewritten as prose;
+    /// the UI then renders `transcript_md` directly.
+    pub segments: Vec<crate::transcript::Segment>,
+    /// Which audio tracks exist on disk (`"mic"`, `"system"`). The player offers
+    /// only these — an in-person recording has no system track, and a meeting
+    /// whose system track was lost must not present a control that plays
+    /// silence.
+    pub audio_tracks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,6 +186,8 @@ pub fn list_recordings(store: &Store) -> Result<Vec<RecordingRow>> {
 pub fn get_recording(store: &Store, id: &str) -> Result<RecordingDetail> {
     let rec = find_by_id(store, id)?;
     let row = to_row(&rec);
+    let transcript_md = fs::read_to_string(rec.dir.join(TRANSCRIPT_FILE)).unwrap_or_default();
+    let summary_md = fs::read_to_string(rec.dir.join(SUMMARY_FILE)).unwrap_or_default();
     Ok(RecordingDetail {
         id: row.id,
         title: row.title,
@@ -159,12 +197,86 @@ pub fn get_recording(store: &Store, id: &str) -> Result<RecordingDetail> {
         mode: row.mode,
         status: row.status,
         suggested_task: row.suggested_task,
+        suggested_title: row.suggested_title,
         error: row.error,
         capture_note: row.capture_note,
-        transcript_md: fs::read_to_string(rec.dir.join(TRANSCRIPT_FILE)).unwrap_or_default(),
-        summary_md: fs::read_to_string(rec.dir.join(SUMMARY_FILE)).unwrap_or_default(),
+        actions: crate::actions::parse(&summary_md),
+        segments: crate::transcript::parse(&transcript_md, rec.meta.duration_s),
+        transcript_md,
+        summary_md,
         speakers: rec.meta.speakers.clone(),
+        notes_md: crate::notes::read(&rec.dir),
+        template: rec.meta.template.clone(),
+        audio_tracks: audio_tracks(&rec.dir),
     })
+}
+
+/// Saves the user's notes for a recording.
+///
+/// Allowed at any status, including while the recording is still running — that
+/// is the whole point of a live notepad. Nothing here touches the audio or the
+/// recording's folder, so it is safe during capture in a way that
+/// `assign_task` and `rename_recording` deliberately are not.
+pub fn save_notes(store: &Store, id: &str, notes_md: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    crate::notes::write(&rec.dir, notes_md)
+}
+
+/// Sets which template shapes this recording's summary.
+///
+/// Only changes the stored id; the summary is not rewritten until the recording
+/// is processed again. The UI is responsible for saying so — silently leaving a
+/// summary in the old shape after the user picked a new template would look
+/// like the picker did nothing.
+pub fn set_template(store: &Store, id: &str, template: &str) -> Result<()> {
+    if !crate::templates::is_known(template) {
+        anyhow::bail!("there is no note template called {template:?}");
+    }
+    let mut rec = find_by_id(store, id)?;
+    rec.meta.template = Some(template.to_string());
+    store.save_meta(&rec)
+}
+
+/// Ticks or unticks one action item, by rewriting that line of `summary.md`.
+///
+/// Returns the re-parsed checklist, so the caller never has to guess what the
+/// list looks like afterwards — indices shift if the user has edited the
+/// summary in the meantime, and a UI that assumed otherwise would tick the
+/// wrong box.
+pub fn set_action_done(
+    store: &Store,
+    id: &str,
+    index: usize,
+    done: bool,
+) -> Result<Vec<crate::actions::ActionItem>> {
+    let rec = find_by_id(store, id)?;
+    let path = rec.dir.join(SUMMARY_FILE);
+    let summary = fs::read_to_string(&path)
+        .with_context(|| format!("reading the summary for {id} to tick an item"))?;
+    let updated = crate::actions::set_done(&summary, index, done)?;
+    fs::write(&path, &updated).with_context(|| format!("writing {}", path.display()))?;
+    Ok(crate::actions::parse(&updated))
+}
+
+/// The absolute path to one of a recording's audio tracks, for playback.
+///
+/// A path rather than the bytes: the desktop app hands it to the webview's own
+/// file protocol and the served UI streams it with range requests, and neither
+/// wants a whole lecture's audio marshalled through a JSON command.
+pub fn audio_path(store: &Store, id: &str, track: &str) -> Result<std::path::PathBuf> {
+    if !TRACK_NAMES.contains(&track) {
+        anyhow::bail!("there is no audio track called {track:?}");
+    }
+    let rec = find_by_id(store, id)?;
+    // FLAC first: it is what a finished recording has, and the WAV beside it is
+    // a leftover the user chose to keep.
+    for ext in ["flac", "wav"] {
+        let p = rec.dir.join(format!("audio-{track}.{ext}"));
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    anyhow::bail!("this recording has no {track} audio saved")
 }
 
 /// Persists a user's edit to the AI-written summary back to `summary.md`, so
@@ -231,9 +343,7 @@ pub fn assign_task(store: &Store, index: &mut Index, id: &str, task: &str) -> Re
     // sidecar so the "Suggested: …" banner doesn't keep showing on a
     // recording that already lives in that task.
     let _ = fs::remove_file(moved.dir.join(SUGGESTED_TASK_FILE));
-    let transcript = fs::read_to_string(moved.dir.join(TRANSCRIPT_FILE)).unwrap_or_default();
-    let summary = fs::read_to_string(moved.dir.join(SUMMARY_FILE)).unwrap_or_default();
-    index.upsert(&moved, &transcript, &summary)?;
+    index.upsert(&moved)?;
     Ok(())
 }
 
@@ -303,20 +413,42 @@ fn to_row(rec: &RecordingRef) -> RecordingRow {
         duration_s: rec.meta.duration_s,
         mode: rec.meta.mode,
         status: rec.meta.status,
-        suggested_task: read_suggested_task(&rec.dir),
+        suggested_task: read_sidecar(&rec.dir, SUGGESTED_TASK_FILE),
+        suggested_title: read_sidecar(&rec.dir, SUGGESTED_TITLE_FILE)
+            // A suggestion identical to the current title is not a suggestion.
+            // Happens after the user accepts one and the recording is later
+            // reprocessed from the same summary.
+            .filter(|t| t != &rec.meta.title),
         error: rec.meta.error.clone(),
         capture_note: rec.meta.capture_note.clone(),
+        has_notes: crate::notes::has_content(&crate::notes::read(&rec.dir)),
     }
 }
 
-fn read_suggested_task(dir: &Path) -> Option<String> {
-    let raw = fs::read_to_string(dir.join(SUGGESTED_TASK_FILE)).ok()?;
+/// Reads a one-line sidecar, treating missing, unreadable and blank alike as
+/// "no suggestion". A suggestion is a nicety; none of its failure modes should
+/// ever surface as an error to the user.
+fn read_sidecar(dir: &Path, name: &str) -> Option<String> {
+    let raw = fs::read_to_string(dir.join(name)).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         None
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// Which audio tracks are actually on disk, in `TRACK_NAMES` order.
+fn audio_tracks(dir: &Path) -> Vec<String> {
+    TRACK_NAMES
+        .iter()
+        .filter(|track| {
+            ["flac", "wav"]
+                .iter()
+                .any(|ext| dir.join(format!("audio-{track}.{ext}")).exists())
+        })
+        .map(|t| t.to_string())
+        .collect()
 }
 
 /// The diarizer's default label for a speaker key: `"spk1"` -> `"Speaker

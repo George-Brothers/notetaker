@@ -60,6 +60,7 @@ use crate::power::{PowerPolicy, PowerState, SystemProbe};
 use crate::queue::{IdleSource, Queue, RunOutcome};
 use crate::scheduler;
 use crate::storage::{Mode, RecordingRef, Status, Store};
+use crate::templates;
 
 /// What [`Runtime::start_up`] found and did, so the app can tell the user
 /// "2 interrupted recordings were recovered" rather than silently repairing
@@ -106,6 +107,18 @@ const DISK_POLL_INTERVAL: Duration = Duration::from_secs(5);
 // ---------------------------------------------------------------------------
 // The contract with the UI
 // ---------------------------------------------------------------------------
+
+/// One note template, as the picker needs it.
+///
+/// A serializable mirror of [`templates::Template`], which is `&'static str`
+/// throughout and so cannot cross a JSON boundary directly.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateInfo {
+    pub id: String,
+    pub name: String,
+    pub blurb: String,
+}
 
 /// One command the UI may invoke, with the exact argument names it sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +176,30 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "rename_speaker",
         args: &["id", "key", "name"],
+    },
+    Command {
+        name: "save_notes",
+        args: &["id", "notesMd"],
+    },
+    Command {
+        name: "list_templates",
+        args: &[],
+    },
+    Command {
+        name: "set_template",
+        args: &["id", "template"],
+    },
+    Command {
+        name: "set_action_done",
+        args: &["id", "index", "done"],
+    },
+    Command {
+        name: "ask_recording",
+        args: &["id", "question"],
+    },
+    Command {
+        name: "audio_path",
+        args: &["id", "track"],
     },
     Command {
         name: "get_settings",
@@ -589,6 +626,77 @@ impl Runtime {
         // rather than waiting for a rebuild.
         let rec = self.inner.find(id)?;
         self.inner.index_one(&rec)
+    }
+
+    /// Saves the user's own notes for a recording.
+    ///
+    /// Deliberately allowed while that recording is the live one: typing notes
+    /// during the meeting is the point, and unlike filing or renaming it does
+    /// not touch the folder the capture threads are writing into.
+    pub fn save_notes(&self, id: &str, notes_md: &str) -> Result<()> {
+        api::save_notes(&self.inner.store, id, notes_md)?;
+        // Notes are searchable, and what you just typed is the most likely
+        // thing you will search for.
+        let rec = self.inner.find(id)?;
+        self.inner.index_one(&rec)
+    }
+
+    /// Every note template this build knows, for the picker.
+    pub fn list_templates(&self) -> Vec<TemplateInfo> {
+        templates::TEMPLATES
+            .iter()
+            .map(|t| TemplateInfo {
+                id: t.id.to_string(),
+                name: t.name.to_string(),
+                blurb: t.blurb.to_string(),
+            })
+            .collect()
+    }
+
+    /// Sets a recording's note template. Takes effect on the next processing
+    /// run, not retroactively.
+    pub fn set_template(&self, id: &str, template: &str) -> Result<()> {
+        api::set_template(&self.inner.store, id, template)
+    }
+
+    /// Ticks or unticks one action item, returning the re-parsed checklist.
+    pub fn set_action_done(
+        &self,
+        id: &str,
+        index: usize,
+        done: bool,
+    ) -> Result<Vec<crate::actions::ActionItem>> {
+        let items = api::set_action_done(&self.inner.store, id, index, done)?;
+        // Ticking rewrites summary.md, which is indexed.
+        let rec = self.inner.find(id)?;
+        self.inner.index_one(&rec)?;
+        Ok(items)
+    }
+
+    /// Answers one question about one recording, using the local model.
+    ///
+    /// Reads the recording's text here rather than in `pipeline::ask` so that
+    /// stage stays a pure function of its inputs and testable without a store.
+    pub fn ask_recording(&self, id: &str, question: &str) -> Result<String> {
+        let rec = self.inner.find(id)?;
+        let settings = self.get_settings()?;
+        let llm = LlmClient {
+            base_url: settings.llm_base_url,
+            model: settings.llm_model,
+        };
+        crate::pipeline::ask::ask(
+            &llm,
+            question,
+            &crate::notes::read(&rec.dir),
+            &fs::read_to_string(rec.dir.join(SUMMARY_FILE)).unwrap_or_default(),
+            &fs::read_to_string(rec.dir.join(TRANSCRIPT_FILE)).unwrap_or_default(),
+        )
+    }
+
+    /// The absolute path to one of a recording's audio tracks, for playback.
+    pub fn audio_path(&self, id: &str, track: &str) -> Result<String> {
+        let path = api::audio_path(&self.inner.store, id, track)?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     /// Files a recording under a task, moving its directory to match.
@@ -1172,11 +1280,9 @@ impl Inner {
         self.idle.replace(build_policy(&self.probe, settings));
     }
 
-    /// Indexes one recording with whatever transcript and summary are on disk.
+    /// Indexes one recording from whatever text is on disk.
     fn index_one(&self, rec: &RecordingRef) -> Result<()> {
-        let transcript = fs::read_to_string(rec.dir.join(TRANSCRIPT_FILE)).unwrap_or_default();
-        let summary = fs::read_to_string(rec.dir.join(SUMMARY_FILE)).unwrap_or_default();
-        lock(&self.index).upsert(rec, &transcript, &summary)
+        lock(&self.index).upsert(rec)
     }
 
     /// Re-indexes every finished recording. Returns how many.
@@ -2678,7 +2784,18 @@ mod tests {
             ("list_recordings", rt.list_recordings().map(|_| ())),
             ("get_recording", rt.get_recording(&id).map(|_| ())),
             ("search", rt.search("lecture").map(|_| ())),
-            ("update_summary", rt.update_summary(&id, "## TL;DR\nhi")),
+            // Carries a checkbox so `set_action_done` below has one to tick.
+            (
+                "update_summary",
+                rt.update_summary(&id, "## TL;DR\nhi\n\n## Action items\n- [ ] Alice: ship it"),
+            ),
+            ("save_notes", rt.save_notes(&id, "- ask about pricing")),
+            ("set_template", rt.set_template(&id, "lecture")),
+            (
+                "set_action_done",
+                rt.set_action_done(&id, 0, true).map(|_| ()),
+            ),
+            ("audio_path", rt.audio_path(&id, "mic").map(|_| ())),
             ("assign_task", rt.assign_task(&id, "Accounting 302")),
             ("rename_recording", rt.rename_recording(&id, "Lecture 3")),
             ("rename_speaker", rt.rename_speaker(&id, "spk1", "Jamie")),
@@ -2706,15 +2823,28 @@ mod tests {
         let _ = rt.capture_status();
         let _ = rt.pull_progress();
         let _ = rt.detected_tier();
+        assert!(
+            !rt.list_templates().is_empty(),
+            "the picker would have nothing to show"
+        );
+        // Ollama is deliberately unreachable in this test, so asking must fail
+        // — reaching the failure still proves the command is wired up, and the
+        // message has to be one a user could act on.
+        let ask = rt.ask_recording(&id, "what did we decide").unwrap_err();
+        assert!(
+            format!("{ask:#}").to_lowercase().contains("ollama"),
+            "an unreachable model must say so: {ask:#}"
+        );
         assert!(rt.pause_capture().is_err(), "nothing is recording");
         assert!(rt.resume_capture().is_err(), "nothing is recording");
         rt.start_capture(Mode::InPerson, "Another").unwrap();
         rt.stop_capture().unwrap();
 
-        // capture_status, pull_progress, detected_tier, pause, resume, start,
-        // stop — seven not in the list above.
+        // capture_status, pull_progress, detected_tier, list_templates,
+        // ask_recording, pause, resume, start, stop — nine not in the list
+        // above.
         assert_eq!(
-            called.len() + 7,
+            called.len() + 9,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

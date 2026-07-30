@@ -72,6 +72,11 @@ pub fn content_type(path: &Path) -> &'static str {
         Some("woff2") => "font/woff2",
         Some("woff") => "font/woff",
         Some("map") => "application/json; charset=utf-8",
+        // Recording audio, served by the `/audio/` route rather than from the
+        // UI build. Without these a browser refuses to play the file at all —
+        // `<audio>` will not touch `application/octet-stream`.
+        Some("flac") => "audio/flac",
+        Some("wav") => "audio/wav",
         _ => "application/octet-stream",
     }
 }

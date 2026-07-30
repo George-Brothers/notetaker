@@ -17,13 +17,19 @@ use crate::pipeline::audio::load_mono_16k;
 use crate::pipeline::diarize::{Diarizer, SpeakerSpan};
 use crate::pipeline::llm::LlmClient;
 use crate::pipeline::merge::{label_speakers, merge_meeting, to_transcript_md};
-use crate::pipeline::suggest::{suggest_task, Suggestion};
+use crate::pipeline::suggest::{suggest_task, suggest_title, Suggestion};
 use crate::pipeline::summarize::summarize;
 use crate::pipeline::transcribe::Transcriber;
 use crate::pipeline::Utterance;
 use crate::storage::{Mode, RecordingRef, StageTiming, Status, Store};
 
 const SUGGESTED_TASK_FILE: &str = "suggested_task.txt";
+
+/// Sidecar holding a better title than the timestamp the recording was created
+/// with, awaiting a one-click accept. A sidecar rather than a `Meta` field for
+/// the same reason as the task suggestion: it is a transient offer, not durable
+/// metadata, and accepting or ignoring it should not rewrite `meta.json`.
+const SUGGESTED_TITLE_FILE: &str = "suggested_title.txt";
 
 /// The models and knowledge one processing run needs. Borrowed, because a
 /// single loaded model serves every recording in the queue.
@@ -116,8 +122,19 @@ pub fn process_recording(
     };
 
     let transcript_md = to_transcript_md(&rec.meta.title, &utterances);
+
+    // Whatever the user typed during the recording. The summarizer is asked to
+    // expand on it rather than summarize the call from scratch — see
+    // `summarize`'s module note.
+    let notes_md = crate::notes::read(&rec.dir);
+
     let summary_md = timed(&mut stages, "summarize", || {
-        summarize(deps.llm, &transcript_md)
+        summarize(
+            deps.llm,
+            &transcript_md,
+            &notes_md,
+            rec.meta.template.as_deref(),
+        )
     })
     .context("summarization")?;
     let suggestion = timed(&mut stages, "suggest-task", || {
@@ -125,10 +142,21 @@ pub fn process_recording(
     })
     .context("task suggestion")?;
 
+    // A better title than the timestamp, offered for one-click accept. Never
+    // fails the run: the transcript and summary are already good, and a
+    // recording with a dull title is a far better outcome than a lost one.
+    let suggested_title = timed(&mut stages, "suggest-title", || {
+        Ok(suggest_title(deps.llm, &summary_md).unwrap_or_else(|e| {
+            log::warn!("could not suggest a title for {}: {e:#}", rec.meta.id);
+            None
+        }))
+    })?;
+
     // Persist outputs next to the audio.
     write_file(&rec.dir.join("transcript.md"), &transcript_md)?;
     write_file(&rec.dir.join("summary.md"), &summary_md)?;
     write_suggestion(&rec.dir, &suggestion)?;
+    write_suggested_title(&rec.dir, suggested_title.as_deref())?;
 
     // Record speakers and stage timings without touching status. Both are
     // real `Meta` fields now, so a plain save_meta persists them durably.
@@ -189,6 +217,21 @@ fn record_diarized_speakers(speakers: &mut BTreeMap<String, String>, spans: &[Sp
 fn write_suggestion(dir: &Path, suggestion: &Suggestion) -> Result<()> {
     let body = suggestion.task.as_deref().unwrap_or("");
     write_file(&dir.join(SUGGESTED_TASK_FILE), body)
+}
+
+/// Writes the suggested title, or removes a stale one when this run produced
+/// none. Removing matters on a reprocess: a title suggested from an earlier,
+/// worse summary must not keep being offered after a better run declined to
+/// suggest anything.
+fn write_suggested_title(dir: &Path, title: Option<&str>) -> Result<()> {
+    let path = dir.join(SUGGESTED_TITLE_FILE);
+    match title {
+        Some(t) => write_file(&path, t),
+        None => {
+            let _ = std::fs::remove_file(&path);
+            Ok(())
+        }
+    }
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<()> {

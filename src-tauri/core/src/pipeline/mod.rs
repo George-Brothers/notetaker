@@ -1,6 +1,7 @@
 //! Processing pipeline stages. Each stage is an independent module; `run`
 //! orchestrates them.
 
+pub mod ask;
 pub mod audio;
 pub mod diarize;
 pub mod llm;

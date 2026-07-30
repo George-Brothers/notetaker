@@ -6,11 +6,13 @@
 //! microphone, system audio, the machine's idle time — it sits behind a trait
 //! with a working fake, so the logic above it is built and tested anywhere.
 
+pub mod actions;
 pub mod api;
 pub mod capture;
 pub mod dispatch;
 pub mod index;
 pub mod models;
+pub mod notes;
 pub mod ollama;
 pub mod paths;
 pub mod pipeline;
@@ -19,6 +21,8 @@ pub mod queue;
 pub mod runtime;
 pub mod scheduler;
 pub mod storage;
+pub mod templates;
+pub mod transcript;
 pub mod watch;
 
 #[cfg(test)]

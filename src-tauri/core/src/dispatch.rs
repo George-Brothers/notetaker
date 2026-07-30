@@ -58,6 +58,22 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
             str_arg(args, "name")?,
         )?),
 
+        // --- the notepad ------------------------------------------------
+        "save_notes" => to_json(rt.save_notes(str_arg(args, "id")?, str_arg(args, "notesMd")?)?),
+        "list_templates" => to_json(rt.list_templates()),
+        "set_template" => {
+            to_json(rt.set_template(str_arg(args, "id")?, str_arg(args, "template")?)?)
+        }
+        "set_action_done" => to_json(rt.set_action_done(
+            str_arg(args, "id")?,
+            usize_arg(args, "index")?,
+            bool_arg(args, "done")?,
+        )?),
+        "ask_recording" => {
+            to_json(rt.ask_recording(str_arg(args, "id")?, str_arg(args, "question")?)?)
+        }
+        "audio_path" => to_json(rt.audio_path(str_arg(args, "id")?, str_arg(args, "track")?)?),
+
         // --- settings ---------------------------------------------------
         "get_settings" => to_json(rt.get_settings()?),
         "set_settings" => {
@@ -105,6 +121,33 @@ fn str_arg<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
     match args.get(name) {
         Some(Value::String(s)) => Ok(s),
         Some(other) => anyhow::bail!("argument {name:?} should be a string, got {other}"),
+        None => anyhow::bail!("missing argument {name:?}"),
+    }
+}
+
+/// Reads a required non-negative integer argument.
+///
+/// JSON has one number type, so an index arrives as `f64` from some clients and
+/// as an integer from others. Both are accepted; a fraction or a negative is
+/// not, because silently truncating `1.5` to item 1 would tick the wrong box.
+fn usize_arg(args: &Value, name: &str) -> Result<usize> {
+    match args.get(name) {
+        Some(Value::Number(n)) => {
+            if let Some(u) = n.as_u64() {
+                return Ok(u as usize);
+            }
+            anyhow::bail!("argument {name:?} should be a whole number 0 or greater, got {n}")
+        }
+        Some(other) => anyhow::bail!("argument {name:?} should be a number, got {other}"),
+        None => anyhow::bail!("missing argument {name:?}"),
+    }
+}
+
+/// Reads a required boolean argument.
+fn bool_arg(args: &Value, name: &str) -> Result<bool> {
+    match args.get(name) {
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(other) => anyhow::bail!("argument {name:?} should be true or false, got {other}"),
         None => anyhow::bail!("missing argument {name:?}"),
     }
 }
@@ -168,6 +211,12 @@ mod tests {
             "assign_task",
             "rename_recording",
             "rename_speaker",
+            "save_notes",
+            "list_templates",
+            "set_template",
+            "set_action_done",
+            "ask_recording",
+            "audio_path",
             "get_settings",
             "set_settings",
             "set_auto_record",

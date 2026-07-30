@@ -64,6 +64,15 @@ pub struct Meta {
     /// existed still parse.
     #[serde(default)]
     pub capture_note: Option<String>,
+    /// Which [note template](crate::templates) shapes this recording's summary.
+    /// `None` means the default shape.
+    ///
+    /// Holds a template *id*, and those ids are therefore a storage contract —
+    /// see the note on [`templates::Template`](crate::templates::Template). An
+    /// id this build does not recognize is tolerated rather than rejected, so a
+    /// recording filed under a template a later version drops still opens.
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 /// How long one pipeline stage took, for diagnostics.
@@ -141,6 +150,7 @@ impl Store {
             attempts: 0,
             stages: Vec::new(),
             capture_note: None,
+            template: None,
         };
 
         let rec = RecordingRef {
