@@ -96,7 +96,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - name: Frontend tests
-        run: pnpm test --run
+        run: pnpm test
       # `pnpm build` is the only typecheck in this project — vitest does not
       # typecheck, so a contract change can pass every test and still be broken.
       - name: Frontend typecheck + build

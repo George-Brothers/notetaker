@@ -41,9 +41,14 @@ failed=()
 for t in "${TARGETS[@]}"; do
   echo
   echo "=============================================================="
-  echo "  cargo check -p notetaker-platform --target $t"
+  echo "  cargo clippy -p notetaker-platform --target $t  (-D warnings)"
   echo "=============================================================="
-  if cargo check -p notetaker-platform --all-targets --target "$t"; then
+  # clippy, not check. CI runs clippy with -D warnings on every OS, and it
+  # cross-targets exactly the same way `check` does — which nobody had tried
+  # until CI failed on a deprecated CoreGraphics function and an unnecessary
+  # `unsafe` block that `cargo check` is perfectly happy with. Anything caught
+  # here is a CI round-trip saved, at about ten minutes a cycle.
+  if cargo clippy -p notetaker-platform --all-targets --target "$t" -- -D warnings; then
     echo "  OK: $t"
   else
     echo "  FAILED: $t"

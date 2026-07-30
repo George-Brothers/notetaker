@@ -25,9 +25,7 @@
 //! first seen on real hardware.
 
 use anyhow::Result;
-use objc2_core_graphics::{
-    CGEventSourceSecondsSinceLastEventType, CGEventSourceStateID, CGEventType,
-};
+use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 
 use crate::RawPowerState;
 
@@ -40,13 +38,15 @@ use crate::RawPowerState;
 ///
 /// `HIDSystemState` is the system-wide event source, which is what makes this
 /// reflect the whole machine rather than only this process.
+///
+/// No `unsafe` block: `objc2` models this call as safe, and wrapping it in one
+/// anyway is a lint error under `-D warnings` — as well as a small lie about
+/// where this file's real risks are.
 pub fn idle_seconds() -> f64 {
-    let secs = unsafe {
-        CGEventSourceSecondsSinceLastEventType(
-            CGEventSourceStateID::HIDSystemState,
-            CGEventType::Null,
-        )
-    };
+    let secs = CGEventSource::seconds_since_last_event_type(
+        CGEventSourceStateID::HIDSystemState,
+        CGEventType::Null,
+    );
     // A negative or NaN reading would be nonsense; report "not idle", which is
     // the direction that delays processing rather than running it while the
     // user is working.
