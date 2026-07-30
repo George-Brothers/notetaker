@@ -7,7 +7,7 @@
 use super::ModelSpec;
 
 /// Whisper `large-v3-turbo`, full precision ggml. Used on the
-/// `AppleSiliconBig` tier.
+/// `AppleSiliconBig` and `CpuBig` tiers.
 ///
 /// Source: <https://huggingface.co/ggerganov/whisper.cpp>
 /// sha256 verified against the repo's published LFS object id (also
@@ -79,7 +79,7 @@ pub fn all() -> &'static [ModelSpec] {
 pub fn required_models(tier: &super::Tier) -> Vec<&'static ModelSpec> {
     use super::Tier::*;
     match tier {
-        AppleSiliconBig => vec![
+        AppleSiliconBig | CpuBig => vec![
             &WHISPER_LARGE_V3_TURBO,
             &DIARIZATION_SEGMENTATION,
             &DIARIZATION_EMBEDDING,
@@ -132,6 +132,43 @@ mod tests {
                 "diarization-embedding",
             ]
         );
+    }
+
+    /// A desktop-class Windows or Intel machine gets the same models as a big
+    /// Mac. Pinned as an equality against `AppleSiliconBig` rather than a
+    /// literal list, so adding a model to the big tier can never leave the
+    /// CPU-big tier silently behind.
+    #[test]
+    fn cpu_big_matches_apple_silicon_big() {
+        let cpu: Vec<&str> = required_models(&Tier::CpuBig)
+            .iter()
+            .map(|m| m.name)
+            .collect();
+        let apple_big: Vec<&str> = required_models(&Tier::AppleSiliconBig)
+            .iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(cpu, apple_big);
+    }
+
+    /// Every tier must resolve to a non-empty model set. An exhaustive match
+    /// makes adding a `Tier` variant a compile error here, not a runtime
+    /// surprise where first-run downloads nothing and transcription silently
+    /// never starts.
+    #[test]
+    fn every_tier_requires_at_least_one_speech_model() {
+        for tier in [
+            Tier::AppleSiliconBig,
+            Tier::AppleSiliconSmall,
+            Tier::CpuBig,
+            Tier::CpuSmall,
+        ] {
+            let models = required_models(&tier);
+            assert!(
+                models.iter().any(|m| m.name.starts_with("whisper")),
+                "{tier:?} has no speech model"
+            );
+        }
     }
 
     #[test]

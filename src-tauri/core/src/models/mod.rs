@@ -29,22 +29,51 @@ pub struct ModelSpec {
 }
 
 /// Hardware capability tier, used to pick which models to fetch.
+///
+/// The three original names are a **settings-file contract** —
+/// `Settings::tier_override` stores one of these strings, so renaming one
+/// would silently invalidate a user's saved choice. `CpuBig` was added for
+/// Windows and Intel desktops; the others are untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     AppleSiliconBig,
     AppleSiliconSmall,
+    /// A desktop-class CPU with room to run the large model, just slowly.
+    CpuBig,
     CpuSmall,
 }
 
-/// Apple Silicon with >=16GB RAM gets the big tier; Apple Silicon under that
-/// gets the small tier; anything else (Intel, other CPUs) gets the CPU tier.
-pub fn detect_tier(total_ram_gb: u64, is_apple_silicon: bool) -> Tier {
+/// RAM floor, in GB, for Apple Silicon to get the large model.
+const APPLE_BIG_RAM_GB: u64 = 16;
+/// RAM floor, in GB, for a non-Apple machine to get the large model.
+const CPU_BIG_RAM_GB: u64 = 32;
+/// Core floor for a non-Apple machine to get the large model.
+const CPU_BIG_CORES: usize = 8;
+
+/// Which models this machine should fetch.
+///
+/// Apple Silicon with >= 16 GB gets the large model on the GPU; under that,
+/// the small one. For everything else the question is different: there is no
+/// Metal path, so the large model runs on CPU cores at roughly real time or
+/// worse. That is a bad trade for a laptop and a fine one for a desktop —
+/// **transcription here is idle-time background work with no deadline**, so a
+/// machine with the cores and memory to spare gets the better transcript and
+/// takes longer over it. `CPU_BIG_CORES` and `CPU_BIG_RAM_GB` together are the
+/// "this is a desktop, not a thin laptop" test; a 32 GB dual-core would be an
+/// odd machine and it stays on the small model.
+///
+/// This is a *default*, not a verdict — `Settings::tier_override` lets the
+/// user move either way, which matters because we cannot measure how patient
+/// they are.
+pub fn detect_tier(total_ram_gb: u64, cpu_cores: usize, is_apple_silicon: bool) -> Tier {
     if is_apple_silicon {
-        if total_ram_gb >= 16 {
+        if total_ram_gb >= APPLE_BIG_RAM_GB {
             Tier::AppleSiliconBig
         } else {
             Tier::AppleSiliconSmall
         }
+    } else if total_ram_gb >= CPU_BIG_RAM_GB && cpu_cores >= CPU_BIG_CORES {
+        Tier::CpuBig
     } else {
         Tier::CpuSmall
     }
@@ -181,24 +210,48 @@ mod tests {
 
     // --- detect_tier ---------------------------------------------------
 
+    /// Core count is irrelevant on Apple Silicon — the large model runs on the
+    /// GPU there, so RAM is the only question. Passed as 4 (a low count) in
+    /// these two to prove it does not drag an Apple machine down a tier.
     #[test]
     fn detect_tier_apple_silicon_16gb_is_big() {
-        assert_eq!(detect_tier(16, true), Tier::AppleSiliconBig);
+        assert_eq!(detect_tier(16, 4, true), Tier::AppleSiliconBig);
     }
 
     #[test]
     fn detect_tier_apple_silicon_8gb_is_small() {
-        assert_eq!(detect_tier(8, true), Tier::AppleSiliconSmall);
-    }
-
-    #[test]
-    fn detect_tier_non_apple_silicon_32gb_is_cpu_small() {
-        assert_eq!(detect_tier(32, false), Tier::CpuSmall);
+        assert_eq!(detect_tier(8, 4, true), Tier::AppleSiliconSmall);
     }
 
     #[test]
     fn detect_tier_boundary_just_under_16gb_is_still_small() {
-        assert_eq!(detect_tier(15, true), Tier::AppleSiliconSmall);
+        assert_eq!(detect_tier(15, 4, true), Tier::AppleSiliconSmall);
+    }
+
+    /// A desktop-class Windows/Intel box gets the large model, run on CPU.
+    /// This is a deliberate change from Plan A/B, where every non-Apple
+    /// machine was `CpuSmall` regardless of how capable it was.
+    #[test]
+    fn detect_tier_non_apple_desktop_class_is_cpu_big() {
+        assert_eq!(detect_tier(32, 8, false), Tier::CpuBig);
+    }
+
+    /// Both floors must be met. A machine with plenty of RAM but few cores
+    /// would spend hours per recording on the large model, so it stays small.
+    #[test]
+    fn detect_tier_non_apple_ram_without_cores_stays_small() {
+        assert_eq!(detect_tier(64, 4, false), Tier::CpuSmall);
+    }
+
+    /// ...and the mirror case: many cores but not enough memory.
+    #[test]
+    fn detect_tier_non_apple_cores_without_ram_stays_small() {
+        assert_eq!(detect_tier(16, 16, false), Tier::CpuSmall);
+    }
+
+    #[test]
+    fn detect_tier_typical_laptop_is_cpu_small() {
+        assert_eq!(detect_tier(16, 8, false), Tier::CpuSmall);
     }
 
     // --- Downloader::ensure --------------------------------------------

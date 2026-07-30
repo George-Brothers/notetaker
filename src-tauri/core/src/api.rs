@@ -662,6 +662,49 @@ mod tests {
         assert_eq!(round_tripped, settings);
     }
 
+    /// A Windows storage root must survive the round trip untouched.
+    /// Backslashes are JSON escape characters, so a naive write-then-read can
+    /// turn `C:\Users` into `C:Users` — and a drive letter's colon has broken
+    /// more than one path parser. Both are silent: the app would come up
+    /// pointing at a folder that isn't there and report an empty library
+    /// rather than an error.
+    #[test]
+    fn windows_storage_root_round_trips_with_backslashes_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        let settings = Settings {
+            storage_root: r"C:\Users\george\Notetaker".to_string(),
+            tier_override: Some("CpuBig".to_string()),
+            ..Settings::default()
+        };
+        set_settings(&path, &settings).unwrap();
+
+        let loaded = get_settings(&path).unwrap();
+        assert_eq!(loaded.storage_root, r"C:\Users\george\Notetaker");
+        assert_eq!(loaded.tier_override.as_deref(), Some("CpuBig"));
+    }
+
+    /// A UNC path — `\\server\share` — is how a Windows user points the
+    /// library at a NAS. The leading double backslash is the part that gets
+    /// eaten by careless normalization.
+    #[test]
+    fn windows_unc_storage_root_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        let settings = Settings {
+            storage_root: r"\\nas\media\Notetaker".to_string(),
+            ..Settings::default()
+        };
+        set_settings(&path, &settings).unwrap();
+
+        assert_eq!(
+            get_settings(&path).unwrap().storage_root,
+            r"\\nas\media\Notetaker"
+        );
+    }
+
     #[test]
     fn settings_written_before_plan_b_still_load() {
         // A settings file from Plan A has none of the capture/power fields. It

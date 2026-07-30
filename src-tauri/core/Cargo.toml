@@ -31,8 +31,13 @@ whisper-rs = "0.16.0"
 httpmock = "0.8.3"
 tempfile = "3.27.0"
 
-# macOS-only: the real microphone source. Absent on Linux, where `alsa-sys`
-# would need pkg-config we have no sudo to install — and where the capture
-# logic is tested against `capture::source::FakeSource` instead.
+# The real microphone, on the two platforms we ship. Deliberately NOT enabled
+# on Linux: `alsa-sys` needs pkg-config we have no sudo to install in the WSL2
+# build environment, and the capture logic is tested there against
+# `capture::source::FakeSource` instead. Linux is a build host here, not a
+# target — see docs/MAP.md.
 [target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.16.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
 cpal = "0.16.0"

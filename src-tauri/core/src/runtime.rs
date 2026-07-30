@@ -898,8 +898,17 @@ impl Runtime {
         let mut system = sysinfo::System::new();
         system.refresh_memory();
         let ram_gb = system.total_memory() / 1_073_741_824;
+        // `available_parallelism` counts what this process may actually use,
+        // which is the number that matters for a CPU transcribe — a container
+        // pinned to two cores should not be read as a 32-core desktop. Falls
+        // back to 1, the pessimistic direction: it can only push a machine
+        // down to the small model, never up onto one it cannot run.
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         tier_name(detect_tier(
             ram_gb,
+            cores,
             cfg!(target_os = "macos") && cfg!(target_arch = "aarch64"),
         ))
         .to_string()
@@ -1235,6 +1244,7 @@ fn tier_name(tier: Tier) -> &'static str {
     match tier {
         Tier::AppleSiliconBig => "AppleSiliconBig",
         Tier::AppleSiliconSmall => "AppleSiliconSmall",
+        Tier::CpuBig => "CpuBig",
         Tier::CpuSmall => "CpuSmall",
     }
 }
@@ -1247,6 +1257,7 @@ fn tier_from_name(name: &str) -> Option<Tier> {
     match name {
         "AppleSiliconBig" => Some(Tier::AppleSiliconBig),
         "AppleSiliconSmall" => Some(Tier::AppleSiliconSmall),
+        "CpuBig" => Some(Tier::CpuBig),
         "CpuSmall" => Some(Tier::CpuSmall),
         _ => None,
     }

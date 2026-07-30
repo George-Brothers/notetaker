@@ -11,6 +11,7 @@ pub mod capture;
 pub mod index;
 pub mod models;
 pub mod ollama;
+pub mod paths;
 pub mod pipeline;
 pub mod power;
 pub mod queue;
