@@ -341,14 +341,31 @@ impl SysinfoDisk {
     /// mount point that is its longest matching prefix — on macOS the data
     /// volume rather than the read-only system volume, and on any Unix `/` as
     /// the fallback that always matches.
+    ///
+    /// **Both sides are canonicalized, and that is the whole point.** The
+    /// target used to be canonicalized and the mount point compared raw, which
+    /// works on Unix and is silently broken on Windows: `canonicalize` there
+    /// returns an extended-length path (`\\?\C:\Users\...`) while
+    /// `mount_point()` returns `C:\`, and `Path::starts_with` compares
+    /// components — `Prefix(VerbatimDisk)` and `Prefix(Disk)` are not equal.
+    /// No disk ever matched, so this returned `None`, and `disk_trouble` reads
+    /// `None` as "cannot read the volume, stop recording". Every recording on
+    /// Windows therefore stopped on its first pump step, before a single sample
+    /// was written. Running both paths through the same function is what keeps
+    /// the two comparable on every OS.
     fn measure(&self) -> Option<u64> {
         let target = existing_ancestor(&self.path)?;
-        let disks = sysinfo::Disks::new_with_refreshed_list();
-        disks
+        sysinfo::Disks::new_with_refreshed_list()
             .iter()
-            .filter(|d| target.starts_with(d.mount_point()))
-            .max_by_key(|d| d.mount_point().as_os_str().len())
-            .map(|d| d.available_space() / 1_048_576)
+            .filter_map(|d| {
+                let mount = existing_ancestor(d.mount_point())
+                    .unwrap_or_else(|| d.mount_point().to_path_buf());
+                target
+                    .starts_with(&mount)
+                    .then(|| (mount.as_os_str().len(), d.available_space()))
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, available)| available / 1_048_576)
     }
 }
 
@@ -2954,6 +2971,14 @@ mod tests {
         assert_eq!(tier, "CpuSmall");
     }
 
+    /// **The Windows canary.** This passed on Linux and macOS and failed on
+    /// Windows for as long as Windows had been built, because `measure`
+    /// compared a canonicalized target against a raw mount point. It is not
+    /// only a probe bug: `disk_trouble` reads an unreadable volume as "stop
+    /// recording", so the same mismatch stopped every Windows recording before
+    /// its first sample and took seven other tests down with it. Nothing here
+    /// can run Windows — if this ever goes red on that job again, the cause is
+    /// path comparison, not free space.
     #[test]
     fn the_real_disk_probe_reads_free_space_for_a_path_that_does_not_exist_yet() {
         let dir = tempfile::tempdir().unwrap();

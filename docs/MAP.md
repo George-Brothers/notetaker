@@ -186,8 +186,8 @@ Still assumed:
 - Meeting detection means "the app is open", not "a call started" — except
   Windows' `CptHost.exe`, which only exists during a Zoom meeting. Browsers are
   deliberately not detected; see `watch/apps.rs`.
-- **Windows FLAC finalize**, per "CI has run now" above — the one place where a
-  green local suite and a red CI disagree.
+- **The Windows disk-probe fix**, which is reasoned and reproduced but has not
+  yet had a green Windows run — see "The Windows 8" above.
 
 Retired 2026-07-30: "the whole UI, visually" is no longer assumed. Every screen
 was driven in a real browser against a real `notetaker-serve` over a real
@@ -201,7 +201,8 @@ rendered as two stacked boxes, and the narrow layout squeezed the note into a
 ## CI has run now — what it found (2026-07-30)
 The first runs in this project's life, on PR #1. Three rounds.
 
-**Current state: macOS ✅ · Linux ✅ · Windows ❌ (8 of 348 tests).**
+**State: macOS ✅ · Linux ✅ · Windows — the 8 failures are diagnosed and fixed
+(see below); the run that proves it is pending.**
 macOS had never been compiled before today; it now builds, tests and clippies
 clean, as does the Tauri app crate on both platforms.
 
@@ -237,16 +238,41 @@ macOS-only code fails there while `cargo check` locally is perfectly happy. Both
 macOS clippy failures reproduce in seconds on Linux with the new script. Run it
 before pushing; a CI round trip is about ten minutes.
 
-**Open — Windows, 8 of 348 tests. Needs a Windows to diagnose; do not guess.**
-- Seven are the FLAC finalize path: `finalize_to_flac` fails, correctly removes
-  its half-written output, and the tests then look for an `audio-mic.flac` that
-  was never written (`The system cannot find the file specified (os error 2)`).
-  Suspect the WAV is read before `hound`'s writer has finalized its RIFF header,
-  which would make `load_mono_16k` return empty and hit the "holds no audio"
-  bail — but that is a hypothesis, not a finding.
-- One is `SysinfoDisk` reading free space for a path that does not exist yet.
-- Everything else passes on Windows, including the whole capture engine above
-  the finalize step.
+**The Windows 8 — one bug, found 2026-07-30, and it made the app useless there.**
+
+The earlier note in this place said "seven are the FLAC finalize path" and
+guessed at `hound`'s RIFF header. **That was wrong.** Reading the actual failure
+output rather than the summary showed two of the eight were not FLAC at all:
+*"timed out waiting for the first audio to reach the file"*. All eight are one
+cause.
+
+`SysinfoDisk::measure` canonicalized the target path and compared it against a
+**raw** mount point. On Windows `canonicalize` returns an extended-length path
+(`\\?\C:\Users\...`) while `mount_point()` returns `C:\`, and `Path::starts_with`
+compares components — `Prefix(VerbatimDisk)` is not `Prefix(Disk)`. No disk ever
+matched, so `free_mb()` was `None`.
+
+That is not merely a probe bug. `Session::disk_trouble` reads `None` as *"could
+not read how much storage space is left"* and **stops the recording** — a
+deliberate decision ("refusing to record is recoverable, losing a lecture is
+not"). So on Windows every recording stopped on its first pump step, before one
+sample was written: hence 2 disk-probe failures, 2 "no audio ever arrived", and
+4 "the FLAC that was never written is missing". **A shipped Windows build would
+have recorded nothing at all.**
+
+Fixed by running both paths through `existing_ancestor`, so like is compared
+with like on every OS.
+
+**How it was confirmed without a Windows machine**: breaking the disk match on
+Linux produces a failure list *byte-identical* to the Windows CI run — the same
+eight tests, in the same order. Worth keeping as a technique: when a platform
+you cannot run fails, try to reproduce the failure *set* locally by injecting
+the suspected cause. A matching set is much stronger evidence than a plausible
+story about one test.
+
+The other thing to take from it: one unreadable disk probe silently disabled the
+entire product. The policy is defensible; its blast radius is worth a second
+look.
 
 ## The scheduler, now wired (2026-07-30)
 `Runtime::start_scheduler` used to be reachable only from tests: no production
