@@ -15,7 +15,7 @@ const STATUS_LABEL: Record<ItemStatus, string> = {
   done: "Done",
   "in-progress": "In progress",
   "not-started": "Not started",
-  info: "Checked on the Mac",
+  info: "Handled by your operating system",
 };
 
 function describeError(err: unknown): string {
@@ -195,7 +195,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
       <ol className="first-run__list">
         <ChecklistItem index={1} title="Microphone and screen-recording permissions" status="info">
           <p className="first-run__item-hint">
-            macOS asks for these the first time you record — nothing to check from here.
+            Your operating system asks for these the first time you record — nothing to check from here.
           </p>
         </ChecklistItem>
 

@@ -124,8 +124,17 @@ function App() {
           </Notice>
         )}
 
+        {/*
+          Two panes on a desktop, two *screens* on a phone.
+          The rail is 264px of a 1440px window and 63% of a 420px one, so below
+          `md` whichever of the two you are not looking at is removed rather
+          than squeezed — a note in a 155px column is not a note. Which one
+          shows is driven by whether a recording is open, so the back button is
+          just "close the recording".
+        */}
         <div className="flex min-h-0 flex-1">
           <Sidebar
+            className={lib.selectedId ? "hidden md:flex" : "flex w-full md:w-[264px]"}
             tasks={lib.tasks}
             activeView={lib.view}
             onSelectView={lib.setView}
@@ -139,10 +148,11 @@ function App() {
             onOpenPalette={() => setPaletteOpen(true)}
           />
 
-          <main className="flex min-w-0 flex-1">
+          <main className={lib.selectedId ? "flex min-w-0 flex-1" : "hidden min-w-0 flex-1 md:flex"}>
             <NoteView
               detail={lib.detail}
               loading={lib.detailLoading}
+              onBack={lib.clearSelection}
               tasks={lib.tasks}
               templates={lib.templates}
               askOpen={askOpen}

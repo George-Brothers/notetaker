@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
+  ChevronLeft,
   FileAudio,
   Loader2,
   NotebookPen,
@@ -61,6 +62,8 @@ export interface NoteViewProps {
   onSetTemplate: (id: string, template: string) => void;
   onToggleAction: (id: string, index: number, done: boolean) => void;
   onProcessNow: (id: string) => void;
+  /** Closes the recording. Only reachable on the narrow layout. */
+  onBack: () => void;
 }
 
 function SaveIndicator({ state }: { state: SaveState }) {
@@ -97,6 +100,7 @@ export function NoteView({
   onSetTemplate,
   onToggleAction,
   onProcessNow,
+  onBack,
 }: NoteViewProps) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -181,9 +185,15 @@ export function NoteView({
         aria-label="Recording"
         className="min-w-0 flex-1 overflow-y-auto"
       >
-        <div className="mx-auto w-full max-w-[46rem] px-8 py-8">
+        <div className="mx-auto w-full max-w-[46rem] px-4 py-6 sm:px-8 sm:py-8">
           {/* --- header ------------------------------------------------- */}
           <header className="mb-5">
+            {/* Narrow only: on a phone the rail and the note are two screens,
+                and this is how you get back to the list. */}
+            <Button variant="ghost" size="sm" onClick={onBack} className="mb-2 -ml-2 md:hidden">
+              <ChevronLeft size={14} />
+              All recordings
+            </Button>
             {editingTitle ? (
               <input
                 autoFocus
@@ -200,14 +210,14 @@ export function NoteView({
                     endTitleEdit();
                   }
                 }}
-                className="w-full border-0 border-b border-accent bg-transparent p-0 pb-1 text-[26px] font-semibold leading-tight text-fg focus:outline-none"
+                className="w-full border-0 border-b border-accent bg-transparent p-0 pb-1 text-[22px] font-semibold leading-tight text-fg focus:outline-none sm:text-[26px]"
               />
             ) : (
               <button
                 type="button"
                 onClick={beginTitleEdit}
                 title="Click to rename"
-                className="-mx-1 block w-full rounded px-1 text-left text-[26px] font-semibold leading-tight text-fg hover:bg-hover"
+                className="-mx-1 block w-full break-words rounded px-1 text-left text-[22px] font-semibold leading-tight text-fg hover:bg-hover sm:text-[26px]"
               >
                 {title}
               </button>
@@ -416,7 +426,7 @@ export function NoteView({
       {askOpen && (
         <aside
           aria-label="Ask about this recording"
-          className="flex w-[340px] shrink-0 flex-col border-l border-border bg-app px-4 py-4"
+          className="fixed inset-0 z-40 flex flex-col bg-app px-4 py-4 md:static md:z-auto md:w-[340px] md:shrink-0 md:border-l md:border-border"
         >
           <div className="mb-2 flex items-center justify-between">
             <h2 className="flex items-center gap-1.5 text-[13px] font-semibold text-fg">

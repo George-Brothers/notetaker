@@ -303,7 +303,7 @@ export function Settings({ onClose }: SettingsProps) {
                 <div className="settings-field">
                   <label htmlFor="settings-storage-root">Where recordings are saved</label>
                   <p className="settings-hint">
-                    The folder on this Mac where your recordings, transcripts, and summaries live.
+                    The folder on this computer where your recordings, transcripts, and summaries live.
                   </p>
                   <input
                     id="settings-storage-root"
@@ -348,7 +348,7 @@ export function Settings({ onClose }: SettingsProps) {
                     Local AI (Ollama)
                   </span>
                   <p className="settings-hint">
-                    Ollama runs the small AI model that writes your summaries, entirely on this Mac.
+                    Ollama runs the small AI model that writes your summaries, entirely on this computer.
                   </p>
                   <p className="settings-status">
                     <span className={`status-chip status-chip--${ollamaStatusKind(ollama)}`}>
@@ -378,7 +378,7 @@ export function Settings({ onClose }: SettingsProps) {
                   <label htmlFor="settings-tier-override">Detected: {detectedTier ?? "checking…"}</label>
                   <p className="settings-hint">
                     This controls how big and accurate the on-device transcription and summary models are —
-                    bigger is more accurate but slower. The app already picked based on this Mac's hardware;
+                    bigger is more accurate but slower. The app already picked based on this computer's hardware;
                     only change it if you want something different.
                   </p>
                   <select
@@ -394,7 +394,7 @@ export function Settings({ onClose }: SettingsProps) {
                     <option value="">Use the detected size</option>
                     <option value="small">Small — fastest, least accurate</option>
                     <option value="medium">Medium — balanced</option>
-                    <option value="large">Large — most accurate, needs a powerful Mac</option>
+                    <option value="large">Large — most accurate, needs a powerful computer</option>
                   </select>
                 </div>
               </section>
@@ -443,13 +443,13 @@ export function Settings({ onClose }: SettingsProps) {
                     checked={settings.processWhenIdle}
                     onChange={(e) => updateSettings({ ...settings, processWhenIdle: e.target.checked })}
                   />
-                  <label htmlFor="settings-process-when-idle">Wait until I'm not using the Mac</label>
+                  <label htmlFor="settings-process-when-idle">Wait until I'm not using the computer</label>
                 </div>
                 <div className="settings-field">
                   <label htmlFor="settings-min-idle-minutes">Minutes of inactivity before starting</label>
                   <p className="settings-hint">
                     Only matters when the option above is on — we wait this long after you stop using the
-                    Mac so processing never interrupts you.
+                    computer so processing never interrupts you.
                   </p>
                   <input
                     id="settings-min-idle-minutes"

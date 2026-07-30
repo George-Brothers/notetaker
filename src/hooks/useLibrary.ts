@@ -230,6 +230,18 @@ export function useLibrary() {
 
   const dismissError = useCallback(() => setLoadError(null), []);
 
+  /**
+   * Closes the open recording.
+   *
+   * Only the narrow layout uses this: on a phone the rail and the note are two
+   * screens rather than two panes, and "nothing selected" is what shows the
+   * list again.
+   */
+  const clearSelection = useCallback(() => {
+    setSelectedId(null);
+    setDetail(null);
+  }, []);
+
   const search = useCallback((q: string) => {
     setQuery(q);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -262,6 +274,7 @@ export function useLibrary() {
     setView,
     selectedId,
     selectRecording,
+    clearSelection,
     detail,
     detailLoading,
     createTask,

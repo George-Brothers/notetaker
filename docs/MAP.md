@@ -34,6 +34,11 @@ first two is load-bearing — see "How this is verified".
     `Runtime`, shared by every transport), `storage`, `index` (SQLite FTS5,
     CJK-segmented), `queue`, `pipeline/`, `models`, `watch/`, `power/`,
     `ollama/`, `scheduler`, `api`, `runtime`.
+  - The notepad layer: `notes` (`notes.md`, the user's own words),
+    `templates` (the shape a summary is written to), `actions` (the checklist,
+    parsed out of `summary.md`), `transcript` (the `[HH:MM:SS] **Name:**` lines
+    parsed back into timed segments), `pipeline/ask` (one question about one
+    recording).
 - **`platform/`** — `notetaker-platform`: the per-OS devices. **Depends on no
   other notetaker crate**, and only on pure-Rust libraries.
   - `convert`, `resample`, `ring` — pure, platform-independent, fully tested.
@@ -43,8 +48,17 @@ first two is load-bearing — see "How this is verified".
   `notetaker-serve` is a working Notetaker on a PC with no Tauri at all.
 - **`.` (app crate)** — the Tauri shell. **Still the generated scaffold.** Does
   not build on Linux (`libdbus-sys` needs pkg-config we have no sudo for).
-- `src/` — React/TS UI. `src/lib/ipc.ts` is the contract; `src/lib/transport.ts`
-  switches between Tauri IPC and HTTP.
+- `src/` — React/TS UI, in Granola's shape: a left rail that is both the
+  navigation and the library, and a note that is your own typing at full
+  contrast above the AI's expansion of it in grey.
+  - `lib/ipc.ts` is the contract; `lib/transport.ts` switches between Tauri IPC
+    and HTTP, and owns `audioSrc` — the one place the two transports genuinely
+    differ rather than carrying the same JSON.
+  - Tailwind v4 + Radix + Lucide + cmdk + a self-hosted Inter. Every colour is
+    a token in `styles/theme.css`; **no component may hardcode one**, or the
+    dark theme silently loses that element. `styles/panels.css` styles Settings
+    and the first-run checklist, which keep their tested markup.
+  - `components/ui.tsx` holds the shared primitives.
 - `fixtures/` — `bilingual.wav`, `diarization-check.wav`, reference transcript.
 
 ## How this is verified — read this before trusting anything
@@ -68,6 +82,7 @@ scripts/check-platforms.sh      # all three targets, ~30s
 | `capture::platform`, `power::probe` per-OS arms | **CI only.** Never compiled on Linux |
 | The Tauri app crate | **CI only.** Never compiles on Linux |
 | `notetaker-server` + `dispatch` | **Fully verified here**, including a real binary over a real socket |
+| The whole UI, visually | **Seen and screenshotted** (2026-07-30) — real binary, real files, real audio, in Chrome. See below |
 
 The cross-check was itself confirmed with a negative control: a deliberate type
 error in `windows/power.rs` *is* caught.
@@ -82,8 +97,25 @@ error in `windows/power.rs` *is* caught.
 - Running `notetaker-serve` by hand needs
   `LD_LIBRARY_PATH=src-tauri/target/debug` for sherpa's shared library.
 - `models/` is gitignored; fetch via `scripts/fetch-*.sh`.
-- **No display.** Every UI acceptance here is test behaviour or an HTTP
-  response; the visual pass has never been done.
+- **There is a display after all.** Playwright's Chromium is cached at
+  `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome` and runs headless
+  here, so the UI can be looked at rather than only asserted about:
+
+  ```bash
+  # 1. a library to look at, without touching the real ~/Notetaker
+  #    (seed meta.json / transcript.md / summary.md / notes.md under $FAKE)
+  HOME=$FAKE LD_LIBRARY_PATH=src-tauri/target/debug \
+    ./src-tauri/target/debug/notetaker-serve --port 8899 --ui-dir ./dist
+  # 2. a browser to look with
+  chrome --headless=new --no-sandbox --remote-debugging-port=9333 &
+  CHROME_DEVTOOLS_AXI_BROWSER_URL=http://127.0.0.1:9333 \
+    chrome-devtools-axi open http://localhost:8899
+  ```
+
+  `chrome-devtools-axi` cannot launch its own Chrome in this WSL2 box (the
+  target dies immediately), which is why the browser is started separately and
+  attached to. Refs from `snapshot` go stale across a re-render — drive clicks
+  with `eval` when a step follows a state change.
 
 ## Ground rules
 - User data layout (`<home>/Notetaker/Tasks/...`) is a public contract, and is
@@ -104,9 +136,16 @@ error in `windows/power.rs` *is* caught.
   silently recording half a conversation. This is why a Mac currently declines
   meeting mode.
 - **The server binds loopback unless LAN access is explicitly turned on**, and
-  LAN requires a token on every request including the UI shell. A notetaker that
-  quietly serves meeting transcripts to the coffee-shop wifi is a worse failure
-  than any bug in it.
+  LAN requires a token on every request including the UI shell — audio included.
+  A notetaker that quietly serves meeting transcripts to the coffee-shop wifi is
+  a worse failure than any bug in it.
+- **The app never rewrites `notes.md`.** The user's own words are one file and
+  the AI's are another; the merged document people see is a rendering choice,
+  not a stored artifact. A notepad that edits your notes is unusable.
+- **The action-item checklist has no storage of its own.** A tick is an edit to
+  a checkbox line in `summary.md`, so the list cannot drift from the markdown
+  the user can edit by hand.
+- The app runs on Mac *and* PC, so **no user-facing string may say "your Mac"**.
 - Speech = SenseVoice (default) / Whisper (fallback); diarization = sherpa-onnx;
   summaries = Ollama+Qwen. Diarization is verified on real human audio only —
   synthetic TTS voices don't separate.
@@ -129,10 +168,18 @@ Still assumed:
 - Meeting detection means "the app is open", not "a call started" — except
   Windows' `CptHost.exe`, which only exists during a Zoom meeting. Browsers are
   deliberately not detected; see `watch/apps.rs`.
-- **The whole UI, visually.**
-- **The CI workflow has never run.** Pushing needs Mr. Brothers' word, and the
-  ledger separately reports the push gate is broken for every project repo
-  (`gate-allowlist-missing`).
+- **The CI workflow has never run**, and **this repo has no git remote at
+  all** — so nothing has ever been pushed and no PR exists. Creating a remote
+  publishes a private notetaker's source, which is Mr. Brothers' call.
+
+Retired 2026-07-30: "the whole UI, visually" is no longer assumed. Every screen
+was driven in a real browser against a real `notetaker-serve` over a real
+socket, with real files on disk — the library, the note, the transcript, the
+player (click-to-seek moves actual audio, and the current line highlights), the
+command palette, the ask panel, settings, both themes, and a 420px phone width.
+Two bugs were found and fixed that way and no other way: the first-run card
+rendered as two stacked boxes, and the narrow layout squeezed the note into a
+155px column.
 
 ## Next
 1. **Tauri shell** — the app crate is still the generated scaffold. Now much

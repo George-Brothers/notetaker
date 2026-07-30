@@ -171,7 +171,7 @@ describe("Settings screen", () => {
 
   it("toggling 'wait until not in use' persists processWhenIdle", async () => {
     const dialog = await openSettings();
-    const checkbox = within(dialog).getByLabelText("Wait until I'm not using the Mac");
+    const checkbox = within(dialog).getByLabelText("Wait until I'm not using the computer");
     expect(checkbox).toBeChecked();
 
     fireEvent.click(checkbox);
@@ -291,11 +291,11 @@ describe("Settings screen", () => {
 });
 
 describe("First-run checklist", () => {
-  it("states plainly that permissions are checked on the Mac", async () => {
+  it("states plainly that permissions are handled by the operating system", async () => {
     render(<App />);
     const card = await screen.findByRole("region", { name: "Getting started" });
     expect(within(card).getByText("Microphone and screen-recording permissions")).toBeInTheDocument();
-    expect(within(card).getByText("Checked on the Mac")).toBeInTheDocument();
+    expect(within(card).getByText("Handled by your operating system")).toBeInTheDocument();
   });
 
   it("reads the Ollama item as done when Ollama is running with the model present", async () => {

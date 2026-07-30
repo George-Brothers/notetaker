@@ -42,6 +42,8 @@ export interface SidebarProps {
   onSearch: (q: string) => void;
   searchResults: SearchHit[] | null;
   onOpenPalette: () => void;
+  /** Layout only — the shell decides whether the rail is showing. */
+  className?: string;
 }
 
 function isActive(a: LibraryView, b: LibraryView): boolean {
@@ -155,6 +157,7 @@ export function Sidebar({
   onSearch,
   searchResults,
   onOpenPalette,
+  className,
 }: SidebarProps) {
   const [tasksOpen, setTasksOpen] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -179,7 +182,13 @@ export function Sidebar({
   }
 
   return (
-    <nav aria-label="Library" className="flex h-full w-[264px] shrink-0 flex-col border-r border-border bg-app">
+    <nav
+      aria-label="Library"
+      className={cn(
+        "h-full shrink-0 flex-col border-r border-border bg-app",
+        className ?? "flex w-[264px]",
+      )}
+    >
       <div className="flex flex-col gap-1.5 px-3 pb-2 pt-3">
         <div className="relative">
           <Search
