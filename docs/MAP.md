@@ -102,7 +102,7 @@ scripts/check-platforms.sh      # all three targets, ~30s
 | The whole UI, visually | **Seen and screenshotted** (2026-07-30) — real binary, real files, real audio, in Chrome. See below |
 | The scheduler wiring | **Decisions tested; the happy path is not.** A real model load is not a unit test — see "The scheduler, now wired" |
 | Speech routing | **Measured on real bilingual meetings** (2026-07-30), both models loaded, against a Whisper-only baseline. See `specs/bakeoff-result.md` |
-| The Windows installer | **Built and its contents checked** by CI. Nobody has run it — see "The installer" |
+| The Windows installer | **Installed and launched on a real PC** (2026-07-30). The app starts and renders — see "The installer" |
 
 The cross-check was itself confirmed with a negative control: a deliberate type
 error in `windows/power.rs` *is* caught.
@@ -131,6 +131,24 @@ error in `windows/power.rs` *is* caught.
   CHROME_DEVTOOLS_AXI_BROWSER_URL=http://127.0.0.1:9333 \
     chrome-devtools-axi open http://localhost:8899
   ```
+
+- **The Windows machine is right there.** WSL2 interop means `powershell.exe`
+  from this shell runs on the host as Mr. Brothers' own user, and `/mnt/c` is
+  his drive. That is how the installer was run and the app launched and
+  photographed without him touching anything:
+
+  ```bash
+  gh run download <run> --name notetaker-windows-installer --dir /mnt/c/Users/georg/Downloads/notetaker
+  powershell.exe -NoProfile -Command "Start-Process '<path>\Notetaker_0.1.0_x64-setup.exe' -ArgumentList '/S' -Wait"
+  powershell.exe -NoProfile -Command "Get-ChildItem \$env:LOCALAPPDATA\Notetaker"
+  ```
+
+  Screenshot the app with `PrintWindow` on `MainWindowHandle` and flag `2`
+  (`PW_RENDERFULLCONTENT`, which a WebView2 window needs), **not** a screen
+  grab: `SetForegroundWindow` from a background process is refused by Windows,
+  so a screen grab catches whatever he actually has open. Files written by the
+  installer under `AppData\Local` may not appear through `/mnt/c` straight away
+  — ask PowerShell instead of `ls`.
 
   `chrome-devtools-axi` cannot launch its own Chrome in this WSL2 box (the
   target dies immediately), which is why the browser is started separately and
@@ -409,9 +427,23 @@ after 90 days.
 gh run download --name notetaker-windows-installer
 ```
 
-Still unknown: whether the installer installs, and whether the installed app
-starts. Nothing has run it. It is also **unsigned**, so SmartScreen will warn on
-first launch ("More info" -> "Run anyway").
+**Installed and launched on Mr. Brothers' PC, 2026-07-30 — the first time any of
+this code has run on real hardware.** Driven from WSL through `powershell.exe`,
+which reaches the Windows host: silent install (`/S`, exit 0), then the binary
+started and stayed up. All seventeen files landed in
+`%LOCALAPPDATA%\Notetaker` beside `notetaker.exe` — the four ONNX/sherpa
+libraries, `cargs.dll`, and the nine-file MSVC runtime. The window opens, WebView2
+loads, the UI renders in dark theme, and the first-run checklist shows the
+languages question. Captured with `PrintWindow` on the window handle rather than
+a screen grab, so nothing else on his desktop is in the image.
+
+It is **unsigned**, so SmartScreen warns on a normal double-click ("More info"
+-> "Run anyway"); the silent install above did not hit it.
+
+Still unknown, and it is now the *only* thing standing between this and a
+working product: **whether a microphone produces a sample.** Nothing beyond the
+app's own startup has been exercised on hardware — no recording, no model
+download, no transcription.
 
 macOS has the identical bug and is not fixed: `.app` resources land in
 `Contents/Resources/` while the binary is in `Contents/MacOS/`, so the dylibs
@@ -433,11 +465,12 @@ at, because it cannot be verified from here and the Mac work is blocked anyway.
    regardless of length — 70 segments of a 4-minute recording took over ten
    minutes. This predates routing and is the single biggest processing cost in
    the app. Batching adjacent same-speaker spans would cut it directly.
-4. **On the PC**: download the installer from the CI run, install it, and find
-   out whether it records. **No audio device has ever produced a sample through
-   this code**, on any platform — that one sitting closes the largest remaining
-   unknown in the project. Then the first-run model download and one real
-   bilingual call end to end.
+4. **On the PC — the one thing left.** It is installed and it runs. **No audio
+   device has ever produced a sample through this code**, on any platform, and
+   nothing else has been exercised on hardware either: the model download, a
+   recording, a transcription. Hit Record and find out. This can be driven from
+   here through `powershell.exe` (see "Build environment") rather than handed
+   to him as a chore.
 5. **On the Mac**: bundle the dylibs (above), Metal build and tier detection,
    Screen Recording permission, and re-run the bake-off against
    `large-v3-turbo`. Blocked behind ScreenCaptureKit either way.
