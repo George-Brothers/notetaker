@@ -196,8 +196,11 @@ rendered as two stacked boxes, and the narrow layout squeezed the note into a
 155px column.
 
 ## CI has run now — what it found (2026-07-30)
-The first run in this project's life, on PR #1. It caught three things no local
-check could, which is exactly what the cross-platform plan built it for.
+The first runs in this project's life, on PR #1. Three rounds.
+
+**Current state: macOS ✅ · Linux ✅ · Windows ❌ (8 of 348 tests).**
+macOS had never been compiled before today; it now builds, tests and clippies
+clean, as does the Tauri app crate on both platforms.
 
 **Fixed:**
 - **macOS: `MicSource` was not `Send`.** `cpal::Stream` is `!Send` on macOS
@@ -207,7 +210,18 @@ check could, which is exactly what the cross-platform plan built it for.
   cross-checked**. The stream now lives on a worker thread and is never stored,
   so the type is `Send` by construction everywhere. See `platform/src/mic.rs`.
 - **All jobs: `pnpm-workspace.yaml` had no `packages` key**, so `pnpm store
-  path` failed in setup-node's cache step before any install ran.
+  path` failed in setup-node's cache step before any install ran. Also
+  `pnpm test --run` — pnpm 9 rejects `--run` as its own unknown option, and the
+  package script is already `vitest run`.
+- **macOS clippy**: a deprecated CoreGraphics function and an unnecessary
+  `unsafe` block, both errors under `-D warnings`.
+
+**The technique that came out of it: `scripts/check-platforms.sh` runs clippy,
+not `cargo check`.** Clippy cross-targets exactly the way `check` does — which
+nobody had tried. CI runs clippy `-D warnings` on every OS, so a deprecation in
+macOS-only code fails there while `cargo check` locally is perfectly happy. Both
+macOS clippy failures reproduce in seconds on Linux with the new script. Run it
+before pushing; a CI round trip is about ten minutes.
 
 **Open — Windows, 8 of 348 tests. Needs a Windows to diagnose; do not guess.**
 - Seven are the FLAC finalize path: `finalize_to_flac` fails, correctly removes
