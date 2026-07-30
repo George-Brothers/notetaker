@@ -310,6 +310,55 @@ jobs:
           }
           Write-Host "all $($expected.Count) runtime libraries are inside the installer"
 
+      # The step above proves the files are in the box. This one asks the
+      # binaries what they will actually go looking for when Windows loads them,
+      # which is the question that decides whether the app starts.
+      #
+      # `llvm-readobj` is already on the runner — LLVM is installed above for
+      # bindgen. The import table is printed in full rather than only asserted
+      # about, because it is also the only place we can see whether the app
+      # needs the MSVC redistributable, and because "which of these five DLLs
+      # are actually load-bearing" is a question we have been guessing at.
+      #
+      # The gate is deliberately narrow and cannot produce a false red: an
+      # import fails the build only when a file of that name exists in
+      # target/release — i.e. it is ours to ship — and is not in the installer.
+      # Imports that Windows resolves from the system are printed, not judged.
+      - name: What the installed app will look for
+        shell: pwsh
+        run: |
+          $readobj = 'C:\Program Files\LLVM\bin\llvm-readobj.exe'
+          $dir = 'src-tauri/target/release'
+          $ours = Get-ChildItem $dir/*.dll |
+            Where-Object { $_.Name -notlike 'notetaker*' } |
+            ForEach-Object { $_.Name }
+          $installer = Get-ChildItem $dir/bundle/nsis/*.exe | Select-Object -First 1
+          $listing = & 'C:\Program Files\7-Zip\7z.exe' l $installer.FullName
+
+          $unshipped = @()
+          foreach ($binary in @('notetaker.exe') + $ours) {
+            $out = & $readobj --coff-imports (Join-Path $dir $binary)
+            if ($LASTEXITCODE -ne 0) { throw "llvm-readobj could not read $binary" }
+            $imports = $out |
+              Select-String -Pattern '(?i)^\s*Name:\s*(\S+\.dll)\s*$' |
+              ForEach-Object { $_.Matches[0].Groups[1].Value } |
+              Sort-Object -Unique
+            Write-Host "`n$binary needs:"
+            foreach ($import in $imports) {
+              $local = $ours | Where-Object { $_ -ieq $import }
+              if (-not $local) { Write-Host "    $import  (from Windows)"; continue }
+              if ($listing -match [regex]::Escape($import)) {
+                Write-Host "    $import  (shipped)"
+              } else {
+                Write-Host "    $import  (OURS, MISSING FROM THE INSTALLER)"
+                $unshipped += "$binary -> $import"
+              }
+            }
+          }
+          if ($unshipped) {
+            throw "these imports are ours to ship and are not in the installer: $($unshipped -join '; ')"
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: notetaker-windows-installer

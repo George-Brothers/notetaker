@@ -3,7 +3,8 @@
   "bundle": {
     "resources": {
       "target/release/onnxruntime*.dll": "",
-      "target/release/sherpa-onnx*.dll": ""
+      "target/release/sherpa-onnx*.dll": "",
+      "target/release/cargs*.dll": ""
     }
   }
 }

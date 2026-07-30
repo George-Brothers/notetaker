@@ -342,21 +342,34 @@ refused to start.** The same three files that broke the CI link step, then the
 CI load step, then this.
 
 Fixed in `src-tauri/tauri.windows.conf.json` — a Windows-only overlay Tauri
-merges over `tauri.conf.json`. Two glob patterns, chosen over explicit file
-names for two reasons: a name that changes on a version bump would not silently
-drop a library, and **a Tauri glob that matches nothing is a hard bundler
-error**, so an empty installer cannot be built. On Windows the resource root
-*is* the executable's directory, which is exactly where a DLL has to be.
+merges over `tauri.conf.json`. Glob patterns rather than explicit file names,
+for two reasons: a name that changes on a version bump would not silently drop a
+library, and **a Tauri glob that matches nothing is a hard bundler error**, so an
+empty installer cannot be built. On Windows the resource root *is* the
+executable's directory, which is exactly where a DLL has to be.
 
-Two checks, because a config is not a result:
-- `core/tests/installer.rs` runs on Linux. It reads the shared libraries this
+That decision paid immediately. The installer carries **five** libraries, and
+two of them would have been missed by a hand-written list:
+`onnxruntime_providers_shared.dll`, which the `onnxruntime*` glob swept up, and
+**`cargs.dll` — which does not exist on Linux at all.** whisper.cpp's CMake
+builds `cargs` as a shared library on Windows and links it statically here, so
+no amount of care on this machine would have found it. It was caught by running
+the same test on Windows.
+
+Three checks, because a config is not a result:
+- `core/tests/installer.rs` runs everywhere. It reads the shared libraries the
   build actually produced, translates them to their Windows spelling
   (`libonnxruntime.so` -> `onnxruntime.dll`) and fails if any is not covered by
-  a pattern. Confirmed by removing a pattern and watching it fail. If sherpa
-  ever ships a fourth library, this catches it here in seconds.
+  a pattern. Confirmed by removing a pattern and watching it fail. On Linux it
+  is a fast first filter — **it can only see the libraries Linux produces**,
+  which is exactly how `cargs.dll` got through; on Windows it sees the real set.
 - CI opens the installer it just built with 7-Zip and asserts every DLL from
-  `target/release` is inside it. The config is checked against the artifact, not
-  believed.
+  `target/release` is inside it. The config is checked against the artifact.
+- CI then reads the import table of `notetaker.exe` and of every bundled DLL
+  with `llvm-readobj`, and fails if a binary imports something that is ours to
+  ship and is not in the installer. Files being present is not the same question
+  as the loader finding what it asks for. The full import list is printed, since
+  it is also where the MSVC-runtime dependency would show up.
 
 Still unknown: whether the installer installs, and whether the installed app
 starts. Nothing has run it. It is also **unsigned**, so SmartScreen will warn on

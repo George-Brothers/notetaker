@@ -20,6 +20,13 @@
 //! does not try to predict what Windows will produce. Names are translated to
 //! their Windows spelling (`libonnxruntime.so` -> `onnxruntime.dll`), which is
 //! the identity mapping when this same test runs on Windows in CI.
+//!
+//! **And that is the limit of what Linux can tell us.** The first run of this
+//! test on Windows found a fifth library Linux does not have: `cargs.dll`,
+//! which whisper.cpp's CMake builds as a shared library there and links
+//! statically here. So this test is a fast first filter, not the last word —
+//! the Windows job runs the same test against the real file set, and the
+//! packaging job then asks the built binaries what they actually import.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
