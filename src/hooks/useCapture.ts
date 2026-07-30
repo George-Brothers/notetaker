@@ -19,14 +19,29 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function meetingTitle(appName: string): string {
-  const stamp = new Date().toLocaleString(undefined, {
+function stamp(): string {
+  return new Date().toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
   });
-  return `${appName} meeting — ${stamp}`;
+}
+
+function meetingTitle(appName: string): string {
+  return `${appName} meeting — ${stamp()}`;
+}
+
+/**
+ * The name a recording gets when the caller supplies none — the command
+ * palette, a keyboard shortcut, an auto-started meeting.
+ *
+ * Centralized here rather than at each call site so that "hit record and start
+ * talking" can never produce an untitled recording. The pipeline suggests a
+ * real title afterwards; this only has to be unambiguous in a list.
+ */
+function defaultTitle(mode: Mode): string {
+  return `${mode === "meeting" ? "Meeting" : "In person"} ${stamp()}`;
 }
 
 /**
@@ -67,9 +82,9 @@ export function useCapture() {
     };
   }, [status.state, refreshStatus]);
 
-  const start = useCallback(async (mode: Mode, title: string) => {
+  const start = useCallback(async (mode: Mode, title?: string) => {
     try {
-      setStatus(await api.startCapture(mode, title));
+      setStatus(await api.startCapture(mode, title?.trim() || defaultTitle(mode)));
       setCaptureError(null);
     } catch (err) {
       setCaptureError(describeError(err));
@@ -92,12 +107,21 @@ export function useCapture() {
     }
   }, []);
 
-  const stop = useCallback(async () => {
+  /**
+   * Stops and returns the finished recording's id, or null if the stop failed.
+   *
+   * The id is returned rather than discarded so the caller can open the
+   * recording that just ended — the notes typed while it ran should still be in
+   * front of you afterwards, not somewhere in a list.
+   */
+  const stop = useCallback(async (): Promise<string | null> => {
     try {
-      await api.stopCapture();
+      const id = await api.stopCapture();
       setStatus(IDLE_STATUS);
+      return id;
     } catch (err) {
       setCaptureError(describeError(err));
+      return null;
     }
   }, []);
 

@@ -3,6 +3,7 @@ import { render, screen, within, fireEvent, waitFor, cleanup, act } from "@testi
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { api } from "../../lib/ipc";
+import { applyIpcDefaults } from "../../test/ipcMock";
 import type { CaptureStatus, RecordingDetail, RecordingRow } from "../../lib/ipc";
 
 // Every api function App reaches for has to be stubbed, not just the ones
@@ -11,29 +12,15 @@ import type { CaptureStatus, RecordingDetail, RecordingRow } from "../../lib/ipc
 // them off the mock left them `undefined`, and the resulting throw set an
 // error banner mid-test at an unpredictable moment — worth roughly one flaky
 // failure in eight, in whichever test happened to be interacting at the time.
-vi.mock("../../lib/ipc", () => ({
-  api: {
-    listTasks: vi.fn(),
-    createTask: vi.fn(),
-    listRecordings: vi.fn(),
-    getRecording: vi.fn(),
-    search: vi.fn(),
-    processNow: vi.fn(),
-    assignTask: vi.fn(),
-    renameRecording: vi.fn(),
-    renameSpeaker: vi.fn(),
-    updateSummary: vi.fn(),
-    getSettings: vi.fn(),
-    setSettings: vi.fn(),
-    startCapture: vi.fn(),
-    pauseCapture: vi.fn(),
-    resumeCapture: vi.fn(),
-    stopCapture: vi.fn(),
-    captureStatus: vi.fn(),
-    pollMeetings: vi.fn(),
-    setAutoRecord: vi.fn(),
-  },
-}));
+vi.mock("../../lib/ipc", async (importOriginal) => {
+  // Keys derived from the real contract, so adding a command to ipc.ts can
+  // never again turn every test in this file red. See src/test/ipcMock.ts.
+  const actual = await importOriginal<typeof import("../../lib/ipc")>();
+  return {
+    ...actual,
+    api: Object.fromEntries(Object.keys(actual.api).map((k) => [k, vi.fn()])),
+  };
+});
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
@@ -111,8 +98,11 @@ const DETAIL_REC1: RecordingDetail = {
   notesMd: "",
   template: null,
   actions: [],
-  segments: [],
-  audioTracks: [],
+  segments: [
+    { startS: 3, endS: 12, speaker: "Speaker 1", text: "Welcome back, everyone.", line: 0 },
+    { startS: 12, endS: 30, speaker: "George", text: "Let's start with depreciation.", line: 1 },
+  ],
+  audioTracks: ["mic"],
   suggestedTitle: null,
   hasNotes: false,
   error: null,
@@ -147,13 +137,14 @@ function setupApi() {
  */
 async function openRecording(title: string): Promise<HTMLElement> {
   fireEvent.click(await screen.findByText(title));
-  const pane = await screen.findByRole("region", { name: "Recording detail" });
+  const pane = await screen.findByRole("article", { name: "Recording" });
   await act(async () => {});
   return pane;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  applyIpcDefaults();
   setupApi();
 });
 
@@ -169,13 +160,12 @@ describe("library UI", () => {
     expect(screen.getByRole("button", { name: "ENT 401" })).toBeInTheDocument();
   });
 
-  it("shows a suggested task with Accept, and accepting assigns it", async () => {
+  it("offers the suggested task on the recording, and accepting files it there", async () => {
     render(<App />);
-    const titleNode = await screen.findByText("Lecture 3: Depreciation");
-    const row = titleNode.closest("li") as HTMLElement;
-    expect(within(row).getByText("Suggested: Accounting 302")).toBeInTheDocument();
+    const pane = await openRecording("Lecture 3: Depreciation");
 
-    fireEvent.click(within(row).getByRole("button", { name: "Accept" }));
+    expect(within(pane).getByText(/looks like it belongs to/i)).toBeInTheDocument();
+    fireEvent.click(within(pane).getByRole("button", { name: "File it there" }));
 
     await waitFor(() => expect(api.assignTask).toHaveBeenCalledWith("rec-1", "Accounting 302"));
   });
@@ -210,11 +200,13 @@ describe("library UI", () => {
     ).toBeInTheDocument();
   });
 
-  it("renames a speaker via the inline form opened by clicking their name", async () => {
+  it("renames a speaker via the inline form opened by clicking their chip", async () => {
     render(<App />);
     const pane = await openRecording("Lecture 3: Depreciation");
 
-    fireEvent.click(within(pane).getByRole("button", { name: "Speaker 1" }));
+    // Radix tabs activate on mousedown, not click.
+    fireEvent.mouseDown(within(pane).getByRole("tab", { name: /Transcript/ }));
+    fireEvent.click(await within(pane).findByRole("button", { name: "Speaker 1" }));
 
     const input = screen.getByLabelText("Rename Speaker 1");
     fireEvent.change(input, { target: { value: "Jamie" } });

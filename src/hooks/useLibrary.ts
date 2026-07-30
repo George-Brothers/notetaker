@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/ipc";
-import type { RecordingDetail, RecordingRow, SearchHit } from "../lib/ipc";
+import type { RecordingDetail, RecordingRow, SearchHit, Template } from "../lib/ipc";
 
 /** The sidebar's fixed views plus "a task", per spec §4.4. */
 export type LibraryView =
@@ -161,6 +161,75 @@ export function useLibrary() {
     []
   );
 
+  // --- the notepad ------------------------------------------------------
+
+  /**
+   * Saves the user's typed notes.
+   *
+   * Deliberately does *not* refetch the detail afterwards. The user is very
+   * likely still typing, and replacing the textarea's value from the server
+   * mid-keystroke is how autosave eats a word. The notepad owns its own text;
+   * this only persists it.
+   */
+  const saveNotes = useCallback(async (id: string, notesMd: string) => {
+    try {
+      await api.saveNotes(id, notesMd);
+    } catch (err) {
+      setLoadError(describeError(err));
+    }
+  }, []);
+
+  const [templates, setTemplates] = useState<Template[]>([]);
+  useEffect(() => {
+    api
+      .listTemplates()
+      .then(setTemplates)
+      // A picker with nothing in it is a small problem; a shell that fails to
+      // load over it is a large one.
+      .catch((err) => setLoadError(describeError(err)));
+  }, []);
+
+  const setTemplate = useCallback(
+    async (id: string, template: string) => {
+      try {
+        await api.setTemplate(id, template);
+        if (selectedId === id) setDetail(await api.getRecording(id));
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [selectedId]
+  );
+
+  /**
+   * Ticks or unticks one action item.
+   *
+   * The command returns the whole re-parsed checklist rather than a success
+   * flag, because ticking rewrites `summary.md` and the indices shift if the
+   * summary was edited elsewhere. Patching the list from the response is the
+   * only version that cannot tick the wrong box on the next click.
+   */
+  const toggleAction = useCallback(async (id: string, index: number, done: boolean) => {
+    try {
+      const actions = await api.setActionDone(id, index, done);
+      setDetail((current) =>
+        current && current.id === id ? { ...current, actions } : current
+      );
+    } catch (err) {
+      setLoadError(describeError(err));
+    }
+  }, []);
+
+  /** Accepts the AI's suggested title, which is just a rename. */
+  const acceptSuggestedTitle = useCallback(
+    async (id: string, title: string) => {
+      await renameRecording(id, title);
+    },
+    [renameRecording]
+  );
+
+  const dismissError = useCallback(() => setLoadError(null), []);
+
   const search = useCallback((q: string) => {
     setQuery(q);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -200,9 +269,16 @@ export function useLibrary() {
     renameRecording,
     renameSpeaker,
     saveSummary,
+    saveNotes,
+    templates,
+    setTemplate,
+    toggleAction,
+    acceptSuggestedTitle,
+    refreshRecordings,
     query,
     search,
     searchResults,
     loadError,
+    dismissError,
   };
 }

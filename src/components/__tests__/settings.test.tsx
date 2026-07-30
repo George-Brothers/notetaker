@@ -3,35 +3,18 @@ import { render, screen, within, fireEvent, waitFor, cleanup } from "@testing-li
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { api } from "../../lib/ipc";
+import { applyIpcDefaults } from "../../test/ipcMock";
 import type { CaptureStatus, OllamaStatus, PullProgress, Settings } from "../../lib/ipc";
 
-vi.mock("../../lib/ipc", () => ({
-  api: {
-    listTasks: vi.fn(),
-    createTask: vi.fn(),
-    listRecordings: vi.fn(),
-    getRecording: vi.fn(),
-    search: vi.fn(),
-    processNow: vi.fn(),
-    updateSummary: vi.fn(),
-    assignTask: vi.fn(),
-    renameSpeaker: vi.fn(),
-    getSettings: vi.fn(),
-    setSettings: vi.fn(),
-    startCapture: vi.fn(),
-    pauseCapture: vi.fn(),
-    resumeCapture: vi.fn(),
-    stopCapture: vi.fn(),
-    captureStatus: vi.fn(),
-    pollMeetings: vi.fn(),
-    setAutoRecord: vi.fn(),
-    ollamaStatus: vi.fn(),
-    pullModel: vi.fn(),
-    pullProgress: vi.fn(),
-    downloadModels: vi.fn(),
-    detectedTier: vi.fn(),
-  },
-}));
+vi.mock("../../lib/ipc", async (importOriginal) => {
+  // Keys derived from the real contract, so adding a command to ipc.ts can
+  // never again turn every test in this file red. See src/test/ipcMock.ts.
+  const actual = await importOriginal<typeof import("../../lib/ipc")>();
+  return {
+    ...actual,
+    api: Object.fromEntries(Object.keys(actual.api).map((k) => [k, vi.fn()])),
+  };
+});
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
@@ -107,6 +90,7 @@ async function openSettings() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  applyIpcDefaults();
   localStorage.clear();
   setupApi();
 });
@@ -432,7 +416,7 @@ describe("First-run checklist", () => {
       systemLevel: 0,
       diskFreeMb: 20_000,
     });
-    const startButton = await screen.findByRole("button", { name: "Start" });
+    const startButton = await screen.findByRole("button", { name: "Record" });
     expect(startButton).toBeEnabled();
     fireEvent.click(startButton);
 

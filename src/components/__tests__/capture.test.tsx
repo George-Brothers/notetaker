@@ -3,30 +3,18 @@ import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/re
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { api } from "../../lib/ipc";
+import { applyIpcDefaults } from "../../test/ipcMock";
 import type { CaptureStatus, MeetingEvent } from "../../lib/ipc";
 
-vi.mock("../../lib/ipc", () => ({
-  api: {
-    listTasks: vi.fn(),
-    createTask: vi.fn(),
-    listRecordings: vi.fn(),
-    getRecording: vi.fn(),
-    search: vi.fn(),
-    processNow: vi.fn(),
-    updateSummary: vi.fn(),
-    assignTask: vi.fn(),
-    renameSpeaker: vi.fn(),
-    getSettings: vi.fn(),
-    setSettings: vi.fn(),
-    startCapture: vi.fn(),
-    pauseCapture: vi.fn(),
-    resumeCapture: vi.fn(),
-    stopCapture: vi.fn(),
-    captureStatus: vi.fn(),
-    pollMeetings: vi.fn(),
-    setAutoRecord: vi.fn(),
-  },
-}));
+vi.mock("../../lib/ipc", async (importOriginal) => {
+  // Keys derived from the real contract, so adding a command to ipc.ts can
+  // never again turn every test in this file red. See src/test/ipcMock.ts.
+  const actual = await importOriginal<typeof import("../../lib/ipc")>();
+  return {
+    ...actual,
+    api: Object.fromEntries(Object.keys(actual.api).map((k) => [k, vi.fn()])),
+  };
+});
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
@@ -93,6 +81,7 @@ function setupApi() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  applyIpcDefaults();
   setupApi();
 });
 
@@ -106,7 +95,7 @@ describe("record bar", () => {
     vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Record" }));
 
     await waitFor(() =>
       expect(api.startCapture).toHaveBeenCalledWith("meeting", expect.any(String))
@@ -117,8 +106,8 @@ describe("record bar", () => {
     vi.mocked(api.startCapture).mockResolvedValue({ ...RECORDING_STATUS, systemLevel: 0 });
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("radio", { name: "In-person" }));
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose what to record" }));
+    fireEvent.click(await screen.findByRole("button", { name: /In person/ }));
 
     await waitFor(() =>
       expect(api.startCapture).toHaveBeenCalledWith("in_person", expect.any(String))
@@ -131,7 +120,7 @@ describe("record bar", () => {
     vi.mocked(api.resumeCapture).mockResolvedValue(RECORDING_STATUS);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Record" }));
     const pauseButton = await screen.findByRole("button", { name: "Pause" });
     await waitFor(() => expect(pauseButton).toBeEnabled());
 
@@ -143,35 +132,48 @@ describe("record bar", () => {
     await waitFor(() => expect(api.resumeCapture).toHaveBeenCalledTimes(1));
   });
 
-  it("Stop calls stopCapture and the bar returns to idle", async () => {
+  it("Stop calls stopCapture and the control returns to idle", async () => {
     vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
     vi.mocked(api.stopCapture).mockResolvedValue("rec-live");
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Record" }));
     const stopButton = await screen.findByRole("button", { name: "Stop" });
     await waitFor(() => expect(stopButton).toBeEnabled());
 
     fireEvent.click(stopButton);
     await waitFor(() => expect(api.stopCapture).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeEnabled());
-    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+
+    // Back to idle: the record control returns and the live controls are gone.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Record" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
   });
 
-  it("enables only the legal actions for the current capture state", async () => {
+  /**
+   * The control swaps rather than greying out: idle shows Record, a live
+   * session shows Pause and Stop. What has to hold either way is that no state
+   * ever offers an action it cannot perform — a Pause with nothing to pause, or
+   * a second Record over a running session.
+   */
+  it("offers only the actions that are legal for the current capture state", async () => {
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Start" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Record" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
 
     vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record" }));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeDisabled());
-    expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled()
+    );
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Record" }),
+      "a second recording must not be startable over a running one"
+    ).not.toBeInTheDocument();
   });
 
   it("says it is still saving, and refuses a new recording, until the last one lands", async () => {
@@ -181,13 +183,13 @@ describe("record bar", () => {
     render(<App />);
 
     expect(await screen.findByText(/saving your recording/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
-    // Stop stays live: a save that failed is retried by pressing it again.
-    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+    // Record is present but refused: the last recording has not landed, and
+    // starting another here would look like the first never happened.
+    expect(screen.getByRole("button", { name: "Record" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Choose what to record" })).toBeDisabled();
   });
 
-  it("follows a self-stopping recording through saving and only then re-arms Start", async () => {
+  it("follows a self-stopping recording through saving and only then re-arms Record", async () => {
     // Real timers: this is about the status poll, and the poll is the only
     // thing that tells the UI a self-stopping recording ended.
     const patience = { timeout: 4000 };
@@ -195,8 +197,8 @@ describe("record bar", () => {
     vi.mocked(api.captureStatus).mockResolvedValue(IDLE_STATUS);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start" })).toBeDisabled());
+    fireEvent.click(await screen.findByRole("button", { name: "Record" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled());
 
     // The session ends itself — a full disk, a dead mic — and nobody presses
     // Stop, so the next poll is the first the UI hears of it.
@@ -205,27 +207,44 @@ describe("record bar", () => {
       () => expect(screen.getByText(/saving your recording/i)).toBeInTheDocument(),
       patience
     );
-    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Record" })).toBeDisabled();
 
     vi.mocked(api.captureStatus).mockResolvedValue(IDLE_STATUS);
     await waitFor(
-      () => expect(screen.getByRole("button", { name: "Start" })).toBeEnabled(),
+      () => expect(screen.getByRole("button", { name: "Record" })).toBeEnabled(),
       patience
     );
     expect(screen.queryByText(/saving your recording/i)).not.toBeInTheDocument();
   });
 
+  /**
+   * The meters appear only while a session is live — a meter pinned at zero
+   * because nothing is being captured reads as "your microphone is dead".
+   * Which meters appear follows the *running session's* mode, not the picker's.
+   */
   it("shows the system level meter in meeting mode and hides it in in-person mode", async () => {
-    render(<App />);
-    await screen.findByRole("button", { name: "Start" });
+    vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
+    const { unmount } = render(<App />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "Record" }));
+    expect(
+      await screen.findByRole("progressbar", { name: "Microphone level" })
+    ).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "System audio level" })).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "Microphone level" })).toBeInTheDocument();
+    unmount();
 
-    fireEvent.click(screen.getByRole("radio", { name: "In-person" }));
+    vi.mocked(api.startCapture).mockResolvedValue({ ...RECORDING_STATUS, mode: "in_person" });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Choose what to record" }));
+    fireEvent.click(await screen.findByRole("button", { name: /In person/ }));
 
-    expect(screen.queryByRole("progressbar", { name: "System audio level" })).not.toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "Microphone level" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("progressbar", { name: "Microphone level" })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("progressbar", { name: "System audio level" }),
+      "an in-person recording has no system track, so it must not claim a level for one"
+    ).not.toBeInTheDocument();
   });
 
   it("shows a low-disk warning in plain language when free space is low", async () => {
@@ -239,7 +258,7 @@ describe("record bar", () => {
 
   it("does not show the low-disk warning when free space is plentiful", async () => {
     render(<App />);
-    await screen.findByRole("button", { name: "Start" });
+    await screen.findByRole("button", { name: "Record" });
     expect(screen.queryByText(/low on disk space/i)).not.toBeInTheDocument();
   });
 });
@@ -257,7 +276,7 @@ describe("meeting-detected prompt", () => {
     vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Record" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Record this meeting" }));
 
     await waitFor(() =>
       expect(api.startCapture).toHaveBeenCalledWith("meeting", expect.stringContaining("Zoom"))
@@ -330,7 +349,7 @@ describe("meeting-detected prompt", () => {
     ]);
     render(<App />);
 
-    await screen.findByRole("button", { name: "Start" });
+    await screen.findByRole("button", { name: "Record" });
     // Give any (incorrect) async start a chance to have fired.
     await new Promise((resolve) => setTimeout(resolve, 0));
 

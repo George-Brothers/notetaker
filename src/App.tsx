@@ -1,17 +1,26 @@
-import { useMemo, useState } from "react";
+/**
+ * The shell: a quiet top strip, the library rail, and the note.
+ *
+ * Two panes rather than the three this used to have. The old layout gave a
+ * third of the window to a list of recordings and another third to a view
+ * picker, which left the note — the only thing anyone is here to read — in a
+ * column too narrow to read comfortably. The rail now does both jobs.
+ */
+
+import { useCallback, useEffect, useState } from "react";
+import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
-import type { LibraryView } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
+import { useTheme } from "./hooks/useTheme";
 import { Sidebar } from "./components/Sidebar";
-import { RecordingList } from "./components/RecordingList";
-import { RecordingDetail } from "./components/RecordingDetail";
-import { SearchBar } from "./components/SearchBar";
+import { NoteView } from "./components/NoteView";
 import { RecordBar } from "./components/RecordBar";
 import { MeetingPrompt } from "./components/MeetingPrompt";
 import { Settings } from "./components/Settings";
 import { FirstRun } from "./components/FirstRun";
-import type { SearchHit } from "./lib/ipc";
-import "./App.css";
+import { CommandPalette } from "./components/CommandPalette";
+import { IconButton, Notice, TooltipProvider } from "./components/ui";
+import { api } from "./lib/ipc";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
 
@@ -25,43 +34,13 @@ function readFirstRunDismissed(): boolean {
   }
 }
 
-function viewTitle(view: LibraryView): string {
-  switch (view.kind) {
-    case "all":
-      return "All recordings";
-    case "unsorted":
-      return "Unsorted";
-    case "recent":
-      return "Recently processed";
-    case "task":
-      return view.name;
-  }
-}
-
-function SearchResults({ hits, onSelect }: { hits: SearchHit[]; onSelect: (id: string) => void }) {
-  if (hits.length === 0) {
-    return <p className="empty-state">No matches. Try a different word or phrase.</p>;
-  }
-  return (
-    <ul className="search-results" aria-label="Search results">
-      {hits.map((hit) => (
-        <li key={hit.id}>
-          <button type="button" className="search-result" onClick={() => onSelect(hit.id)}>
-            <span className="search-result__title">{hit.title}</span>
-            <span className="search-result__task">{hit.task ?? "Unsorted"}</span>
-            <span className="search-result__snippet">{hit.snippet}</span>
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function App() {
   const lib = useLibrary();
   const capture = useCapture();
-  const isSearching = useMemo(() => lib.query.trim().length > 0, [lib.query]);
+  const theme = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
 
   function dismissFirstRun() {
@@ -73,72 +52,146 @@ function App() {
     }
   }
 
+  // Cmd+J opens the ask panel on whatever is selected. Ignored when nothing is,
+  // rather than opening an empty panel that can only say "pick a recording".
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === "j" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        if (lib.selectedId) setAskOpen((o) => !o);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [lib.selectedId]);
+
+  /**
+   * Stopping a recording lands a new one in the library and opens it, so the
+   * notes you typed while it ran are still in front of you rather than
+   * somewhere in a list.
+   */
+  const stopAndOpen = useCallback(async () => {
+    const id = await capture.stop();
+    await lib.refreshRecordings();
+    if (id) await lib.selectRecording(id);
+  }, [capture, lib]);
+
+  const processNow = useCallback(
+    async (id: string) => {
+      await api.processNow(id);
+      await lib.refreshRecordings();
+    },
+    [lib],
+  );
+
   return (
-    <div className="app-root">
-      <div className="app-topbar">
-        <RecordBar
-          status={capture.status}
-          onStart={capture.start}
-          onPause={capture.pause}
-          onResume={capture.resume}
-          onStop={capture.stop}
-        />
-        <button
-          type="button"
-          className="app-topbar__settings"
-          onClick={() => setSettingsOpen(true)}
-          aria-haspopup="dialog"
-          aria-expanded={settingsOpen}
-        >
-          Settings
-        </button>
-      </div>
-      {capture.captureError && <p className="record-bar__error">{capture.captureError}</p>}
+    <TooltipProvider>
+      <div className="flex h-screen flex-col overflow-hidden bg-app text-fg">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2">
+          <RecordBar
+            status={capture.status}
+            onStart={capture.start}
+            onPause={capture.pause}
+            onResume={capture.resume}
+            onStop={stopAndOpen}
+          />
+          <div className="flex items-center gap-1">
+            <IconButton
+              label={theme.resolved === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              onClick={theme.toggle}
+            >
+              {theme.resolved === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+            </IconButton>
+            <IconButton label="Settings" onClick={() => setSettingsOpen(true)}>
+              <SettingsIcon size={15} />
+            </IconButton>
+          </div>
+        </header>
 
-      <div className="app-shell">
-        <Sidebar tasks={lib.tasks} activeView={lib.view} onSelectView={lib.setView} onCreateTask={lib.createTask} />
+        {capture.captureError && (
+          <Notice className="mx-3 mt-2 shrink-0">{capture.captureError}</Notice>
+        )}
+        {lib.loadError && (
+          <Notice className="mx-3 mt-2 shrink-0">
+            {lib.loadError}{" "}
+            <button
+              type="button"
+              onClick={lib.dismissError}
+              className="underline underline-offset-2"
+            >
+              Dismiss
+            </button>
+          </Notice>
+        )}
 
-        <div className="library-pane">
-          <SearchBar query={lib.query} onSearch={lib.search} />
+        <div className="flex min-h-0 flex-1">
+          <Sidebar
+            tasks={lib.tasks}
+            activeView={lib.view}
+            onSelectView={lib.setView}
+            onCreateTask={lib.createTask}
+            recordings={lib.recordings}
+            selectedId={lib.selectedId}
+            onSelectRecording={lib.selectRecording}
+            query={lib.query}
+            onSearch={lib.search}
+            searchResults={lib.searchResults}
+            onOpenPalette={() => setPaletteOpen(true)}
+          />
 
-          {isSearching ? (
-            <SearchResults hits={lib.searchResults ?? []} onSelect={lib.selectRecording} />
-          ) : (
-            <>
-              <h2 className="library-pane__title">{viewTitle(lib.view)}</h2>
-              <RecordingList
-                recordings={lib.recordings}
-                tasks={lib.tasks}
-                selectedId={lib.selectedId}
-                onSelect={lib.selectRecording}
-                onAssignTask={lib.assignTask}
-              />
-            </>
-          )}
+          <main className="flex min-w-0 flex-1">
+            <NoteView
+              detail={lib.detail}
+              loading={lib.detailLoading}
+              tasks={lib.tasks}
+              templates={lib.templates}
+              askOpen={askOpen}
+              onToggleAsk={setAskOpen}
+              onRenameSpeaker={lib.renameSpeaker}
+              onSaveSummary={lib.saveSummary}
+              onRenameRecording={lib.renameRecording}
+              onAssignTask={lib.assignTask}
+              onSaveNotes={lib.saveNotes}
+              onSetTemplate={lib.setTemplate}
+              onToggleAction={lib.toggleAction}
+              onProcessNow={processNow}
+            />
+          </main>
         </div>
 
-        <RecordingDetail
-          detail={lib.detail}
-          loading={lib.detailLoading}
-          onRenameSpeaker={lib.renameSpeaker}
-          onSaveSummary={lib.saveSummary}
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          recordings={lib.recordings}
+          onSelectRecording={lib.selectRecording}
+          capture={capture.status}
+          themeIsDark={theme.resolved === "dark"}
+          canAsk={lib.selectedId !== null}
+          actions={{
+            startMeeting: () => capture.start("meeting", ""),
+            startInPerson: () => capture.start("in_person", ""),
+            stop: () => void stopAndOpen(),
+            openSettings: () => setSettingsOpen(true),
+            toggleTheme: theme.toggle,
+            openAsk: () => setAskOpen(true),
+          }}
         />
+
+        {capture.pendingMeeting && (
+          <MeetingPrompt
+            event={capture.pendingMeeting}
+            onRecord={capture.recordPendingMeeting}
+            onNotNow={capture.dismissPendingMeeting}
+            onAlways={capture.alwaysRecordPending}
+            onNever={capture.neverRecordPending}
+          />
+        )}
+
+        {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+
+        {!firstRunDismissed && <FirstRun onDismiss={dismissFirstRun} />}
       </div>
-
-      {capture.pendingMeeting && (
-        <MeetingPrompt
-          event={capture.pendingMeeting}
-          onRecord={capture.recordPendingMeeting}
-          onNotNow={capture.dismissPendingMeeting}
-          onAlways={capture.alwaysRecordPending}
-          onNever={capture.neverRecordPending}
-        />
-      )}
-
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
-
-      {!firstRunDismissed && <FirstRun onDismiss={dismissFirstRun} />}
-    </div>
+    </TooltipProvider>
   );
 }
 
