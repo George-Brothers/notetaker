@@ -2264,11 +2264,22 @@ mod tests {
         let id = record(&rt, Mode::InPerson, "Budget review");
         rt.tick_once(&models("the numbers are fine")).unwrap();
 
+        // Close the first runtime before touching its files. Windows refuses to
+        // delete a file another handle still holds open (`os error 32`), where
+        // Unix unlinks it happily — this test passed here and failed on Windows
+        // CI for exactly that reason. The retry covers the pump thread's clone
+        // of `Inner` outliving `rt` by a moment.
+        drop(rt);
+        let index_path = dir.path().join("app").join(INDEX_FILE);
+        assert!(index_path.exists(), "there should be an index to delete");
+
         // Throw the index away. The recording's files are untouched, so only a
         // rebuild can make it findable again — without this the search below
         // passes on the index left behind by the first runtime, and the test
         // proves nothing. (It did, until a negative control said so.)
-        fs::remove_file(dir.path().join("app").join(INDEX_FILE)).unwrap();
+        wait_until("the index file to be closed and removable", || {
+            fs::remove_file(&index_path).is_ok()
+        });
 
         // A fresh runtime over the same folder, as if the app had reopened.
         let reopened = runtime(dir.path(), 0.1);

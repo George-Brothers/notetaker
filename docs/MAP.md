@@ -186,8 +186,8 @@ Still assumed:
 - Meeting detection means "the app is open", not "a call started" — except
   Windows' `CptHost.exe`, which only exists during a Zoom meeting. Browsers are
   deliberately not detected; see `watch/apps.rs`.
-- **The Windows disk-probe fix**, which is reasoned and reproduced but has not
-  yet had a green Windows run — see "The Windows 8" above.
+- Nothing on Windows beyond the standing caveat that **no audio device has ever
+  produced a sample** — the disk-probe fix is confirmed by a real Windows run.
 
 Retired 2026-07-30: "the whole UI, visually" is no longer assumed. Every screen
 was driven in a real browser against a real `notetaker-serve` over a real
@@ -201,8 +201,12 @@ rendered as two stacked boxes, and the narrow layout squeezed the note into a
 ## CI has run now — what it found (2026-07-30)
 The first runs in this project's life, on PR #1. Three rounds.
 
-**State: macOS ✅ · Linux ✅ · Windows — the 8 failures are diagnosed and fixed
-(see below); the run that proves it is pending.**
+**State: macOS ✅ · Linux ✅ · Windows — the 8 are gone.** The disk-probe fix was
+confirmed by a real Windows run. One failure replaced them, in a test written the
+same day: it deleted the SQLite index while the runtime still held it open, which
+Unix allows and Windows refuses (`os error 32`). Fixed by closing the runtime
+first. **Windows is a different operating system in the tests too, not only in
+the platform layer.**
 macOS had never been compiled before today; it now builds, tests and clippies
 clean, as does the Tauri app crate on both platforms.
 
