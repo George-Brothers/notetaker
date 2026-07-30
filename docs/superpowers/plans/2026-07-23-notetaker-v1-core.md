@@ -20,6 +20,19 @@
 - Conventional commits (`feat:`, `test:`, `chore:`). Commit at the end of every task minimum.
 - Storage root is configurable; every module takes it as a parameter. Tests use `tempfile::tempdir()`, never the real `~/Notetaker`.
 
+### Plan amendment — 2026-07-23 (WSL2 has no sudo; webkit/gtk dev libs uninstallable)
+
+Verified twice (implementer + controller `sudo -n`): system packages cannot be installed this week. Amendments, which every task brief inherits:
+
+1. **Workspace split.** `src-tauri/Cargo.toml` becomes a workspace (`members = [".", "core"]`). A new library crate **`notetaker-core`** lives at `src-tauri/core/` and carries ALL Rust logic. Wherever a task says `src-tauri/src/<module>`, write **`src-tauri/core/src/<module>`**; `crate::X` paths in task code remain valid inside core. The app crate (`src-tauri/src/`) holds only Tauri glue.
+2. **Test command.** "cargo test" in any task means **`cargo test -p notetaker-core`** (run from `src-tauri/`). The app crate does not compile on this Linux box (missing webkit system libs); its compile check + `pnpm tauri dev` are registered as Plan B items on the Mac.
+3. **Task 5.** espeak-ng and sox are unavailable. Generate the fixture with **piper-tts** (pip, local ONNX voices: one `en_US` medium voice + one `zh_CN` voice) and **ffmpeg** (present) for resample/concat. Output contract unchanged: `fixtures/bilingual.wav`, 16 kHz mono, two clearly different voices, EN + ZH content.
+4. **Task 12.** Command handler logic goes in `notetaker-core` as `core/src/api.rs` (fully tested on Linux). The `#[tauri::command]` wrappers in the app crate are thin one-liners delegating to core; their compile check is a Plan B Mac item.
+5. **No pkg-config on this box:** core crates must avoid native-lib discovery — rusqlite stays on `bundled`, HTTP stays on `ureq` (rustls). This was already the plan; it is now a hard constraint.
+6. **libclang for bindgen (whisper-rs / sherpa-rs).** No system libclang and no sudo. Resolved without root: a user-space copy lives at `~/.local/lib/libclang/libclang.so` (obtained via `uv pip install libclang`). Any task touching whisper-rs or sherpa-rs must export `LIBCLANG_PATH=$HOME/.local/lib/libclang`. Verified: `whisper-rs` 0.16 compiles clean this way in 46 s. **Do not commit this path** to `.cargo/config.toml` — on the Mac, libclang ships with Xcode CLT and a hardcoded Linux path would break the build.
+7. **Chinese search requires CJK segmentation (Task 3 spec change).** Measured on this box with bundled SQLite: FTS5's default `unicode61` tokenizer treats a run of Han characters as ONE token, so searching `预算` inside `我们今天讨论预算和招聘计划` returns **0 hits** — Chinese search silently does not work. The `trigram` tokenizer fixes 3+ character terms but still fails 2-character words like `预算` (the most common Chinese word length). **Ship this instead:** keep the default tokenizer and insert spaces around every CJK codepoint (`U+3400–4DBF`, `U+4E00–9FFF`, `U+F900–FAFF`) when indexing AND when building the query, then match as a quoted phrase. Verified: `预算`, `招聘计划`, `budget`, and `quarterly budget` all return hits. Task 3 must implement this as `fn segment_cjk(&str) -> String` applied on both sides, with a test asserting a two-character Chinese term is found inside a longer Chinese sentence.
+8. **Parallel execution.** Tasks run concurrently in isolated git worktrees under `/home/georg/projects/notetaker-wt/tN` (branch `tN`), merged back to `plan-a-core` per wave. To make that safe, one prep commit (`d60d805`) pre-added every core dependency, created every module stub, and placed the cross-task types (`pipeline::Utterance`, `pipeline::diarize::SpeakerSpan`) — so no two agents ever edit the same file. Agents must not run `cargo add` or edit `Cargo.toml`/`lib.rs`/`pipeline/mod.rs`.
+
 ---
 
 ### Task 1: Scaffold Tauri app + test harnesses
@@ -270,7 +283,9 @@ State rules (test each): `enqueue` only from `Recorded`/`Failed`; `run_one` sets
 - [ ] **Step 4: Verify** — `cargo test queue` → 4 passed.
 - [ ] **Step 5: Commit** — `git commit -am "feat: crash-safe processing queue with 3x retry"`
 
----### Task 5: Bilingual test fixture (generated, committed)
+---
+
+### Task 5: Bilingual test fixture (generated, committed)
 
 **Files:**
 - Create: `fixtures/make_fixture.sh`, `fixtures/bilingual.wav` (committed output), `fixtures/README.md`

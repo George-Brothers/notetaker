@@ -1,0 +1,431 @@
+/*
+ * Settings and the first-run checklist.
+ *
+ * These two are full-screen forms with a small, tidy BEM vocabulary and forty
+ * tests pinned to their markup. Converting them to utility classes would mean
+ * rewriting every one of those elements to change nothing a user can see, so
+ * they keep their class names and get a stylesheet built on the same tokens as
+ * the rest of the app instead. Component-scoped CSS is a normal way to write
+ * this; what would not be normal is leaving them looking like a different
+ * program.
+ *
+ * Every colour here is a `--c-*` token, so both themes come for free.
+ */
+
+/* --- shared modal chrome ------------------------------------------------ */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 0.35);
+  backdrop-filter: blur(2px);
+}
+
+.settings-panel {
+  display: flex;
+  width: 100%;
+  max-width: 40rem;
+  max-height: 85vh;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-card);
+  background: var(--c-raised);
+  box-shadow: var(--shadow-pop);
+}
+
+/*
+ * The first-run checklist is a card in the corner, not a modal. It is
+ * information, not a decision — you can start recording without doing any of
+ * it, which is exactly what the copy says — so it must never block the app
+ * behind it.
+ */
+.first-run {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 40;
+  display: flex;
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: min(32rem, calc(100vh - 6rem));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-card);
+  background: var(--c-raised);
+  box-shadow: var(--shadow-pop);
+}
+
+.settings-panel__header,
+.first-run__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--c-border);
+  padding: 1rem 1.25rem;
+}
+
+.settings-panel__header h2,
+.first-run__header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-fg);
+}
+
+.settings-panel__body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem 1.25rem 1.25rem;
+}
+
+.settings-panel__close,
+.first-run__dismiss {
+  height: 2rem;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-control);
+  background: var(--c-raised);
+  padding: 0 0.75rem;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--c-fg-muted);
+  cursor: pointer;
+  transition: background-color 120ms;
+}
+
+.settings-panel__close:hover,
+.first-run__dismiss:hover {
+  background: var(--c-hover);
+  color: var(--c-fg);
+}
+
+/* --- sections and fields ------------------------------------------------ */
+
+.settings-section {
+  border-bottom: 1px solid var(--c-border);
+  padding: 1rem 0;
+}
+
+.settings-section:last-child {
+  border-bottom: 0;
+}
+
+.settings-section > h3 {
+  margin: 0 0 0.75rem;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--c-fg-faint);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.9rem;
+}
+
+.settings-field:last-child {
+  margin-bottom: 0;
+}
+
+.settings-field__label-text,
+.settings-field > label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--c-fg);
+}
+
+.settings-field--checkbox {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.settings-field--checkbox label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  cursor: pointer;
+}
+
+.settings-field input[type="text"],
+.settings-field input[type="number"],
+.settings-field input[type="url"],
+.settings-field select {
+  height: 2.125rem;
+  width: 100%;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-control);
+  background: var(--c-sunken);
+  padding: 0 0.6rem;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--c-fg);
+}
+
+.settings-field input[type="number"] {
+  max-width: 7rem;
+}
+
+.settings-field input:focus,
+.settings-field select:focus {
+  border-color: var(--c-accent);
+  outline: none;
+}
+
+.settings-field input[type="checkbox"],
+.settings-field input[type="radio"] {
+  margin-top: 0.15rem;
+  accent-color: var(--c-accent);
+}
+
+.settings-hint,
+.first-run__hint,
+.first-run__item-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-fg-muted);
+}
+
+.settings-hint--action {
+  color: var(--c-warn);
+}
+
+.settings-status {
+  font-size: 12px;
+  color: var(--c-fg-muted);
+}
+
+/* --- the per-app auto-record three-way ---------------------------------- */
+
+.settings-app-policy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+}
+
+.settings-app-policy__options {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.settings-app-policy__option {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 13px;
+  color: var(--c-fg-muted);
+  cursor: pointer;
+}
+
+.settings-app-policy__option input {
+  accent-color: var(--c-accent);
+}
+
+/* --- model pulls -------------------------------------------------------- */
+
+.settings-pull {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.settings-pull button,
+.first-run__item-body button {
+  height: 2rem;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--c-accent);
+  padding: 0 0.85rem;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--c-accent-fg);
+  cursor: pointer;
+}
+
+.settings-pull button:disabled,
+.first-run__item-body button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.settings-pull__error,
+.first-run__error {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-error);
+}
+
+.progress-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.progress-bar__label {
+  font-size: 12px;
+  color: var(--c-fg-muted);
+}
+
+.progress-bar__track {
+  height: 0.35rem;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--c-sunken);
+}
+
+.progress-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--c-accent);
+  transition: width 200ms;
+}
+
+/* --- the first-run checklist -------------------------------------------- */
+
+.first-run__hint {
+  padding: 0.75rem 1.25rem 0;
+}
+
+.first-run__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin: 0;
+  padding: 0.75rem 1.25rem 1.25rem;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.first-run__list > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.first-run__item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.first-run__item-index {
+  display: inline-flex;
+  height: 1.25rem;
+  width: 1.25rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--c-sunken);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-fg-muted);
+}
+
+.first-run__item-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-fg);
+}
+
+.first-run__item-status {
+  font-size: 12px;
+  color: var(--c-fg-muted);
+}
+
+.first-run__item-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: flex-start;
+}
+
+.first-run__item-index {
+  margin-top: 0.05rem;
+}
+
+.status-chip__dot {
+  display: inline-block;
+  height: 0.4rem;
+  width: 0.4rem;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* --- first run: the language question ---------------------------------- */
+/*
+ * A fieldset rather than a div: the six checkboxes are one question, and a
+ * screen reader should announce the legend before the options. The legend
+ * doubles as the hint, so the question is not stated twice.
+ */
+.first-run__languages {
+  border: 0;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+}
+
+.first-run__languages > legend,
+.first-run__languages > p {
+  flex-basis: 100%;
+  margin: 0 0 0.15rem;
+}
+
+.first-run__languages > p {
+  margin-top: 0.35rem;
+}
+
+.first-run__language {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--color-foreground);
+  cursor: pointer;
+}
+
+.first-run__languages:disabled .first-run__language {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* --- settings: the language checkboxes ---------------------------------- */
+.settings-languages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.settings-language {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--color-foreground);
+  cursor: pointer;
+}

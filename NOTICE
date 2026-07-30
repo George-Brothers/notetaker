@@ -1,0 +1,65 @@
+Notetaker
+Copyright (c) 2026 George Brothers
+
+This product includes software adapted from third-party projects. Their
+licenses and copyright notices are reproduced below, as those licenses require.
+
+===============================================================================
+anarlog (formerly Hyprnote) — https://github.com/fastrepl/hyprnote
+MIT License, Copyright (c) 2023-present Fastrepl, Inc.
+===============================================================================
+
+Portions of the platform audio-capture and power layers are adapted from
+anarlog. The adaptation is substantial rather than verbatim: anarlog's capture
+is asynchronous and `Stream`-based over its own internal workspace crates,
+while this project's `capture::source::AudioSource` is synchronous and
+pull-based, so the device setup, format negotiation and sample-conversion logic
+was reworked to drain through a ring buffer instead.
+
+Files in this repository containing adapted code, each also carrying an
+in-file attribution comment:
+
+  src-tauri/platform/src/windows/speaker.rs   <- crates/audio-actual/src/speaker/windows.rs
+  src-tauri/platform/src/windows/power.rs     <- crates/power/src/windows.rs
+  src-tauri/platform/src/macos/speaker.rs     <- crates/audio-actual/src/speaker/macos.rs
+  src-tauri/platform/src/macos/power.rs       <- crates/power/src/macos.rs
+  src-tauri/platform/src/mic.rs               <- crates/audio-actual/src/mic.rs
+  src-tauri/platform/src/ring.rs              <- crates/audio-actual/src/rt_ring.rs
+
+The MIT License text, as published by that project:
+
+    MIT License
+
+    Copyright (c) 2023-present Fastrepl, Inc.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+===============================================================================
+Notable dependencies whose licenses permit this use
+===============================================================================
+
+  wasapi           MIT / Apache-2.0   Windows audio capture
+  windows          MIT / Apache-2.0   Win32 bindings
+  cidre            MIT                Apple framework bindings (ScreenCaptureKit)
+  cpal             Apache-2.0         cross-platform microphone input
+  whisper-rs       Unlicense          speech recognition
+  sherpa-rs        Apache-2.0         speaker diarization
+
+Full dependency license inventory is reproducible with `cargo license` or
+`cargo about`; this file lists only what is adapted by hand or load-bearing.

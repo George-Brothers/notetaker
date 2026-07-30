@@ -1,0 +1,54 @@
+[package]
+name = "notetaker-core"
+version = "0.1.0"
+description = "Notetaker core logic: storage, index, pipeline, queue (no Tauri/UI deps)"
+authors = ["George Brothers"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "notetaker_core"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+flacenc = "0.5.1"
+hound = "3.5.1"
+log = "0.4.33"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+sherpa-rs = "0.6.8"
+symphonia = { version = "0.6.0", features = ["flac"] }
+sysinfo = "0.39.6"
+ureq = { version = "3.3.0", features = ["json"] }
+uuid = { version = "1.24.0", features = ["v4"] }
+whisper-rs = "0.16.0"
+
+notetaker-platform = { path = "../platform" }
+# Unpacking the speaker-segmentation model, which sherpa-onnx ships as a
+# `.tar.bz2`. `tar` without `xattr`, and `bzip2` on its default pure-Rust
+# backend rather than the optional `bzip2-sys` C one. This crate already drags
+# three C/C++ builds behind it (SQLite, whisper.cpp, sherpa-onnx), each of
+# which is a way the Windows and macOS builds can break for reasons that have
+# nothing to do with our code; a fourth, for the sake of decompressing one
+# file, is not worth it.
+tar = { version = "0.4.46", default-features = false }
+bzip2 = "0.6.1"
+
+[dev-dependencies]
+httpmock = "0.8.3"
+tempfile = "3.27.0"
+
+# The real microphone, on the two platforms we ship. Deliberately NOT enabled
+# on Linux: `alsa-sys` needs pkg-config we have no sudo to install in the WSL2
+# build environment, and the capture logic is tested there against
+# `capture::source::FakeSource` instead. Linux is a build host here, not a
+# target — see docs/MAP.md.
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.16.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+cpal = "0.16.0"

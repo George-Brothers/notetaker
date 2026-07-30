@@ -1,0 +1,66 @@
+[package]
+name = "notetaker-platform"
+version = "0.1.0"
+description = "Notetaker platform layer: microphone, system audio, and power state per OS"
+authors = ["George Brothers"]
+edition = "2021"
+
+# Deliberately depends on NO other notetaker crate.
+#
+# `notetaker-core` pulls in bundled SQLite, whisper.cpp and sherpa-onnx, all of
+# which need a C/C++ toolchain for the target. This crate's dependencies are
+# pure Rust, which is what makes
+#
+#     cargo check -p notetaker-platform --target x86_64-pc-windows-msvc
+#     cargo check -p notetaker-platform --target aarch64-apple-darwin
+#
+# work from a Linux box with no cross-compiler and no SDK — `cargo check` does
+# not link, so pure-Rust dependency trees type-check against foreign targets.
+# That is the only fast feedback the platform code gets before it reaches real
+# hardware, so keeping this list free of C is load-bearing, not tidiness.
+#
+# The `AudioSource` / `SystemProbe` traits live in `notetaker-core`, which
+# implements them for the concrete types exported here. The dependency
+# direction is core -> platform, never the reverse.
+[lib]
+name = "notetaker_platform"
+
+[dependencies]
+anyhow = "1.0.104"
+log = "0.4.33"
+ringbuf = "0.4.8"
+rubato = "0.16.2"
+
+[dev-dependencies]
+hound = "3.5.1"
+
+# The microphone, on both shipping platforms.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+cpal = "0.16.0"
+
+# System audio on Windows: WASAPI loopback. Needs no permission prompt, which
+# makes Windows the easier of the two platforms here.
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = "0.19.0"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Power",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+# macOS: ScreenCaptureKit for system audio (which does require the Screen
+# Recording permission) and CoreGraphics for idle time.
+#
+# The `objc2` family rather than `cidre`, which is what anarlog uses. Not a
+# preference — `cidre`'s build script compiles Objective-C glue, so it needs a
+# real macOS toolchain and cannot be checked from anywhere else. `objc2` is pure
+# Rust and declares the runtime via `extern`, so it type-checks against
+# aarch64-apple-darwin from Linux in about 13 seconds. Keeping that loop alive
+# for the Mac side is worth more than matching anarlog's choice of binding.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSValue", "NSDictionary", "NSError"] }
+objc2-core-graphics = { version = "0.3", features = ["CGEventSource"] }
+objc2-screen-capture-kit = { version = "0.3", features = ["SCStream", "SCShareableContent", "block2", "objc2-core-media", "objc2-core-graphics"] }
+objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer"] }
