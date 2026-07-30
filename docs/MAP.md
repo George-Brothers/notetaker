@@ -1,101 +1,147 @@
 # MAP — Notetaker (personal)
 
-Fully local macOS notetaker for Mr. Brothers: high-quality dual-track
-recording now, idle-time local transcription (EN/ZH, Speaker 1/2/3) and
-summarization later, organized by tasks. No cloud.
+A fully local notetaker for Mr. Brothers, on **Mac and PC**, with the same UI
+also **served to a browser** so the library can be read from a phone. High-quality
+dual-track recording now, idle-time local transcription (EN/ZH, Speaker 1/2/3)
+and summarization later, organized by tasks. No cloud, ever.
 
 ## State
 - **Plan A (portable core): COMPLETE** (2026-07-23) — storage, index, queue,
   pipeline, models, UI library view.
-- **Plan B1 (everything not Mac-locked): COMPLETE** on branch `plan-b-capture`
-  (2026-07-27). Capture engine, crash recovery + FLAC, meeting watcher,
-  idle/power gating, Ollama manager, the `Runtime` facade, and the remaining
-  UI. An independent review returned FAIL on two IMPORTANT findings and one
-  MINOR; **all three are fixed**, each pinned by a test proven to fail when the
-  fix is reverted. **224 Rust + 56 frontend tests green, clippy `--all-targets`
-  clean, `pnpm build` clean.** What the findings were, what was chosen, and
-  what is *still* open — read
-  **`docs/superpowers/specs/2026-07-27-planb1-review.md`**, including its
-  "Edges of this review" and "Still open after the fixes" sections.
-- **Plan B2 (the Mac day): not started**, waiting on the hardware (~2026-07-30).
-  Scope and a precise checklist at the bottom of the Plan B doc — it is short
-  by design, because B1 left a trait with a working fake behind every
-  platform-bound surface.
+- **Plan B1 (everything not platform-locked): COMPLETE** (2026-07-27). Capture
+  engine, crash recovery + FLAC, meeting watcher, idle/power gating, Ollama
+  manager, the `Runtime` facade, and the remaining UI. Its independent review
+  and what remains open: `docs/superpowers/specs/2026-07-27-planb1-review.md`.
+- **Plan C (Mac + PC + served web): IN PROGRESS** on branch
+  `claude/cross-platform-mac-pc-web-e3af6f`.
+  Done: portable paths, the `CpuBig` tier, the `notetaker-platform` crate,
+  the **complete Windows layer** (WASAPI loopback, cpal mic, `WinProbe`,
+  meeting detection), the core adapter, the **served web UI**, and CI.
+  Remaining: **macOS system audio** (ScreenCaptureKit) and the **Tauri shell**.
+  Plan and decisions: `docs/superpowers/plans/2026-07-29-cross-platform.md`.
 - **Spec:** `docs/superpowers/specs/2026-07-23-notetaker-design.md`.
-- **Plan A:** `docs/superpowers/plans/2026-07-23-notetaker-v1-core.md`
-  (read its "Plan amendment" section — WSL2 constraints reshaped several tasks).
-- **Plan B:** `docs/superpowers/plans/2026-07-27-notetaker-v2-capture.md`.
-- **Bake-off decision:** `docs/superpowers/specs/bakeoff-result.md` —
-  SenseVoice beats Whisper-tiny on Chinese; it is the default speech engine.
-  Re-run against `large-v3-turbo` on the Mac before the call is final.
+- **Bake-off:** `docs/superpowers/specs/bakeoff-result.md` — SenseVoice beats
+  Whisper-tiny on Chinese. Re-run against `large-v3-turbo` on the Mac.
 
 ## Layout (as built)
-- `src-tauri/core/` — crate `notetaker-core`: **all** portable logic.
-  - `capture/` — `session` (state machine), `track` (incremental WAV),
-    `flac` (verified lossless finalize), `recover` (crash repair),
-    `source` (the `AudioSource` seam + fakes).
-  - `storage` (files-first layout), `index` (SQLite FTS5, CJK-segmented),
-    `queue` (crash-safe, 3× retry), `pipeline/` (audio, transcribe, diarize,
-    merge, llm, summarize, suggest, run), `models` (registry + downloader),
-    `watch/` (meeting detection), `power/` (idle + AC gating),
-    `ollama/` (status, pull, ensure), `scheduler`, `api`, `runtime`.
-  - Tested via `cargo test -p notetaker-core` from `src-tauri/`.
-- `src-tauri/` (app crate) — thin Tauri shell. Does NOT compile on Linux
-  (`libdbus-sys` needs pkg-config we have no sudo for; none of that exists on
-  macOS). Written and compiled on the Mac in B2.
-- `src/` — React/TS UI: library, record bar, meeting prompt, settings,
-  first-run, search, speaker + recording rename. `src/lib/ipc.ts` is the
-  Rust↔UI contract.
+Four Rust crates under `src-tauri/`, and the dependency direction between the
+first two is load-bearing — see "How this is verified".
+
+- **`core/`** — `notetaker-core`: all portable logic. Owns the traits.
+  - `capture/` — `session`, `track`, `flac`, `recover`, `source` (the
+    `AudioSource` seam + fakes), `platform` (the adapter onto the real devices).
+  - `paths` (OS-correct directories), `dispatch` (one JSON entry point into
+    `Runtime`, shared by every transport), `storage`, `index` (SQLite FTS5,
+    CJK-segmented), `queue`, `pipeline/`, `models`, `watch/`, `power/`,
+    `ollama/`, `scheduler`, `api`, `runtime`.
+- **`platform/`** — `notetaker-platform`: the per-OS devices. **Depends on no
+  other notetaker crate**, and only on pure-Rust libraries.
+  - `convert`, `resample`, `ring` — pure, platform-independent, fully tested.
+  - `mic` (cpal, both platforms), `windows/` (WASAPI loopback + Win32 power),
+    `macos/` (CoreGraphics idle; ScreenCaptureKit **not yet written**).
+- **`server/`** — `notetaker-server`: serves the UI over HTTP.
+  `notetaker-serve` is a working Notetaker on a PC with no Tauri at all.
+- **`.` (app crate)** — the Tauri shell. **Still the generated scaffold.** Does
+  not build on Linux (`libdbus-sys` needs pkg-config we have no sudo for).
+- `src/` — React/TS UI. `src/lib/ipc.ts` is the contract; `src/lib/transport.ts`
+  switches between Tauri IPC and HTTP.
 - `fixtures/` — `bilingual.wav`, `diarization-check.wav`, reference transcript.
 
+## How this is verified — read this before trusting anything
+Nothing here can *run* macOS or Windows code. The thing that makes writing it
+anyway defensible is one property: **`cargo check` does not link**, so a crate
+with pure-Rust dependencies type-checks against a foreign target with no
+cross-compiler and no SDK.
+
+That is why `notetaker-platform` depends on no other notetaker crate. Core pulls
+in bundled SQLite, whisper.cpp and sherpa-onnx; **core cannot be cross-checked at
+all** — verified, it fails looking for MSVC's `lib.exe`.
+
+```bash
+scripts/check-platforms.sh      # all three targets, ~30s
+```
+
+| Layer | How far it is verified |
+|---|---|
+| `convert`, `resample`, `ring` | **Fully tested on Linux.** Deliberate — this is where capture bugs live, and they all produce plausible *audio* rather than an error |
+| `windows/`, `macos/`, `mic` | **Compile-verified** for the real target. Never run |
+| `capture::platform`, `power::probe` per-OS arms | **CI only.** Never compiled on Linux |
+| The Tauri app crate | **CI only.** Never compiles on Linux |
+| `notetaker-server` + `dispatch` | **Fully verified here**, including a real binary over a real socket |
+
+The cross-check was itself confirmed with a negative control: a deliberate type
+error in `windows/power.rs` *is* caught.
+
 ## Build environment (WSL2, hard-won)
-- `cargo test -p notetaker-core` from `src-tauri/` is the only Rust check here.
-  Needs `PATH=$HOME/.cargo/bin` and `LIBCLANG_PATH=$HOME/.local/lib/libclang`.
-- `pnpm test --run` runs the UI tests; **`pnpm build` is the only typecheck** —
-  vitest does not typecheck, so a contract change can pass the tests and still
-  be broken. Run both.
-- Run clippy with `--all-targets`; without it, test code is never linted.
+- `cargo test -p notetaker-core -p notetaker-platform -p notetaker-server` from
+  `src-tauri/`. Needs `PATH=$HOME/.cargo/bin` and
+  `LIBCLANG_PATH=$HOME/.local/lib/libclang`.
+- **`pnpm build` is the only typecheck** — vitest does not typecheck, so a
+  contract change can pass every test and still be broken. Run both.
+- Clippy with `--all-targets`; without it, test code is never linted.
+- Running `notetaker-serve` by hand needs
+  `LD_LIBRARY_PATH=src-tauri/target/debug` for sherpa's shared library.
 - `models/` is gitignored; fetch via `scripts/fetch-*.sh`.
-- **No display.** Every UI acceptance here is test behaviour; the visual pass
-  is B2 item 6 and has never been done.
+- **No display.** Every UI acceptance here is test behaviour or an HTTP
+  response; the visual pass has never been done.
 
 ## Ground rules
-- User data layout (`~/Notetaker/Tasks/...`) is a public contract; the SQLite
-  index must always be rebuildable from the files.
-- **Nothing ever deletes a recording.** A FLAC encode that cannot be verified
-  by decoding it back leaves the WAV; a file too damaged to repair is kept with
-  a plain-English note. Wasted disk is recoverable, a lecture is not.
+- User data layout (`<home>/Notetaker/Tasks/...`) is a public contract, and is
+  **identical on every OS** so a folder copied from a Mac to a PC still opens.
+  The SQLite index must always be rebuildable from the files.
+- The app dir follows each OS's own convention and holds nothing precious.
+- **Nothing ever deletes a recording.** A FLAC encode that cannot be verified by
+  decoding it back leaves the WAV; a file too damaged to repair is kept with a
+  plain-English note.
 - `meta.error` describes a processing *attempt* and clears on retry;
   `meta.capture_note` describes the *audio* and outlives every attempt.
-- **Nothing moves a live recording's folder.** Rename and file-under-a-task are
-  refused, in plain English, while that recording is the live session — the
-  session holds the path it opened with. Enforced in `runtime.rs`, not in the
+- **Nothing moves a live recording's folder.** Enforced in `runtime.rs`, not the
   UI: a disabled button is not a guarantee.
-- **"Idle" means the recording has landed.** Between the last sample and the
-  recording being queued, capture reports `Finishing`, never `Idle` — the record
-  bar must not re-arm while the library still has nothing new in it.
+- **"Idle" means the recording has landed.** Capture reports `Finishing`, never
+  `Idle`, until then.
+- An error from `CaptureSources::system` means "this platform cannot capture the
+  other side of a call", and **meeting mode refuses to start** rather than
+  silently recording half a conversation. This is why a Mac currently declines
+  meeting mode.
+- **The server binds loopback unless LAN access is explicitly turned on**, and
+  LAN requires a token on every request including the UI shell. A notetaker that
+  quietly serves meeting transcripts to the coffee-shop wifi is a worse failure
+  than any bug in it.
 - Speech = SenseVoice (default) / Whisper (fallback); diarization = sherpa-onnx;
   summaries = Ollama+Qwen. Diarization is verified on real human audio only —
   synthetic TTS voices don't separate.
 - Every message a user can hit is written for someone who is not an engineer.
 
-## Verified vs assumed — read before the Mac day
-Built and tested here, but **never executed on macOS**:
-- `power::probe::MacProbe` — the `ioreg`/`pmset` *parsers* are tested against
-  captured real output; that those commands emit that shape on the actual
-  machine is not. Fails safe (unreadable → "not idle" → processing waits), but
-  it fails *silently*, so check it explicitly.
-- `ollama` — verified against `httpmock` only. No real Ollama was contacted, so
-  the NDJSON field names come from knowledge of the API, not observed traffic.
-- Meeting detection for Slack/Teams/Discord means "the app is open", not "a call
-  started". Browsers are deliberately not detected at all — see the reasoning in
-  `watch/apps.rs`, and B2's window-title work.
-- The whole UI, visually. Behaviour is tested; appearance is not.
+## Verified vs assumed
+Retired since B1: the `ioreg` **idle-time** scrape is gone — `MacProbe` now uses
+`CGEventSourceSecondsSinceLastEventType`, so it can no longer fail silently and
+stop background transcription forever.
 
-## Next (B2, on the Mac)
-`CaptureSources` (cpal mic + ScreenCaptureKit system audio) and `MacProbe` are
-two trait impls; the app crate is ~23 mechanical `#[tauri::command]` wrappers
-over `runtime::COMMANDS`, whose argument names a test already pins against
-`ipc.ts`. Then: Metal builds + tier detect on real hardware, screenshot pass,
-permissions, DMG, re-run the bake-off, and one real bilingual call end to end.
-The precise list is in the Plan B doc.
+Still assumed:
+- **Every capture path.** No audio device has ever produced a sample through
+  this code. CI runners have none either, so CI will not close this — it needs a
+  human at a real machine.
+- **macOS Screen Recording permission** — never requested, granted or refused.
+- `pmset -g batt` parsing for AC/battery: tested against captured real output,
+  never run on a Mac.
+- `ollama` — verified against `httpmock` only; the NDJSON field names come from
+  knowledge of the API, not observed traffic.
+- Meeting detection means "the app is open", not "a call started" — except
+  Windows' `CptHost.exe`, which only exists during a Zoom meeting. Browsers are
+  deliberately not detected; see `watch/apps.rs`.
+- **The whole UI, visually.**
+- **The CI workflow has never run.** Pushing needs Mr. Brothers' word, and the
+  ledger separately reports the push gate is broken for every project repo
+  (`gate-allowlist-missing`).
+
+## Next
+1. **Tauri shell** — the app crate is still the generated scaffold. Now much
+   smaller than it was: `core::dispatch` already does the work, so the ~23
+   wrappers collapse into thin forwarding. Plus capabilities and per-OS bundling
+   (DMG / MSI+NSIS).
+2. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
+   was not written blind are in `platform/src/macos/speaker.rs`. Everything below
+   it (ring, downmix, resample) is already shared and tested.
+3. **On the hardware**: run CI, then real capture on both machines, Metal build
+   and tier detection, permissions, the screenshot pass, re-run the bake-off, and
+   one real bilingual call end to end.
