@@ -35,25 +35,27 @@ reach it, and make it worth reaching.
 ## The second bug, found while reading the code
 
 `audio_tracks` in `core/src/api.rs` lists a track when the file merely
-**exists**:
+**exists**. Mr. Brothers' real recordings revealed the true shape of the bug:
 
-```rust
-["flac", "wav"].iter().any(|ext| dir.join(format!("audio-{track}.{ext}")).exists())
-```
+- `2026-07-30 17.38 Meeting/` — `audio-system.flac` 4,469 bytes
+- `2026-07-30 17.40 Meeting/` — `audio-system.wav` 44 bytes
+- `2026-07-30 17.44 In person/` — (no system track at all)
 
-Mr. Brothers' three real recordings each carry a **0-byte**
-`audio-system.flac` — nothing was playing through his speakers, so WASAPI
-loopback correctly produced nothing. That empty file passes `.exists()`, so it
-is offered as a track. Worse, `TranscriptPanel` *prefers* `system` when it is
-present, on the reasoning that the other people in a meeting are on that track.
+The WAV is header-only: WASAPI loopback wrote the chunk headers but no samples
+because nothing was playing through his speakers. That 44-byte file passes
+`.exists()`, so it is offered as a track. Worse, `TranscriptPanel` *prefers*
+`system` when it is present, on the reasoning that the other people in a
+meeting are on that track.
 
-Net effect on his machine: every player defaulted to the empty file and played
-silence. Fixing placement without fixing this ships a player that appears
-broken.
+Net effect on his machine: the player defaulted to the header-only WAV on the
+one recording that had both tracks, and played silence. (The FLAC alongside it
+is quiet but real — quiet is not the same as absent.) Fixing placement without
+fixing this ships a player that appears broken.
 
-**Fix:** `audio_tracks` filters to files with `len() > 0`. A track that has no
-bytes is not a track. This is also the honest half of the "0-byte system audio"
-item — it stops presenting an empty file as if it were audio.
+**Fix:** `audio_tracks` now distinguishes between files with content and files
+without it — for FLACs by checking `len() > 0` (an encoded file has audio), for
+WAVs by opening with `hound` and reading the frame count directly. A WAV with
+no frames is not a track, even if it is readable and 44 bytes on disk.
 
 ## The design
 

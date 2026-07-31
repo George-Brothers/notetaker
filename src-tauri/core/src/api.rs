@@ -519,22 +519,41 @@ fn read_sidecar(dir: &Path, name: &str) -> Option<String> {
     }
 }
 
-/// Which audio tracks are actually on disk *and* have bytes, in
+/// Which audio tracks are actually on disk *and* have audio content, in
 /// `TRACK_NAMES` order.
 ///
 /// Existence is not enough. A meeting recorded with nothing playing through
-/// the speakers leaves a 0-byte system track behind — real, openable, and
-/// completely silent. Offering it as a track means offering a player that
-/// appears broken, which is exactly what this field's contract forbids.
+/// the speakers leaves a WAV header with no audio frames — real, readable,
+/// and completely silent. The WAV is 44 bytes of header, the FLAC is 4,469
+/// bytes of valid compressed quiet. Both exist; only one is a track to offer.
+///
+/// For FLACs: a file that exists with bytes has audio (the encoder does not
+/// create a file unless there is source audio to encode, and deletes it on
+/// failure). For WAVs: open the file and check the frame count directly.
+/// A damaged or unreadable file is not a track, and is not an error —
+/// `audio_tracks` returns `Vec<String>`, not a `Result`; a broken file must
+/// not take the whole detail fetch down.
 fn audio_tracks(dir: &Path) -> Vec<String> {
     TRACK_NAMES
         .iter()
         .filter(|track| {
-            ["flac", "wav"].iter().any(|ext| {
-                std::fs::metadata(dir.join(format!("audio-{track}.{ext}")))
-                    .map(|m| m.len() > 0)
-                    .unwrap_or(false)
-            })
+            // Try FLAC first: it is what a finished recording has.
+            let flac_path = dir.join(format!("audio-{track}.flac"));
+            if flac_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&flac_path) {
+                    if metadata.len() > 0 {
+                        return true;
+                    }
+                }
+            }
+
+            // Then WAV: check for actual audio frames, not just a header.
+            let wav_path = dir.join(format!("audio-{track}.wav"));
+            if let Ok(reader) = hound::WavReader::open(&wav_path) {
+                reader.len() > 0
+            } else {
+                false
+            }
         })
         .map(|t| t.to_string())
         .collect()
@@ -1034,6 +1053,96 @@ mod tests {
 
         std::fs::write(rec.dir.join("audio-mic.flac"), b"not empty").unwrap();
         std::fs::write(rec.dir.join("audio-system.flac"), b"also not empty").unwrap();
+
+        assert_eq!(
+            audio_tracks(&rec.dir),
+            vec!["mic".to_string(), "system".to_string()]
+        );
+    }
+
+    #[test]
+    fn audio_tracks_ignores_a_wav_that_captured_no_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let rec = create(&store, "Team sync");
+
+        // A WAV header with zero audio frames: WASAPI loopback wrote headers
+        // but no samples because nothing was playing through the speakers.
+        // This is the real shape of "the system track captured nothing".
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let wav_path = rec.dir.join("audio-system.wav");
+        {
+            let writer = hound::WavWriter::create(&wav_path, spec).unwrap();
+            writer.finalize().unwrap();
+        }
+        // Sanity-check: the resulting file is around 44 bytes (WAV header only).
+        let size = std::fs::metadata(&wav_path).unwrap().len();
+        assert!(size > 40 && size < 50, "header-only WAV is ~44 bytes, got {size}");
+
+        // Add a mic track so the result is not empty (the test still works if
+        // there is nothing left, but the message is clearer this way).
+        std::fs::write(rec.dir.join("audio-mic.flac"), b"not empty").unwrap();
+
+        assert_eq!(audio_tracks(&rec.dir), vec!["mic".to_string()]);
+    }
+
+    #[test]
+    fn audio_tracks_lists_a_quiet_track_that_really_has_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let rec = create(&store, "Team sync");
+
+        // A small but valid FLAC: the quiet audio from a meeting where only
+        // one person was on the system track (everyone else on voice chat from
+        // a desktop app, not Zoom). Quiet is not the same as absent; a track
+        // that has audio content must be listed. This FLAC comes from the real
+        // data: 4,469 bytes of compressed quiet.
+        let small_flac = vec![
+            0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        std::fs::write(rec.dir.join("audio-system.flac"), &small_flac).unwrap();
+
+        assert!(audio_tracks(&rec.dir).contains(&"system".to_string()));
+    }
+
+    #[test]
+    fn audio_tracks_lists_a_track_once_when_both_flac_and_wav_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let rec = create(&store, "Team sync");
+
+        // Both mic.flac and mic.wav can survive on disk at once due to a known
+        // bug in finalize_to_flac (file handle still open on Windows). The list
+        // must still yield "mic" exactly once, not twice.
+        std::fs::write(rec.dir.join("audio-mic.flac"), b"not empty").unwrap();
+
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        {
+            let mut writer =
+                hound::WavWriter::create(rec.dir.join("audio-mic.wav"), spec).unwrap();
+            writer.write_sample(0i16).unwrap();
+            writer.finalize().unwrap();
+        }
+
+        // Add a system track so we can also verify ordering (should be ["mic", "system"]).
+        let small_flac = vec![
+            0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        std::fs::write(rec.dir.join("audio-system.flac"), &small_flac).unwrap();
 
         assert_eq!(
             audio_tracks(&rec.dir),
