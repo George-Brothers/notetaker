@@ -687,37 +687,189 @@ may already be built and were simply never visible.
 
 ---
 
-### Task 5: Stop promising a download that never happens
+### Task 5: Never download silently, and never download twice
 
 The first-run panel says *"Happens automatically in the background — or
 download now."* It does not happen automatically. `start_processing` returns
 `Processing::ModelsMissing`, logs "not transcribing yet", and stops. The only
-thing that ever downloads a speech model is the user pressing the button.
+thing that ever downloads a speech model is the user pressing the button. His
+three recordings sat at `Queued` for a week because of that sentence.
 
-His three recordings sat at `Queued` for a week because of this sentence.
+Mr. Brothers' ruling, 2026-07-30, verbatim:
 
-**This needs one decision from Mr. Brothers** before the code is written, and
-the plan does not get to make it:
+> make them downloadable from the app but only if the user clicks download
+> dont just download them randomly also check if they already have them like
+> ollama bc many ppl will
 
-- **(a) Make the sentence true** — start the download automatically on first
-  launch. The app then does its job without being asked. Costs ~1.9 GB of
-  someone's bandwidth unannounced, which is the thing his "don't force it" rule
-  exists to prevent.
-- **(b) Make the sentence honest** — *"Nothing is transcribed until these are
-  downloaded. It takes about 1.9 GB."* Plus: a recording stuck at `Queued`
-  should say **why**, right there in the library row, rather than sitting there
-  looking like it is working.
+Two halves, and the second is the interesting one. **Never start a ~1.9 GB
+download unasked** — the manual button stays the only trigger, and the copy
+stops claiming otherwise. And **before offering a download, look for the model
+the user already has**, exactly as Task 2 does for Ollama. Someone who has run
+whisper.cpp or pulled a model from Hugging Face already has the file on disk;
+telling them to fetch another 1.6 GB copy is the same insult as telling them to
+install the Ollama they already installed.
 
-**(b) is the recommendation**, because it is the one that matches his stated
-rule, and because the deeper bug is not the download — it is a row that says
-`Queued` forever and never explains itself.
+This is safe to do because `ModelSpec` already carries **`sha256`** and — since
+2026-07-30 — **`bytes`**. An adopted file is verified by hash before it is ever
+used, so a wrong or corrupt candidate cannot be silently accepted.
 
-- [ ] **Step 1: Get the decision.** Do not proceed without it.
-- [ ] **Step 2: Write the failing test** for whichever was chosen. For (b):
-      a recording with status `recorded` and missing models renders the reason
-      in its library row and in the note, in the `SetupNotice.test.ts` style —
-      wording asserted, because the wording is the feature.
-- [ ] **Step 3: Implement, run `pnpm test --run && pnpm build && pnpm lint`, commit.**
+#### 5a — the copy stops lying, and a stuck recording says why
+
+**Files:**
+- Modify: `src/components/FirstRun.tsx`
+- Modify: `src/components/Sidebar.tsx` (the `RecordingItem` status line)
+- Test: `src/components/__tests__/setup.test.ts` (new, `SetupNotice.test.ts` style)
+
+- [ ] **Step 1: Write the failing test**
+
+```tsx
+it("says nothing is transcribed until the models are downloaded", () => {
+  // The old copy promised "Happens automatically in the background", which
+  // was false, which is why three real recordings sat at Queued for a week.
+  render(<FirstRun {...propsWithMissingModels} />);
+  expect(screen.getByText(/nothing is transcribed until/i)).toBeInTheDocument();
+  expect(screen.queryByText(/automatically in the background/i)).toBeNull();
+});
+
+it("tells a queued recording why it is queued", () => {
+  render(<RecordingItem row={queuedRow} modelsMissing />);
+  expect(screen.getByText(/waiting on the speech models/i)).toBeInTheDocument();
+});
+```
+
+- [ ] **Step 2: Run it, watch it fail, then change the copy.** Exact strings:
+  - FirstRun: `Nothing is transcribed until these are downloaded — about 1.9 GB. It only happens when you press the button.`
+  - Library row: `Waiting on the speech models`
+
+- [ ] **Step 3: `pnpm test --run && pnpm build && pnpm lint`, commit.**
+
+#### 5b — adopt a model the user already has
+
+**Files:**
+- Create: `src-tauri/core/src/models/existing.rs`
+- Modify: `src-tauri/core/src/models/mod.rs`
+- Modify: `src-tauri/core/src/runtime.rs` (`setup_status`, and a new `adopt_models` command)
+- Modify: `src/lib/ipc.ts`, `src/components/FirstRun.tsx`
+
+**Interfaces:**
+- Produces:
+  ```rust
+  /// A model file found somewhere other than our own models directory.
+  pub struct Found { pub spec: &'static ModelSpec, pub path: PathBuf }
+
+  /// Directories worth looking in, deepest-first. Public so the test can
+  /// assert the list rather than the filesystem.
+  pub fn search_roots() -> Vec<PathBuf>;
+
+  /// Candidates whose *size* matches the spec. Cheap: no hashing.
+  pub fn candidates(roots: &[PathBuf], spec: &'static ModelSpec) -> Vec<PathBuf>;
+
+  /// Verifies a candidate by sha256 and copies it into `models_dir`.
+  /// Returns `Ok(false)` when the hash does not match — a wrong file is a
+  /// non-event, never an error.
+  pub fn adopt(candidate: &Path, spec: &'static ModelSpec, models_dir: &Path) -> Result<bool>;
+  ```
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test]
+fn only_files_whose_size_matches_are_ever_hashed() {
+    // Hashing a 1.6 GB file is expensive. `bytes` is a free pre-filter, so
+    // a directory full of unrelated files costs nothing to reject.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("ggml-large-v3-turbo.bin"), b"wrong size").unwrap();
+    let found = candidates(&[dir.path().to_path_buf()], &registry::WHISPER_LARGE_V3_TURBO);
+    assert!(found.is_empty(), "a size mismatch must be rejected without hashing");
+}
+
+#[test]
+fn a_candidate_whose_hash_matches_is_adopted() {
+    let dir = tempfile::tempdir().unwrap();
+    let models = tempfile::tempdir().unwrap();
+    let spec = &registry::DIARIZATION_EMBEDDING; // smallest real spec
+    let src = dir.path().join("found.onnx");
+    std::fs::copy(fixture_for(spec), &src).unwrap();
+    assert!(adopt(&src, spec, models.path()).unwrap());
+    assert!(models.path().join(spec.dest).exists());
+}
+
+#[test]
+fn a_candidate_whose_hash_does_not_match_is_refused_without_an_error() {
+    // Someone else's model with the same name and size. Not an error — just
+    // not the file we need. It must not land in models_dir.
+    let dir = tempfile::tempdir().unwrap();
+    let models = tempfile::tempdir().unwrap();
+    let spec = &registry::DIARIZATION_EMBEDDING;
+    let src = dir.path().join("impostor.onnx");
+    std::fs::write(&src, vec![0u8; spec.bytes as usize]).unwrap();
+    assert!(!adopt(&src, spec, models.path()).unwrap());
+    assert!(!models.path().join(spec.dest).exists());
+}
+
+#[test]
+fn adopting_never_moves_or_deletes_the_users_own_copy() {
+    // Their file, their disk. We copy; we never take.
+    let dir = tempfile::tempdir().unwrap();
+    let models = tempfile::tempdir().unwrap();
+    let spec = &registry::DIARIZATION_EMBEDDING;
+    let src = dir.path().join("theirs.onnx");
+    std::fs::copy(fixture_for(spec), &src).unwrap();
+    adopt(&src, spec, models.path()).unwrap();
+    assert!(src.exists(), "the user's own copy must survive untouched");
+}
+
+#[test]
+fn search_roots_cover_the_places_these_models_actually_live() {
+    let roots = search_roots();
+    let joined: Vec<String> = roots.iter().map(|p| p.display().to_string()).collect();
+    let all = joined.join(" ");
+    assert!(all.contains("huggingface"), "hugging face cache: {all}");
+    assert!(all.contains("whisper"), "whisper cache: {all}");
+}
+```
+
+`fixture_for` needs a real small file whose sha256 is in the registry. If no
+such fixture exists, add the test-only helper that writes known bytes and
+compare against a sha256 computed in the test rather than the registry — do
+not weaken `adopt` to make a test easier.
+
+- [ ] **Step 2: Run them, watch them fail**
+
+```bash
+cd src-tauri && PATH=$HOME/.cargo/bin:$PATH LIBCLANG_PATH=$HOME/.local/lib/libclang cargo test -p notetaker-core existing
+```
+
+- [ ] **Step 3: Implement**
+
+`search_roots()` returns, per platform, the directories these files actually
+land in — the Hugging Face hub cache (`~/.cache/huggingface/hub`,
+`%USERPROFILE%\.cache\huggingface\hub`), the openai-whisper cache
+(`~/.cache/whisper`, `%LOCALAPPDATA%\whisper`), and `~/Downloads`. Bound the
+recursion to three levels: an unbounded walk of a home directory is a hang
+waiting to happen, and this runs while someone is looking at a checklist.
+
+`candidates()` filters on `len() == spec.bytes` before anything else.
+`adopt()` hashes, compares to `spec.sha256`, and **copies** — never moves,
+never links. It is their file.
+
+- [ ] **Step 4: Surface it in the checklist**
+
+Before the Download button, run the scan and, when something is found, show:
+
+> Found a copy of this on your computer. Use it instead of downloading?
+
+with a button that calls `adopt_models`. No modal, no auto-adopt — the same
+"say the true thing once, let them choose" shape as everything else here.
+When nothing is found, the checklist looks exactly as it does today.
+
+- [ ] **Step 5: Full check and commit**
+
+```bash
+cd src-tauri && PATH=$HOME/.cargo/bin:$PATH LIBCLANG_PATH=$HOME/.local/lib/libclang cargo test -p notetaker-core && PATH=$HOME/.cargo/bin:$PATH LIBCLANG_PATH=$HOME/.local/lib/libclang cargo clippy -p notetaker-core --all-targets -- -D warnings
+pnpm test --run && pnpm build && pnpm lint
+git add -A && git commit -m "feat: use the speech model you already have instead of downloading it again"
+```
 
 ---
 
@@ -739,7 +891,10 @@ One pass, each item confirmed or not:
 3. The Ollama section says *installed but not running* — not "download it".
 4. A fresh recording leaves one file per track, or a `capture_note` saying why
    it did not.
-5. A queued recording says why it is queued.
+5. A queued recording says why it is queued, and nothing downloads unless the
+   button is pressed.
+6. If a speech model already exists on the machine, the checklist offers to
+   use it rather than fetching another copy.
 
 - [ ] **Step 3: Update the docs — after the playback branch has landed**
 
