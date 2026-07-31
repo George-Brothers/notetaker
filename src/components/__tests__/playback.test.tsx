@@ -2,8 +2,10 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { PlayerBar } from "../PlayerBar";
+import { TranscriptPanel } from "../TranscriptPanel";
 import { TooltipProvider } from "../ui";
 import type { AudioPlayer } from "../../hooks/useAudio";
+import type { RecordingDetail } from "../../lib/ipc";
 
 afterEach(cleanup);
 
@@ -153,5 +155,56 @@ describe("PlayerBar", () => {
     // be stolen from anything a person can type into.
     fireEvent.keyDown(screen.getByRole("slider", { name: /position/i }), { key: " " });
     expect(audio.toggle).toHaveBeenCalledTimes(1);
+  });
+});
+
+function detailWith(over: Partial<RecordingDetail> = {}): RecordingDetail {
+  return {
+    id: "rec-1",
+    title: "Team sync",
+    task: null,
+    created: "2026-07-30T14:00:00Z",
+    durationS: 600,
+    mode: "meeting",
+    status: "ready",
+    hasNotes: false,
+    transcriptMd: "",
+    summaryMd: "",
+    notesMd: "",
+    error: null,
+    captureNote: null,
+    suggestedTask: null,
+    suggestedTitle: null,
+    template: null,
+    actions: [],
+    speakers: {},
+    segments: [
+      { line: 0, startS: 0, endS: 5, speaker: "Speaker 1", text: "Morning." },
+      { line: 1, startS: 5, endS: 9, speaker: "Speaker 2", text: "How are you?" },
+    ],
+    audioTracks: ["mic"],
+    ...over,
+  } as RecordingDetail;
+}
+
+describe("TranscriptPanel", () => {
+  it("seeks the shared player when a line is clicked, and starts it", () => {
+    const audio = player();
+    render(
+      <TooltipProvider>
+        <TranscriptPanel detail={detailWith()} audio={audio} onRenameSpeaker={vi.fn()} />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Morning\./i }));
+    expect(audio.seekAndPlay).toHaveBeenCalledWith(0);
+  });
+
+  it("owns no audio element of its own", () => {
+    const { container } = render(
+      <TooltipProvider>
+        <TranscriptPanel detail={detailWith()} audio={player()} onRenameSpeaker={vi.fn()} />
+      </TooltipProvider>,
+    );
+    expect(container.querySelector("audio")).toBeNull();
   });
 });
