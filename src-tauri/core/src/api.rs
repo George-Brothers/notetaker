@@ -1149,4 +1149,24 @@ mod tests {
             vec!["mic".to_string(), "system".to_string()]
         );
     }
+
+    #[test]
+    fn audio_tracks_ignores_a_wav_it_cannot_even_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let rec = create(&store, "Team sync");
+
+        // A genuinely corrupt file: garbage bytes, not a valid WAV at all.
+        // `hound::WavReader::open()` will fail, and we should treat it as not
+        // a track without panicking or propagating the error.
+        std::fs::write(rec.dir.join("audio-mic.wav"), b"this is not a wav file at all")
+            .unwrap();
+
+        // Add a system track so the result is not empty (the test still works
+        // if there is nothing left, but the message is clearer this way).
+        std::fs::write(rec.dir.join("audio-system.flac"), b"not empty").unwrap();
+
+        // The corrupt WAV is not listed; the FLAC is.
+        assert_eq!(audio_tracks(&rec.dir), vec!["system".to_string()]);
+    }
 }

@@ -179,8 +179,9 @@ Behaviour, not appearance — there is still no display in this environment.
 - The recording that is currently capturing shows the still-going sentence
   rather than a transport, and a different recording opened during that same
   capture does not.
-- **Core:** `audio_tracks` omits a zero-byte file, and still lists a track that
-  has bytes. Directly pins the bug from his real recordings.
+- **Core:** `audio_tracks` omits a WAV with no audio frames (header-only), and
+  still lists a track that has audio. Directly pins the bug from his real
+  recordings.
 - The no-audio wording, since on that path the wording is the entire feature.
 
 ## Out of scope
@@ -190,6 +191,6 @@ Behaviour, not appearance — there is still no display in this environment.
 - **Volume.** The OS owns it.
 - **Waveform.** Nothing asked for it and it costs real work.
 - The stray `audio-mic.wav` sitting beside the `.flac` on two of three
-  recordings. Related to the 0-byte finding but a separate failure — FLAC
-  verification not confirming while `meta.error` stays `null` — and it is its
-  own item on the work list.
+  recordings. Related to the header-only WAV finding but a separate failure —
+  FLAC verification not confirming while `meta.error` stays `null` — and it is
+  its own item on the work list.
