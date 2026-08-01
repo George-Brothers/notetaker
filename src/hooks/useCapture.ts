@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/ipc";
-import type { CaptureStatus, MeetingEvent, Mode } from "../lib/ipc";
+import type { CaptureLevels, CaptureStatus, MeetingEvent, Mode } from "../lib/ipc";
 
 const STATUS_POLL_MS = 1000;
+const LEVEL_POLL_MS = 100;
 const MEETING_POLL_MS = 3000;
 
 const IDLE_STATUS: CaptureStatus = {
@@ -53,10 +54,24 @@ export function useCapture() {
   const [pendingMeeting, setPendingMeeting] = useState<MeetingEvent | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const statusTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const levelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
       setStatus(await api.captureStatus());
+    } catch (err) {
+      setCaptureError(describeError(err));
+    }
+  }, []);
+
+  const refreshLevels = useCallback(async () => {
+    try {
+      const levels: CaptureLevels = await api.captureLevels();
+      setStatus((current) =>
+        current.state === "idle" || current.state === "finishing"
+          ? current
+          : { ...current, micLevel: levels.micLevel, systemLevel: levels.systemLevel },
+      );
     } catch (err) {
       setCaptureError(describeError(err));
     }
@@ -81,6 +96,26 @@ export function useCapture() {
       }
     };
   }, [status.state, refreshStatus]);
+
+  // The full status includes elapsed time and a disk-space read. The meters
+  // need neither, so poll their small dedicated command at 10 Hz. Chaining the
+  // reads means a slow IPC response cannot pile up behind more interval ticks.
+  useEffect(() => {
+    if (status.state === "idle" || status.state === "finishing") return;
+    let cancelled = false;
+    const poll = async () => {
+      await refreshLevels();
+      if (!cancelled) levelTimer.current = setTimeout(poll, LEVEL_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (levelTimer.current) {
+        clearTimeout(levelTimer.current);
+        levelTimer.current = null;
+      }
+    };
+  }, [status.state, refreshLevels]);
 
   const start = useCallback(async (mode: Mode, title?: string) => {
     try {

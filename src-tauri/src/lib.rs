@@ -221,6 +221,11 @@ fn capture_status(rt: State<'_, Runtime>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn capture_levels(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "capture_levels", json!({}))
+}
+
+#[tauri::command]
 fn poll_meetings(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "poll_meetings", json!({}))
 }
@@ -329,6 +334,7 @@ pub fn run() {
             resume_capture,
             stop_capture,
             capture_status,
+            capture_levels,
             poll_meetings,
             ollama_status,
             pull_model,

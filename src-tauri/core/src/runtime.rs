@@ -48,7 +48,7 @@ use crate::capture::flac::{finalize_to_flac, Finalized};
 use crate::capture::recover::recover_orphans;
 use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
-use crate::capture::{self, CaptureState, CaptureStatus, DiskSpace};
+use crate::capture::{self, CaptureLevels, CaptureState, CaptureStatus, DiskSpace};
 use crate::index::Index;
 use crate::logging;
 use crate::models::{
@@ -236,6 +236,10 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "capture_status",
+        args: &[],
+    },
+    Command {
+        name: "capture_levels",
         args: &[],
     },
     Command {
@@ -969,6 +973,16 @@ impl Runtime {
             );
         }
         CaptureStatus::idle(self.inner.disk.free_mb().unwrap_or(0))
+    }
+
+    /// Meter readings only. This skips elapsed-time and disk work because the
+    /// record bar reads it ten times per second.
+    pub fn capture_levels(&self) -> CaptureLevels {
+        let mut slot = lock(&self.inner.session);
+        match slot.as_mut() {
+            Some(session) if session.state() != CaptureState::Idle => session.levels(),
+            _ => CaptureLevels::default(),
+        }
     }
 
     /// One step of the capture loop, for a caller that wants to drive capture
@@ -3315,6 +3329,7 @@ mod tests {
 
         // The infallible ones, plus the capture lifecycle.
         let _ = rt.capture_status();
+        let _ = rt.capture_levels();
         let _ = rt.pull_progress();
         let _ = rt.find_existing_models_from(&[]);
         let _ = rt.detected_tier();
@@ -3357,9 +3372,9 @@ mod tests {
 
         // capture_status, pull_progress, detected_tier, log_path,
         // list_templates, ask_recording, setup_status, pause, resume, start,
-        // stop, find_existing_models — twelve not in the list above.
+        // stop, find_existing_models, capture_levels — thirteen not in the list above.
         assert_eq!(
-            called.len() + 12,
+            called.len() + 13,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

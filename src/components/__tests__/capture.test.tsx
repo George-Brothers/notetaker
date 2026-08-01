@@ -247,6 +247,22 @@ describe("record bar", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("refreshes the live meters independently of the one-second capture-status poll", async () => {
+    vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
+    vi.mocked(api.captureLevels).mockResolvedValue({ micLevel: 0.86, systemLevel: 0.42 });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Record" }));
+
+    const mic = await screen.findByRole("progressbar", { name: "Microphone level" });
+    await waitFor(() => expect(mic).toHaveAttribute("aria-valuenow", "86"));
+    expect(api.captureLevels).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(vi.mocked(api.captureLevels).mock.calls.length).toBeGreaterThan(1), {
+      timeout: 500,
+    });
+  });
+
   it("shows a low-disk warning in plain language when free space is low", async () => {
     vi.mocked(api.captureStatus).mockResolvedValue({ ...IDLE_STATUS, diskFreeMb: 400 });
     render(<App />);

@@ -28,7 +28,7 @@
 
 import { vi } from "vitest";
 import { api } from "../lib/ipc";
-import type { CaptureStatus } from "../lib/ipc";
+import type { CaptureLevels, CaptureStatus } from "../lib/ipc";
 
 export const IDLE_STATUS: CaptureStatus = {
   state: "idle",
@@ -39,6 +39,8 @@ export const IDLE_STATUS: CaptureStatus = {
   systemLevel: 0,
   diskFreeMb: 20_000,
 };
+
+export const SILENT_LEVELS: CaptureLevels = { micLevel: 0, systemLevel: 0 };
 
 /**
  * Baseline resolved values, so a component that renders on mount finds an
@@ -64,6 +66,7 @@ export function applyIpcDefaults(): void {
   vi.mocked(api.pollMeetings).mockResolvedValue([]);
   vi.mocked(api.pullProgress).mockResolvedValue([]);
   vi.mocked(api.captureStatus).mockResolvedValue(IDLE_STATUS);
+  vi.mocked(api.captureLevels).mockResolvedValue(SILENT_LEVELS);
   vi.mocked(api.stopCapture).mockResolvedValue("rec-new");
   vi.mocked(api.detectedTier).mockResolvedValue("medium");
   vi.mocked(api.audioPath).mockResolvedValue("/tmp/audio-mic.flac");

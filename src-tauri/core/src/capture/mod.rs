@@ -92,6 +92,17 @@ pub struct CaptureStatus {
     pub disk_free_mb: u64,
 }
 
+/// The fast-moving part of [`CaptureStatus`], read separately so the record
+/// bar never needs a disk-space check just to show that it hears you.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureLevels {
+    /// Peak microphone level since the previous level read, 0.0..=1.0.
+    pub mic_level: f32,
+    /// Peak system-audio level since the previous level read, 0.0..=1.0.
+    pub system_level: f32,
+}
+
 /// Reports free space on the volume holding the recordings, so the disk guard
 /// is a decision about a number rather than an untestable syscall.
 pub trait DiskSpace: Send {

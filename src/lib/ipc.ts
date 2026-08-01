@@ -236,6 +236,12 @@ export interface CaptureStatus {
   diskFreeMb: number;
 }
 
+/** Lightweight, fast-moving readings for the record-bar meters. */
+export interface CaptureLevels {
+  micLevel: number;
+  systemLevel: number;
+}
+
 export type MeetingEventKind = "started" | "ended";
 
 /** A meeting app appearing or disappearing, after debounce. */
@@ -351,6 +357,7 @@ export const api = {
   /** Stops, finalizes to FLAC, and queues the recording. Returns its id. */
   stopCapture: () => invoke<string>("stop_capture"),
   captureStatus: () => invoke<CaptureStatus>("capture_status"),
+  captureLevels: () => invoke<CaptureLevels>("capture_levels"),
 
   // --- Meeting watcher ---
   /** Drains any debounced meeting events since the last poll. */

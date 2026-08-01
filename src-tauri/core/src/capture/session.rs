@@ -22,7 +22,9 @@ use crate::storage::{Mode, RecordingRef, Status, Store};
 
 use super::source::AudioSource;
 use super::track::TrackWriter;
-use super::{CaptureState, CaptureStatus, DiskSpace, MIC_TRACK, MIN_FREE_MB, SYSTEM_TRACK};
+use super::{
+    CaptureLevels, CaptureState, CaptureStatus, DiskSpace, MIC_TRACK, MIN_FREE_MB, SYSTEM_TRACK,
+};
 
 /// One track's source paired with the file it feeds.
 struct Channel {
@@ -195,6 +197,7 @@ impl Session {
     /// meters report the peak *since the last poll*, and reading them clears
     /// them.
     pub fn status(&mut self) -> CaptureStatus {
+        let levels = self.levels();
         CaptureStatus {
             state: self.state,
             // `None` once the session has stopped: the snapshot answers "what
@@ -207,9 +210,18 @@ impl Session {
             },
             recording_id: Some(self.rec.meta.id.clone()),
             elapsed_s: self.elapsed_s(),
+            mic_level: levels.mic_level,
+            system_level: levels.system_level,
+            disk_free_mb: self.disk.free_mb().unwrap_or(0),
+        }
+    }
+
+    /// The fast-moving part of [`CaptureStatus`]. Reading a level consumes its
+    /// short peak window, so a one-off loud noise cannot pin the meter.
+    pub fn levels(&mut self) -> CaptureLevels {
+        CaptureLevels {
             mic_level: self.mic.writer.take_peak(),
             system_level: self.system.as_mut().map_or(0.0, |s| s.writer.take_peak()),
-            disk_free_mb: self.disk.free_mb().unwrap_or(0),
         }
     }
 

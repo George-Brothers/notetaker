@@ -95,6 +95,7 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         "resume_capture" => to_json(rt.resume_capture()?),
         "stop_capture" => to_json(rt.stop_capture()?),
         "capture_status" => to_json(rt.capture_status()),
+        "capture_levels" => to_json(rt.capture_levels()),
         "poll_meetings" => to_json(rt.poll_meetings()?),
 
         // --- models and setup -------------------------------------------
@@ -230,6 +231,7 @@ mod tests {
             "resume_capture",
             "stop_capture",
             "capture_status",
+            "capture_levels",
             "poll_meetings",
             "ollama_status",
             "pull_model",
