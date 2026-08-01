@@ -1,6 +1,51 @@
-# Handover — 2026-07-30
+# Handover — 2026-08-01
 
 Read `docs/MAP.md` first; this file only covers what is in flight right now.
+
+## 2026-08-01 continuation — C1 is ready for Windows use
+
+**PR [#2](https://github.com/George-Brothers/notetaker/pull/2)** is open from
+`claude/previous-session-continuation-ea389c` to `plan-b-capture`. It is pushed
+at `c202671`; every CI job is green (Linux, macOS, Windows native tests, and the
+Windows installer plus its bundled-library check).
+
+This continuation completed the C1 work that had been planned but not yet
+landed:
+
+- every recording with real audio has a Listen route; a verified FLAC remains a
+  success even if its source WAV cannot be deleted, and the app records that
+  durable capture note;
+- durable app-data logging exists, and `get_settings`, `ollama_status`, and
+  `detected_tier` log their entry and elapsed exit time so Settings freezes can
+  be diagnosed from a real machine;
+- an installed but stopped Ollama is told to start rather than being told to
+  download; recordings queued for absent speech models say exactly that; and
+  the first-run screen promises that the explicit speech-model button is the
+  only download trigger;
+- first run makes a bounded scan of recognized locations for an existing speech
+  model. A size match is only offered; clicking **Use it instead** SHA-256
+  verifies and copies it, never moves or changes the source file.
+
+Local verification before the PR: 395 core Rust tests, Clippy with warnings as
+errors, 145 frontend tests, the frontend production build, and the cross-target
+platform check. CI repeated the complete gate on all three target OSes.
+
+### Still required: one interactive Windows truth pass
+
+The green CI artifact was downloaded to
+`C:\Users\georg\Downloads\Notetaker-C1` (both MSI and NSIS installers). There
+was no existing Notetaker installation. This WSL session cannot start either
+installer: the NSIS launch returned **Access is denied**, and Windows Installer
+returned **could not create installation log** in that same folder. Neither
+attempt created an install directory. Treat this as a WSL-to-Windows bridge
+blocker, not an application result.
+
+From an interactive Windows desktop, run the NSIS installer in that folder and
+then verify: Settings opens responsively and emits the new timings to the log;
+the real Ollama state is described truthfully; a fresh recording yields FLAC or
+the explicit retained-WAV note; model-less queued recordings say they are
+waiting; and an already-downloaded speech model is offered for safe adoption.
+Record what actually happens before changing code again.
 
 ## Where the branches are
 
