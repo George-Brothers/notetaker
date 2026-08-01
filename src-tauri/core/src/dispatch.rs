@@ -102,6 +102,8 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         "pull_model" => to_json(rt.pull_model(str_arg(args, "model")?)?),
         "pull_progress" => to_json(rt.pull_progress()),
         "download_models" => to_json(rt.download_models()?),
+        "adopt_models" => to_json(rt.adopt_models()?),
+        "find_existing_models" => to_json(rt.find_existing_models()),
         "detected_tier" => to_json(rt.detected_tier()),
         "setup_status" => to_json(rt.setup_status()),
 
@@ -233,6 +235,8 @@ mod tests {
             "pull_model",
             "pull_progress",
             "download_models",
+            "adopt_models",
+            "find_existing_models",
             "detected_tier",
             "setup_status",
         ];

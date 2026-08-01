@@ -51,7 +51,9 @@ use crate::capture::source::{AudioSource, FakeSource};
 use crate::capture::{self, CaptureState, CaptureStatus, DiskSpace};
 use crate::index::Index;
 use crate::logging;
-use crate::models::{detect_tier, ensure_segmentation_unpacked, registry, Downloader, Tier};
+use crate::models::{
+    detect_tier, ensure_segmentation_unpacked, existing, registry, Downloader, ModelSpec, Tier,
+};
 use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
 use crate::pipeline::diarize::{Diarizer, SherpaDiarizer};
 use crate::pipeline::llm::LlmClient;
@@ -258,6 +260,14 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "download_models",
+        args: &[],
+    },
+    Command {
+        name: "adopt_models",
+        args: &[],
+    },
+    Command {
+        name: "find_existing_models",
         args: &[],
     },
     Command {
@@ -1151,6 +1161,48 @@ impl Runtime {
         Ok(())
     }
 
+    /// Hash-verifies and copies any model candidates the user explicitly chose
+    /// to adopt. It never moves or modifies the original files.
+    pub fn adopt_models(&self) -> Result<()> {
+        self.adopt_models_from(&existing::search_roots())
+    }
+
+    fn adopt_models_from(&self, roots: &[PathBuf]) -> Result<()> {
+        let missing = self.missing_models();
+        for found in self.existing_candidates(&missing, roots) {
+            match existing::adopt(&found.path, found.spec, &self.inner.models_dir) {
+                Ok(true) => log::info!("adopted existing {}", found.spec.name),
+                Ok(false) => log::info!(
+                    "candidate for {} did not match its checksum",
+                    found.spec.name
+                ),
+                Err(e) => log::warn!("could not adopt {}: {e:#}", found.path.display()),
+            }
+        }
+
+        match self.start_processing()? {
+            Processing::Started => log::info!("processing started after adopting models"),
+            Processing::AlreadyRunning | Processing::ModelsMissing(_) => {}
+        }
+        Ok(())
+    }
+
+    /// Candidate models from the bounded first-run scan. This is separate from
+    /// `setup_status`, which Settings polls and must keep fast.
+    pub fn find_existing_models(&self) -> Vec<api::FoundModel> {
+        self.find_existing_models_from(&existing::search_roots())
+    }
+
+    fn find_existing_models_from(&self, roots: &[PathBuf]) -> Vec<api::FoundModel> {
+        self.existing_candidates(&self.missing_models(), roots)
+            .into_iter()
+            .map(|candidate| api::FoundModel {
+                name: candidate.spec.name.to_string(),
+                label: candidate.spec.label.to_string(),
+            })
+            .collect()
+    }
+
     /// The tier this machine actually uses: the user's override when they have
     /// set one, the detected tier otherwise.
     ///
@@ -1259,6 +1311,21 @@ impl Runtime {
             .collect()
     }
 
+    fn existing_candidates(
+        &self,
+        missing: &[&'static ModelSpec],
+        roots: &[PathBuf],
+    ) -> Vec<existing::Found> {
+        missing
+            .iter()
+            .flat_map(|spec| {
+                existing::candidates(roots, spec)
+                    .into_iter()
+                    .map(|path| existing::Found { spec, path })
+            })
+            .collect()
+    }
+
     /// What the app can and cannot do right now — see [`api::SetupStatus`].
     ///
     /// Deliberately infallible. This is the call the UI makes to find out
@@ -1266,7 +1333,6 @@ impl Runtime {
     /// itself fail leaves the interface with nothing to say.
     pub fn setup_status(&self) -> api::SetupStatus {
         let missing = self.missing_models();
-
         // Both states are "recorded, not transcribed". `Recorded` is one that
         // never reached the queue because nothing was there to take it;
         // `Queued` is one that did and is waiting. To the person looking at
@@ -3237,6 +3303,7 @@ mod tests {
             ("ollama_status", rt.ollama_status().map(|_| ())),
             ("pull_model", rt.pull_model("qwen3:8b")),
             ("download_models", rt.download_models()),
+            ("adopt_models", rt.adopt_models_from(&[])),
         ];
         let called: Vec<&str> = fallible
             .into_iter()
@@ -3249,6 +3316,7 @@ mod tests {
         // The infallible ones, plus the capture lifecycle.
         let _ = rt.capture_status();
         let _ = rt.pull_progress();
+        let _ = rt.find_existing_models_from(&[]);
         let _ = rt.detected_tier();
         assert!(
             Path::new(&rt.log_path()).ends_with(Path::new("logs").join("notetaker.log")),
@@ -3289,9 +3357,9 @@ mod tests {
 
         // capture_status, pull_progress, detected_tier, log_path,
         // list_templates, ask_recording, setup_status, pause, resume, start,
-        // stop — eleven not in the list above.
+        // stop, find_existing_models — twelve not in the list above.
         assert_eq!(
-            called.len() + 11,
+            called.len() + 12,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

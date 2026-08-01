@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, LANGUAGE_CHOICES } from "../lib/ipc";
-import type { OllamaStatus, PullProgress, Settings as SettingsData } from "../lib/ipc";
+import type { FoundModel, OllamaStatus, PullProgress, Settings as SettingsData } from "../lib/ipc";
 
 export interface FirstRunProps {
   onDismiss: () => void;
@@ -143,8 +143,10 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [progress, setProgress] = useState<PullProgress[]>([]);
+  const [foundModels, setFoundModels] = useState<FoundModel[]>([]);
   const [pulling, setPulling] = useState(false);
   const [downloadingModels, setDownloadingModels] = useState(false);
+  const [adoptingModels, setAdoptingModels] = useState(false);
   const [savingLanguages, setSavingLanguages] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -174,6 +176,12 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         if (!cancelled) setLoadError(describeError(err));
       }
     })();
+    api
+      .findExistingModels()
+      .then((found) => setFoundModels(found ?? []))
+      .catch((err) => {
+        if (!cancelled) setLoadError(describeError(err));
+      });
     refresh();
     timer.current = setInterval(refresh, POLL_MS);
     return () => {
@@ -226,6 +234,19 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
       setLoadError(describeError(err));
     } finally {
       setDownloadingModels(false);
+    }
+  }
+
+  async function handleAdoptModels() {
+    setLoadError(null);
+    setAdoptingModels(true);
+    try {
+      await api.adoptModels();
+      await refresh();
+    } catch (err) {
+      setLoadError(describeError(err));
+    } finally {
+      setAdoptingModels(false);
     }
   }
 
@@ -290,6 +311,14 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         <ChecklistItem index={3} title="Download the speech models" status={speechStatus}>
           {speechStatus !== "done" && (
             <>
+              {foundModels.length > 0 && (
+                <div className="first-run__item-hint">
+                  <p>Found a copy of this on your computer. Use it instead of downloading?</p>
+                  <button type="button" onClick={handleAdoptModels} disabled={adoptingModels}>
+                    {adoptingModels ? "Checking it…" : "Use it instead"}
+                  </button>
+                </div>
+              )}
               <button type="button" onClick={handleDownloadModels} disabled={downloadingModels}>
                 Download speech models
               </button>

@@ -8,6 +8,7 @@
 //! tier, and downloads+verifies them with resume support so a crash mid
 //! download never leaves a corrupt "complete" model on disk.
 
+pub mod existing;
 pub mod registry;
 
 use std::fs;

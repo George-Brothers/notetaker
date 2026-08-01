@@ -163,6 +163,12 @@ export interface MissingModel {
   bytes: number;
 }
 
+/** A matching-size model file found outside Notetaker's own model folder. */
+export interface FoundModel {
+  name: string;
+  label: string;
+}
+
 /**
  * What the app can and cannot do right now.
  *
@@ -363,6 +369,10 @@ export const api = {
    * twice is harmless. Progress arrives via `pullProgress` with kind "speech".
    */
   downloadModels: () => invoke<void>("download_models"),
+  /** Hash-verify and copy the existing speech model candidates the user accepted. */
+  adoptModels: () => invoke<void>("adopt_models"),
+  /** Bounded first-run scan for speech models already on this computer. */
+  findExistingModels: () => invoke<FoundModel[]>("find_existing_models"),
   /** The hardware tier detected for this machine ("small" | "medium" | "large"). */
   detectedTier: () => invoke<string>("detected_tier"),
   /**

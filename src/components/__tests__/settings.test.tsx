@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { api } from "../../lib/ipc";
 import { applyIpcDefaults } from "../../test/ipcMock";
-import type { CaptureStatus, OllamaStatus, PullProgress, Settings } from "../../lib/ipc";
+import type { CaptureStatus, FoundModel, OllamaStatus, PullProgress, Settings, SetupStatus } from "../../lib/ipc";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
@@ -75,7 +75,15 @@ const OLLAMA_READY: OllamaStatus = {
   installHint: null,
 };
 
-function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus } = {}) {
+const SETUP_WITHOUT_FOUND_MODELS: SetupStatus = {
+  transcribing: false,
+  missing: [{ name: "whisper-small-q5_1", label: "Speech model (fast)", bytes: 190085487 }],
+  downloadBytes: 190085487,
+  waiting: 0,
+  tier: "CpuSmall",
+};
+
+function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus; found?: FoundModel[]; setup?: SetupStatus } = {}) {
   vi.mocked(api.listTasks).mockResolvedValue([]);
   vi.mocked(api.listRecordings).mockResolvedValue([]);
   vi.mocked(api.search).mockResolvedValue([]);
@@ -90,6 +98,9 @@ function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus } = {}
   vi.mocked(api.pullProgress).mockResolvedValue([]);
   vi.mocked(api.pullModel).mockResolvedValue(undefined);
   vi.mocked(api.downloadModels).mockResolvedValue(undefined);
+  vi.mocked(api.adoptModels).mockResolvedValue(undefined);
+  vi.mocked(api.findExistingModels).mockResolvedValue(overrides.found ?? []);
+  vi.mocked(api.setupStatus).mockResolvedValue(overrides.setup ?? SETUP_WITHOUT_FOUND_MODELS);
   vi.mocked(api.logPath).mockResolvedValue("/Users/george/Library/Notetaker/logs/notetaker.log");
 }
 
@@ -414,6 +425,16 @@ describe("First-run checklist", () => {
       within(card).getByText(/Nothing is transcribed until these are downloaded/i),
     ).toBeInTheDocument();
     expect(within(card).queryByText(/automatically in the background/i)).not.toBeInTheDocument();
+  });
+
+  it("offers a found model for explicit adoption instead of another download", async () => {
+    setupApi({ found: [{ name: "whisper-small-q5_1", label: "Speech model (fast)" }] });
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+
+    expect(await within(card).findByText(/Found a copy of this on your computer/i)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Use it instead" }));
+    await waitFor(() => expect(api.adoptModels).toHaveBeenCalledOnce());
   });
 
   it("choosing a language on first run saves it without leaving the checklist", async () => {

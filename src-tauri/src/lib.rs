@@ -248,6 +248,16 @@ fn download_models(rt: State<'_, Runtime>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn adopt_models(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "adopt_models", json!({}))
+}
+
+#[tauri::command]
+fn find_existing_models(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "find_existing_models", json!({}))
+}
+
+#[tauri::command]
 fn detected_tier(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "detected_tier", json!({}))
 }
@@ -324,6 +334,8 @@ pub fn run() {
             pull_model,
             pull_progress,
             download_models,
+            adopt_models,
+            find_existing_models,
             detected_tier,
             setup_status,
         ])

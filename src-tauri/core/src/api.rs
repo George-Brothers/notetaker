@@ -204,6 +204,14 @@ pub struct SetupStatus {
     pub tier: String,
 }
 
+/// A model candidate the user may choose to adopt instead of downloading.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundModel {
+    pub name: String,
+    pub label: String,
+}
+
 /// One model the app needs and does not have.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
