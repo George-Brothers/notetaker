@@ -46,6 +46,8 @@ export interface RecordingRow {
    * because the disk filled up."
    */
   captureNote: string | null;
+  /** True only in the Archive view; archived recordings are not searched. */
+  archived?: boolean;
 }
 
 /** One checkbox line parsed out of `summaryMd`. */
@@ -287,6 +289,7 @@ export const api = {
   listTasks: () => invoke<string[]>("list_tasks"),
   createTask: (name: string) => invoke<void>("create_task", { name }),
   listRecordings: () => invoke<RecordingRow[]>("list_recordings"),
+  listArchivedRecordings: () => invoke<RecordingRow[]>("list_archived_recordings"),
   getRecording: (id: string) => invoke<RecordingDetail>("get_recording", { id }),
   search: (query: string) => invoke<SearchHit[]>("search", { query }),
   processNow: (id: string) => invoke<void>("process_now", { id }),
@@ -303,6 +306,12 @@ export const api = {
    */
   renameRecording: (id: string, title: string) =>
     invoke<void>("rename_recording", { id, title }),
+  /** Moves a recording to Archive without deleting any of its files. */
+  archiveRecording: (id: string) => invoke<void>("archive_recording", { id }),
+  /** Returns an archived recording to Unsorted. */
+  restoreRecording: (id: string) => invoke<void>("restore_recording", { id }),
+  /** Permanent; the interface asks for confirmation before calling this. */
+  deleteRecording: (id: string) => invoke<void>("delete_recording", { id }),
   renameSpeaker: (id: string, key: string, name: string) =>
     invoke<void>("rename_speaker", { id, key, name }),
 

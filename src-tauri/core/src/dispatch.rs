@@ -42,6 +42,7 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         "list_tasks" => to_json(rt.list_tasks()?),
         "create_task" => to_json(rt.create_task(str_arg(args, "name")?)?),
         "list_recordings" => to_json(rt.list_recordings()?),
+        "list_archived_recordings" => to_json(rt.list_archived_recordings()?),
         "get_recording" => to_json(rt.get_recording(str_arg(args, "id")?)?),
         "search" => to_json(rt.search(str_arg(args, "query")?)?),
         "process_now" => to_json(rt.process_now(str_arg(args, "id")?)?),
@@ -52,6 +53,9 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         "rename_recording" => {
             to_json(rt.rename_recording(str_arg(args, "id")?, str_arg(args, "title")?)?)
         }
+        "archive_recording" => to_json(rt.archive_recording(str_arg(args, "id")?)?),
+        "restore_recording" => to_json(rt.restore_recording(str_arg(args, "id")?)?),
+        "delete_recording" => to_json(rt.delete_recording(str_arg(args, "id")?)?),
         "rename_speaker" => to_json(rt.rename_speaker(
             str_arg(args, "id")?,
             str_arg(args, "key")?,
@@ -209,12 +213,16 @@ mod tests {
             "list_tasks",
             "create_task",
             "list_recordings",
+            "list_archived_recordings",
             "get_recording",
             "search",
             "process_now",
             "update_summary",
             "assign_task",
             "rename_recording",
+            "archive_recording",
+            "restore_recording",
+            "delete_recording",
             "rename_speaker",
             "save_notes",
             "list_templates",

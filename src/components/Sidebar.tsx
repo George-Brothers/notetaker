@@ -15,6 +15,7 @@ import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  Archive,
   FolderOpen,
   Inbox,
   Layers,
@@ -284,6 +285,13 @@ export function Sidebar({
                 onClick={() => onSelectView({ kind: "recent" })}
               >
                 Recently processed
+              </NavItem>
+              <NavItem
+                active={isActive(activeView, { kind: "archive" })}
+                icon={<Archive size={14} />}
+                onClick={() => onSelectView({ kind: "archive" })}
+              >
+                Archive
               </NavItem>
             </section>
 

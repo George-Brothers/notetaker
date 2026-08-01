@@ -7,6 +7,7 @@ export type LibraryView =
   | { kind: "all" }
   | { kind: "unsorted" }
   | { kind: "recent" }
+  | { kind: "archive" }
   | { kind: "task"; name: string };
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -31,6 +32,8 @@ function filterByView(rows: RecordingRow[], view: LibraryView): RecordingRow[] {
       // The row shape has no "processed at" timestamp, so "recently
       // processed" is approximated as ready recordings, newest first.
       return sorted.filter((r) => r.status === "ready");
+    case "archive":
+      return sorted;
     case "task":
       return sorted.filter((r) => r.task === view.name);
   }
@@ -43,6 +46,7 @@ function filterByView(rows: RecordingRow[], view: LibraryView): RecordingRow[] {
 export function useLibrary() {
   const [tasks, setTasks] = useState<string[]>([]);
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
+  const [archivedRecordings, setArchivedRecordings] = useState<RecordingRow[]>([]);
   const [view, setView] = useState<LibraryView>({ kind: "all" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RecordingDetail | null>(null);
@@ -62,7 +66,9 @@ export function useLibrary() {
 
   const refreshRecordings = useCallback(async () => {
     try {
-      setRecordings(await api.listRecordings());
+      const [active, archived] = await Promise.all([api.listRecordings(), api.listArchivedRecordings()]);
+      setRecordings(active);
+      setArchivedRecordings(archived);
     } catch (err) {
       setLoadError(describeError(err));
     }
@@ -126,6 +132,54 @@ export function useLibrary() {
         await refreshRecordings();
         if (selectedId === id) {
           setDetail(await api.getRecording(id));
+        }
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [refreshRecordings, selectedId]
+  );
+
+  const archiveRecording = useCallback(
+    async (id: string) => {
+      try {
+        await api.archiveRecording(id);
+        await refreshRecordings();
+        if (selectedId === id) {
+          setSelectedId(null);
+          setDetail(null);
+        }
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [refreshRecordings, selectedId]
+  );
+
+  const restoreRecording = useCallback(
+    async (id: string) => {
+      try {
+        await api.restoreRecording(id);
+        await refreshRecordings();
+        if (selectedId === id) {
+          setSelectedId(null);
+          setDetail(null);
+        }
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [refreshRecordings, selectedId]
+  );
+
+  const deleteRecording = useCallback(
+    async (id: string) => {
+      try {
+        await api.deleteRecording(id);
+        await refreshRecordings();
+        if (selectedId === id) {
+          setSelectedId(null);
+          setDetail(null);
         }
       } catch (err) {
         setLoadError(describeError(err));
@@ -265,7 +319,8 @@ export function useLibrary() {
     []
   );
 
-  const visibleRecordings = useMemo(() => filterByView(recordings, view), [recordings, view]);
+  const source = view.kind === "archive" ? archivedRecordings : recordings;
+  const visibleRecordings = useMemo(() => filterByView(source, view), [source, view]);
 
   return {
     tasks,
@@ -280,6 +335,9 @@ export function useLibrary() {
     createTask,
     assignTask,
     renameRecording,
+    archiveRecording,
+    restoreRecording,
+    deleteRecording,
     renameSpeaker,
     saveSummary,
     saveNotes,

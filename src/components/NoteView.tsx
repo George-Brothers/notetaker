@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  Archive,
   Check,
   ChevronLeft,
   FileAudio,
@@ -21,7 +22,9 @@ import {
   Loader2,
   NotebookPen,
   RefreshCw,
+  RotateCcw,
   Sparkles,
+  Trash2,
   Wand2,
   X,
 } from "lucide-react";
@@ -61,6 +64,9 @@ export interface NoteViewProps {
   onSaveSummary: (id: string, summaryMd: string) => void;
   onRenameRecording: (id: string, title: string) => void;
   onAssignTask: (id: string, task: string) => void;
+  onArchiveRecording?: (id: string) => void;
+  onRestoreRecording?: (id: string) => void;
+  onDeleteRecording?: (id: string) => void;
   onSaveNotes: (id: string, notesMd: string) => Promise<void>;
   onSetTemplate: (id: string, template: string) => void;
   onToggleAction: (id: string, index: number, done: boolean) => void;
@@ -101,6 +107,9 @@ export function NoteView({
   onSaveSummary,
   onRenameRecording,
   onAssignTask,
+  onArchiveRecording = () => {},
+  onRestoreRecording = () => {},
+  onDeleteRecording = () => {},
   onSaveNotes,
   onSetTemplate,
   onToggleAction,
@@ -119,6 +128,7 @@ export function NoteView({
   const [summaryDraft, setSummaryDraft] = useState("");
   const [listenOpen, setListenOpen] = useState(false);
   const [track, setTrack] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // This hook belongs above the early returns — hooks cannot be conditional,
   // and the one player belongs to this note rather than the transcript tab.
@@ -131,6 +141,7 @@ export function NoteView({
     setSaveState("idle");
     setEditingSummary(false);
     setListenOpen(false);
+    setConfirmDelete(false);
     // Default to everyone else in a meeting. `audioTracks` includes only
     // tracks with actual audio, so a quiet system track is never chosen.
     const tracks = detail?.audioTracks ?? [];
@@ -257,26 +268,32 @@ export function NoteView({
               <span aria-hidden>·</span>
               <span>{roughDuration(rec.durationS)}</span>
               <span aria-hidden>·</span>
-              <label className="sr-only" htmlFor="note-task">
-                Task
-              </label>
-              <select
-                id="note-task"
-                value={rec.task ?? ""}
-                onChange={(e) => e.target.value && onAssignTask(rec.id, e.target.value)}
-                className="rounded border border-border bg-raised px-1.5 py-0.5 text-[12px] text-fg-muted focus:border-accent focus:outline-none"
-              >
-                <option value="">Unsorted</option>
-                {tasks.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
+              {rec.archived ? (
+                <span>Archived</span>
+              ) : (
+                <>
+                  <label className="sr-only" htmlFor="note-task">
+                    Task
+                  </label>
+                  <select
+                    id="note-task"
+                    value={rec.task ?? ""}
+                    onChange={(e) => e.target.value && onAssignTask(rec.id, e.target.value)}
+                    className="rounded border border-border bg-raised px-1.5 py-0.5 text-[12px] text-fg-muted focus:border-accent focus:outline-none"
+                  >
+                    <option value="">Unsorted</option>
+                    {tasks.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
               <StatusChip status={rec.status} error={rec.error} />
             </div>
 
-            {rec.suggestedTask && rec.task !== rec.suggestedTask && (
+            {!rec.archived && rec.suggestedTask && rec.task !== rec.suggestedTask && (
               <div className="mt-2 flex flex-wrap items-center gap-2 rounded-[var(--radius-control)] bg-sunken px-2.5 py-1.5">
                 <span className="text-[13px] text-fg-muted">
                   This looks like it belongs to{" "}
@@ -343,7 +360,7 @@ export function NoteView({
               </TabList>
 
               <div className="flex items-center gap-1.5">
-                <Popover>
+                {!rec.archived && <Popover>
                   <PopoverTrigger asChild>
                     <Button size="sm" variant="ghost">
                       <Wand2 size={13} />
@@ -370,14 +387,14 @@ export function NoteView({
                       </button>
                     ))}
                   </PopoverContent>
-                </Popover>
+                </Popover>}
 
-                <Tip label={processed ? "Rewrite the AI notes from your notes and the transcript" : "Process this recording now"}>
+                {!rec.archived && <Tip label={processed ? "Rewrite the AI notes from your notes and the transcript" : "Process this recording now"}>
                   <Button size="sm" variant="ghost" onClick={() => onProcessNow(rec.id)}>
                     <RefreshCw size={13} />
                     {processed ? "Re-enhance" : "Process now"}
                   </Button>
-                </Tip>
+                </Tip>}
 
                 <Button
                   size="sm"
@@ -399,8 +416,44 @@ export function NoteView({
                   <Sparkles size={13} />
                   Ask
                 </Button>
+
+                {rec.archived ? (
+                  <Button size="sm" variant="ghost" onClick={() => onRestoreRecording(rec.id)}>
+                    <RotateCcw size={13} />
+                    Restore
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="ghost" onClick={() => onArchiveRecording(rec.id)}>
+                    <Archive size={13} />
+                    Archive
+                  </Button>
+                )}
+
+                <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(true)}>
+                  <Trash2 size={13} />
+                  Delete
+                </Button>
               </div>
             </div>
+
+            {confirmDelete && (
+              <Notice tone="warn" className="mb-4 flex flex-wrap items-center gap-2">
+                <span>Delete “{title}” permanently? Its audio, transcript, and notes cannot be recovered.</span>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={() => {
+                    setConfirmDelete(false);
+                    onDeleteRecording(rec.id);
+                  }}
+                >
+                  Delete permanently
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(false)}>
+                  Keep it
+                </Button>
+              </Notice>
+            )}
 
             <TabPanel value="notes" className="focus:outline-none">
               <Notepad

@@ -61,6 +61,9 @@ pub struct RecordingRow {
     /// flag, not the text — the list shows a marker, and shipping every
     /// recording's full notes to render one icon would be wasteful.
     pub has_notes: bool,
+    /// Archived recordings are kept separately from active work and excluded
+    /// from search until restored.
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,6 +102,7 @@ pub struct RecordingDetail {
     /// whose system track was lost must not present a control that plays
     /// silence.
     pub audio_tracks: Vec<String>,
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -269,6 +273,14 @@ pub fn list_recordings(store: &Store) -> Result<Vec<RecordingRow>> {
     Ok(recs.iter().map(to_row).collect())
 }
 
+/// Archived recordings, newest first. They retain every audio and note file,
+/// but are intentionally absent from the active list.
+pub fn list_archived_recordings(store: &Store) -> Result<Vec<RecordingRow>> {
+    let mut recs = store.scan_archived()?;
+    recs.sort_by(|a, b| b.meta.created.cmp(&a.meta.created));
+    Ok(recs.iter().map(to_row).collect())
+}
+
 /// A single recording's full detail, including transcript/summary text. A
 /// recording that hasn't been processed yet (no `transcript.md`/
 /// `summary.md` on disk) returns empty strings for those, not an error.
@@ -297,6 +309,7 @@ pub fn get_recording(store: &Store, id: &str) -> Result<RecordingDetail> {
         notes_md: crate::notes::read(&rec.dir),
         template: rec.meta.template.clone(),
         audio_tracks: audio_tracks(&rec.dir),
+        archived: rec.archived,
     })
 }
 
@@ -436,6 +449,28 @@ pub fn assign_task(store: &Store, index: &mut Index, id: &str, task: &str) -> Re
     Ok(())
 }
 
+/// Archives a recording and removes its searchable row. The files are moved,
+/// not deleted, so Restore can put the exact same recording back.
+pub fn archive_recording(store: &Store, index: &mut Index, id: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    store.archive_recording(&rec)?;
+    index.remove(id)
+}
+
+pub fn restore_recording(store: &Store, index: &mut Index, id: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    let restored = store.restore_recording(&rec)?;
+    index.upsert(&restored)
+}
+
+/// Permanently deletes one recording folder. The UI must show an explicit
+/// confirmation first; this layer does not accept a path, only a known id.
+pub fn delete_recording(store: &Store, index: &mut Index, id: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    store.delete_recording(&rec)?;
+    index.remove(id)
+}
+
 /// Rewrites every occurrence of the speaker's current label (e.g.
 /// `**Speaker 1:**`) to the new name (e.g. `**Jamie:**`) in `transcript.md`,
 /// and records the mapping in `meta.speakers`.
@@ -489,6 +524,7 @@ fn find_by_id(store: &Store, id: &str) -> Result<RecordingRef> {
     store
         .scan()?
         .into_iter()
+        .chain(store.scan_archived()?)
         .find(|r| r.meta.id == id)
         .with_context(|| format!("no recording with id {id}"))
 }
@@ -511,6 +547,7 @@ fn to_row(rec: &RecordingRef) -> RecordingRow {
         error: rec.meta.error.clone(),
         capture_note: rec.meta.capture_note.clone(),
         has_notes: crate::notes::has_content(&crate::notes::read(&rec.dir)),
+        archived: rec.archived,
     }
 }
 
@@ -594,6 +631,39 @@ mod tests {
         store
             .create_recording(title, Mode::Meeting, created)
             .unwrap()
+    }
+
+    #[test]
+    fn archive_restore_and_delete_update_lists_and_search_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let rec = create(&s, "Budget sync");
+        fs::write(
+            rec.dir.join("transcript.md"),
+            "the quarterly budget is late",
+        )
+        .unwrap();
+        fs::write(rec.dir.join("notes.md"), "Ask finance about the variance.").unwrap();
+        let mut ix = Index::open(&dir.path().join("ix.sqlite")).unwrap();
+        ix.rebuild(&s).unwrap();
+        assert_eq!(ix.search("budget").unwrap().len(), 1);
+
+        archive_recording(&s, &mut ix, &rec.meta.id).unwrap();
+        assert!(list_recordings(&s).unwrap().is_empty());
+        let archived = list_archived_recordings(&s).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert!(archived[0].archived);
+        assert!(get_recording(&s, &rec.meta.id).unwrap().archived);
+        assert!(ix.search("budget").unwrap().is_empty());
+
+        restore_recording(&s, &mut ix, &rec.meta.id).unwrap();
+        assert!(!get_recording(&s, &rec.meta.id).unwrap().archived);
+        assert_eq!(ix.search("budget").unwrap().len(), 1);
+
+        delete_recording(&s, &mut ix, &rec.meta.id).unwrap();
+        assert!(list_recordings(&s).unwrap().is_empty());
+        assert!(ix.search("budget").unwrap().is_empty());
+        assert!(get_recording(&s, &rec.meta.id).is_err());
     }
 
     // --- rename_speaker -----------------------------------------------

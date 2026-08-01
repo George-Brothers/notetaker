@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 const TASKS_DIR: &str = "Tasks";
 const UNSORTED_DIR: &str = "Unsorted";
+const ARCHIVE_DIR: &str = "Archive";
 const META_FILE: &str = "meta.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +88,9 @@ pub struct RecordingRef {
     pub meta: Meta,
     pub dir: PathBuf,
     pub task: Option<String>, // task None = Unsorted
+    /// Archived recordings keep every file but stay out of the active library
+    /// and search index until restored.
+    pub archived: bool,
 }
 
 pub struct Store {
@@ -106,13 +110,14 @@ fn sanitize(title: &str) -> String {
 
 /// Read and parse the `meta.json` inside `dir`, deriving the enclosing
 /// `RecordingRef` (task = parent dir name if under `Tasks/`, else `None`).
-fn load_ref(dir: &Path, task: Option<String>) -> Result<RecordingRef> {
+fn load_ref(dir: &Path, task: Option<String>, archived: bool) -> Result<RecordingRef> {
     let raw = fs::read_to_string(dir.join(META_FILE))?;
     let meta: Meta = serde_json::from_str(&raw)?;
     Ok(RecordingRef {
         meta,
         dir: dir.to_path_buf(),
         task,
+        archived,
     })
 }
 
@@ -157,6 +162,7 @@ impl Store {
             meta,
             dir,
             task: None,
+            archived: false,
         };
         self.save_meta(&rec)?;
         Ok(rec)
@@ -177,7 +183,7 @@ impl Store {
 
         let unsorted = self.root.join(UNSORTED_DIR);
         for dir in list_subdirs(&unsorted)? {
-            match load_ref(&dir, None) {
+            match load_ref(&dir, None, false) {
                 Ok(r) => out.push(r),
                 Err(e) => log::warn!("skipping unreadable recording {}: {e}", dir.display()),
             }
@@ -190,13 +196,30 @@ impl Store {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             for dir in list_subdirs(&task_dir)? {
-                match load_ref(&dir, Some(task_name.clone())) {
+                match load_ref(&dir, Some(task_name.clone()), false) {
                     Ok(r) => out.push(r),
                     Err(e) => log::warn!("skipping unreadable recording {}: {e}", dir.display()),
                 }
             }
         }
 
+        Ok(out)
+    }
+
+    /// Archived recordings are intentionally a separate list: archive means
+    /// "keep this, but stop treating it as active work," not a softer spelling
+    /// of delete.
+    pub fn scan_archived(&self) -> Result<Vec<RecordingRef>> {
+        let mut out = Vec::new();
+        for dir in list_subdirs(&self.root.join(ARCHIVE_DIR))? {
+            match load_ref(&dir, None, true) {
+                Ok(r) => out.push(r),
+                Err(e) => log::warn!(
+                    "skipping unreadable archived recording {}: {e}",
+                    dir.display()
+                ),
+            }
+        }
         Ok(out)
     }
 
@@ -232,7 +255,7 @@ impl Store {
         fs::rename(&rec.dir, &dest)
             .with_context(|| format!("moving {} to {}", rec.dir.display(), dest.display()))?;
 
-        load_ref(&dest, Some(task))
+        load_ref(&dest, Some(task), false)
     }
 
     /// Retitles a recording: rewrites `meta.title` and renames the folder to
@@ -268,14 +291,59 @@ impl Store {
         }
 
         self.save_meta(&renamed)?;
-        load_ref(&renamed.dir, rec.task.clone())
+        load_ref(&renamed.dir, rec.task.clone(), rec.archived)
+    }
+
+    /// Moves an active recording into the library's Archive folder. This is a
+    /// rename on disk, so it is instant and reversible.
+    pub fn archive_recording(&self, rec: &RecordingRef) -> Result<RecordingRef> {
+        if rec.archived {
+            anyhow::bail!("this recording is already archived");
+        }
+        let archive = self.root.join(ARCHIVE_DIR);
+        fs::create_dir_all(&archive).with_context(|| format!("creating {}", archive.display()))?;
+        let name = rec
+            .dir
+            .file_name()
+            .context("recording dir has no file name")?;
+        let dest = unique_dir(&archive, &name.to_string_lossy());
+        fs::rename(&rec.dir, &dest)
+            .with_context(|| format!("archiving {} to {}", rec.dir.display(), dest.display()))?;
+        load_ref(&dest, None, true)
+    }
+
+    /// Restores an archived recording to Unsorted; filing it under a task is a
+    /// separate, deliberate action afterwards.
+    pub fn restore_recording(&self, rec: &RecordingRef) -> Result<RecordingRef> {
+        if !rec.archived {
+            anyhow::bail!("this recording is not archived");
+        }
+        let unsorted = self.root.join(UNSORTED_DIR);
+        fs::create_dir_all(&unsorted)
+            .with_context(|| format!("creating {}", unsorted.display()))?;
+        let name = rec
+            .dir
+            .file_name()
+            .context("recording dir has no file name")?;
+        let dest = unique_dir(&unsorted, &name.to_string_lossy());
+        fs::rename(&rec.dir, &dest)
+            .with_context(|| format!("restoring {} to {}", rec.dir.display(), dest.display()))?;
+        load_ref(&dest, None, false)
+    }
+
+    /// Permanently removes a recording only after the UI has obtained an
+    /// explicit confirmation. Kept here so no transport gets a shortcut that
+    /// could remove a folder outside this store.
+    pub fn delete_recording(&self, rec: &RecordingRef) -> Result<()> {
+        fs::remove_dir_all(&rec.dir)
+            .with_context(|| format!("permanently deleting {}", rec.dir.display()))
     }
 
     /// Re-reads a recording's `meta.json` from disk. Used after a stage has
     /// enriched the file (e.g. the pipeline writing `speakers`/`stages`) so a
     /// caller holding a pre-enrichment copy doesn't overwrite it.
     pub fn reload(&self, rec: &RecordingRef) -> Result<RecordingRef> {
-        load_ref(&rec.dir, rec.task.clone())
+        load_ref(&rec.dir, rec.task.clone(), rec.archived)
     }
 }
 
@@ -400,6 +468,43 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].meta.title, "Lecture 3");
         assert_eq!(s.list_tasks().unwrap(), vec!["Accounting 302"]);
+    }
+
+    #[test]
+    fn archive_restore_and_delete_keep_the_library_tree_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path());
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let rec = s
+            .create_recording("Keep this meeting", Mode::Meeting, created)
+            .unwrap();
+        fs::write(rec.dir.join("notes.md"), "Decision: ship it.").unwrap();
+
+        let archived = s.archive_recording(&rec).unwrap();
+        assert!(archived.archived);
+        assert!(archived.dir.starts_with(dir.path().join(ARCHIVE_DIR)));
+        assert_eq!(s.scan().unwrap().len(), 0, "archives are not active work");
+        assert_eq!(s.scan_archived().unwrap()[0].meta.id, rec.meta.id);
+        assert_eq!(
+            fs::read_to_string(archived.dir.join("notes.md")).unwrap(),
+            "Decision: ship it.",
+            "archiving must preserve the full recording folder"
+        );
+
+        let restored = s.restore_recording(&archived).unwrap();
+        assert!(!restored.archived);
+        assert!(restored.dir.starts_with(dir.path().join(UNSORTED_DIR)));
+        assert_eq!(s.scan_archived().unwrap().len(), 0);
+
+        let restored_dir = restored.dir.clone();
+        s.delete_recording(&restored).unwrap();
+        assert!(
+            !restored_dir.exists(),
+            "permanent deletion removes exactly one folder"
+        );
+        assert!(s.scan().unwrap().is_empty());
     }
 
     #[test]

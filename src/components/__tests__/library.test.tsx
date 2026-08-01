@@ -288,6 +288,37 @@ describe("library UI", () => {
     expect(api.renameRecording).not.toHaveBeenCalled();
   });
 
+  it("archives a meeting and shows archived meetings in their own view", async () => {
+    const archived = { ...RECORDINGS[0], archived: true } as RecordingRow;
+    vi.mocked(api.listArchivedRecordings).mockResolvedValue([archived]);
+
+    render(<App />);
+    const pane = await openRecording("Lecture 3: Depreciation");
+    fireEvent.click(within(pane).getByRole("button", { name: "Archive" }));
+    await waitFor(() => expect(api.archiveRecording).toHaveBeenCalledWith("rec-1"));
+    await waitFor(() => expect(screen.queryByRole("article", { name: "Recording" })).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    expect(await screen.findByText("Lecture 3: Depreciation")).toBeInTheDocument();
+  });
+
+  it("requires a second explicit choice before permanently deleting a meeting", async () => {
+    render(<App />);
+    const pane = await openRecording("Lecture 3: Depreciation");
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Delete" }));
+    expect(screen.getByText(/cannot be recovered/i)).toBeInTheDocument();
+    expect(api.deleteRecording).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Keep it" }));
+    expect(screen.queryByText(/cannot be recovered/i)).not.toBeInTheDocument();
+    expect(api.deleteRecording).not.toHaveBeenCalled();
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(api.deleteRecording).toHaveBeenCalledWith("rec-1"));
+  });
+
   it("debounces the search input before calling api.search", async () => {
     render(<App />);
     await screen.findByText("Zoom standup");

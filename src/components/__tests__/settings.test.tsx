@@ -88,6 +88,7 @@ const SETUP_WITHOUT_FOUND_MODELS: SetupStatus = {
 function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus; found?: FoundModel[]; setup?: SetupStatus } = {}) {
   vi.mocked(api.listTasks).mockResolvedValue([]);
   vi.mocked(api.listRecordings).mockResolvedValue([]);
+  vi.mocked(api.listArchivedRecordings).mockResolvedValue([]);
   vi.mocked(api.search).mockResolvedValue([]);
   vi.mocked(api.createTask).mockResolvedValue(undefined);
   vi.mocked(api.captureStatus).mockResolvedValue(IDLE_STATUS);
@@ -455,6 +456,19 @@ describe("First-run checklist", () => {
       within(card).getByText(/Nothing is transcribed until these are downloaded/i),
     ).toBeInTheDocument();
     expect(within(card).queryByText(/automatically in the background/i)).not.toBeInTheDocument();
+  });
+
+  it("recognizes speech models already on disk after restarting", async () => {
+    setupApi({
+      setup: { ...SETUP_WITHOUT_FOUND_MODELS, transcribing: true, missing: [], downloadBytes: 0 },
+    });
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+    const item = within(card).getByText("Download the speech models").closest("li") as HTMLElement;
+
+    await waitFor(() => expect(within(item).getByText("Done")).toBeInTheDocument());
+    expect(within(item).queryByRole("button", { name: "Download speech models" })).not.toBeInTheDocument();
+    expect(api.findExistingModels).not.toHaveBeenCalled();
   });
 
   it("offers a found model for explicit adoption instead of another download", async () => {

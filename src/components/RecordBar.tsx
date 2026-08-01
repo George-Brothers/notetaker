@@ -99,7 +99,7 @@ function LevelMeter({
         className="h-1 w-14 overflow-hidden rounded-full bg-sunken"
       >
         <span
-          className="block h-full rounded-full bg-ok transition-[width] duration-100"
+          className="block h-full rounded-full bg-ok transition-[width] duration-50 ease-linear"
           style={{ width: `${pct}%` }}
         />
       </span>

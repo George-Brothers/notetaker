@@ -90,14 +90,18 @@ const WAV_KEPT_NOTE: &str = "This recording is saved twice — a compressed copy
 /// File names inside the app's own data directory.
 const SETTINGS_FILE: &str = "settings.json";
 const INDEX_FILE: &str = "index.sqlite";
+/// Speech models are large, user-visible downloads. Keep them with the
+/// library, not in Tauri's disposable app data, so an app upgrade or reinstall
+/// never makes a person fetch gigabytes again.
+const MODELS_DIR: &str = "Models";
 
 /// How often the capture thread moves audio from the sources into their files.
 ///
 /// Sources buffer between reads, so this is a latency/wakeups trade-off rather
-/// than a correctness one: ten pumps a second keeps the record bar's level
-/// meters lively without waking the CPU constantly through an hour-long
-/// lecture.
-const PUMP_INTERVAL: Duration = Duration::from_millis(100);
+/// than a correctness one: twenty pumps a second makes the record bar track
+/// normal speech without a visibly delayed response, while still leaving the
+/// capture thread essentially idle between audio callbacks.
+const PUMP_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How long a free-space reading is reused before the volume is measured
 /// again.
@@ -155,6 +159,10 @@ pub const COMMANDS: &[Command] = &[
         args: &[],
     },
     Command {
+        name: "list_archived_recordings",
+        args: &[],
+    },
+    Command {
         name: "get_recording",
         args: &["id"],
     },
@@ -177,6 +185,18 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "rename_recording",
         args: &["id", "title"],
+    },
+    Command {
+        name: "archive_recording",
+        args: &["id"],
+    },
+    Command {
+        name: "restore_recording",
+        args: &["id"],
+    },
+    Command {
+        name: "delete_recording",
+        args: &["id"],
     },
     Command {
         name: "rename_speaker",
@@ -569,6 +589,31 @@ struct Inner {
     models_dir: PathBuf,
 }
 
+/// Moves the cache used by builds before persistent model storage existed.
+///
+/// Both locations are normally on the same user volume, so `rename` preserves
+/// the downloaded bytes without another multi-gigabyte copy. If someone chose
+/// a library on another drive, leave the old cache intact: it remains usable
+/// until they choose to download into their permanent library, rather than
+/// risking a slow partial migration at app startup.
+fn migrate_model_cache(old_dir: &Path, new_dir: &Path) {
+    if new_dir.exists() || !old_dir.is_dir() {
+        return;
+    }
+    match fs::rename(old_dir, new_dir) {
+        Ok(()) => log::info!(
+            "moved speech-model cache from {} to {}",
+            old_dir.display(),
+            new_dir.display()
+        ),
+        Err(e) => log::warn!(
+            "could not move old speech-model cache from {} to {}: {e}; keeping it in place",
+            old_dir.display(),
+            new_dir.display()
+        ),
+    }
+}
+
 impl Runtime {
     /// Opens (or creates) everything the app needs.
     ///
@@ -590,7 +635,7 @@ impl Runtime {
             .with_context(|| format!("creating app data dir {}", data_dir.display()))?;
 
         let settings_path = data_dir.join(SETTINGS_FILE);
-        let settings = api::get_settings(&settings_path)?;
+        let mut settings = api::get_settings(&settings_path)?;
 
         let root = if settings.storage_root.trim().is_empty() {
             default_root.to_path_buf()
@@ -600,13 +645,24 @@ impl Runtime {
         fs::create_dir_all(&root)
             .with_context(|| format!("creating storage root {}", root.display()))?;
 
+        // The old behavior did create the default folder, but left
+        // `settings.json` blank. That made Settings look unconfigured on every
+        // launch even though the app was already using a real folder.
+        if settings.storage_root.trim().is_empty() {
+            settings.storage_root = root.to_string_lossy().into_owned();
+            api::set_settings(&settings_path, &settings)?;
+        }
+
+        let models_dir = root.join(MODELS_DIR);
+        migrate_model_cache(&data_dir.join("models"), &models_dir);
+
         let index = Index::open(&data_dir.join(INDEX_FILE))?;
         let policy = build_policy(&probe, &settings);
 
         Ok(Runtime {
             inner: Arc::new(Inner {
                 disk: SysinfoDisk::new(&root),
-                models_dir: data_dir.join("models"),
+                models_dir,
                 store: Store::new(root),
                 index: Mutex::new(index),
                 settings_path,
@@ -664,6 +720,10 @@ impl Runtime {
 
     pub fn list_recordings(&self) -> Result<Vec<RecordingRow>> {
         api::list_recordings(&self.inner.store)
+    }
+
+    pub fn list_archived_recordings(&self) -> Result<Vec<RecordingRow>> {
+        api::list_archived_recordings(&self.inner.store)
     }
 
     pub fn get_recording(&self, id: &str) -> Result<RecordingDetail> {
@@ -795,6 +855,25 @@ impl Runtime {
         // wrapper exists.
         let rec = self.inner.find(id)?;
         self.inner.index_one(&rec)
+    }
+
+    /// Archives without losing a byte. Refused for a live recording for the
+    /// same reason renaming it is refused: capture owns that folder.
+    pub fn archive_recording(&self, id: &str) -> Result<()> {
+        self.inner.refuse_while_capturing(id, "archived")?;
+        api::archive_recording(&self.inner.store, &mut lock(&self.inner.index), id)
+    }
+
+    pub fn restore_recording(&self, id: &str) -> Result<()> {
+        self.inner.refuse_while_capturing(id, "restored")?;
+        api::restore_recording(&self.inner.store, &mut lock(&self.inner.index), id)
+    }
+
+    /// Permanently deletes only after the interface's explicit confirmation.
+    /// The id lookup stays inside the store so callers never supply a path.
+    pub fn delete_recording(&self, id: &str) -> Result<()> {
+        self.inner.refuse_while_capturing(id, "deleted")?;
+        api::delete_recording(&self.inner.store, &mut lock(&self.inner.index), id)
     }
 
     pub fn rename_speaker(&self, id: &str, key: &str, name: &str) -> Result<()> {
@@ -976,7 +1055,7 @@ impl Runtime {
     }
 
     /// Meter readings only. This skips elapsed-time and disk work because the
-    /// record bar reads it ten times per second.
+    /// record bar reads it twenty times per second.
     pub fn capture_levels(&self) -> CaptureLevels {
         let mut slot = lock(&self.inner.session);
         match slot.as_mut() {
@@ -3100,6 +3179,50 @@ mod tests {
     }
 
     #[test]
+    fn first_open_persists_and_creates_the_default_library_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Notetaker");
+        let rt = Runtime::open(
+            &dir.path().join("app"),
+            &root,
+            Box::new(FakeSources { secs: 0.1 }),
+            Arc::new(FakeProbe { state: None }),
+        )
+        .unwrap();
+
+        assert!(root.is_dir());
+        assert_eq!(
+            rt.get_settings().unwrap().storage_root,
+            root.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn existing_speech_models_move_out_of_disposable_app_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        let old_models = app.join("models");
+        fs::create_dir_all(&old_models).unwrap();
+        fs::write(old_models.join("already-downloaded.bin"), b"model bytes").unwrap();
+        let root = dir.path().join("Notetaker");
+
+        let rt = Runtime::open(
+            &app,
+            &root,
+            Box::new(FakeSources { secs: 0.1 }),
+            Arc::new(FakeProbe { state: None }),
+        )
+        .unwrap();
+
+        assert_eq!(rt.inner.models_dir, root.join(MODELS_DIR));
+        assert_eq!(
+            fs::read(root.join(MODELS_DIR).join("already-downloaded.bin")).unwrap(),
+            b"model bytes"
+        );
+        assert!(!old_models.exists());
+    }
+
+    #[test]
     fn set_auto_record_persists_one_apps_policy_without_touching_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let rt = runtime(dir.path(), 0.1);
@@ -3319,7 +3442,7 @@ mod tests {
             ("download_models", rt.download_models()),
             ("adopt_models", rt.adopt_models_from(&[])),
         ];
-        let called: Vec<&str> = fallible
+        let mut called: Vec<&str> = fallible
             .into_iter()
             .map(|(name, result)| {
                 result.unwrap_or_else(|e| panic!("{name} failed: {e:#}"));
@@ -3369,6 +3492,18 @@ mod tests {
             setup.waiting > 0,
             "two recordings were made above and neither can be processed"
         );
+
+        // Moving a meeting out of the live library must remove it from search
+        // until it is restored, and deleting operates only after that explicit
+        // archive/restore lifecycle has completed.
+        rt.archive_recording(&id).unwrap();
+        called.push("archive_recording");
+        assert_eq!(rt.list_archived_recordings().unwrap().len(), 1);
+        called.push("list_archived_recordings");
+        rt.restore_recording(&id).unwrap();
+        called.push("restore_recording");
+        rt.delete_recording(&id).unwrap();
+        called.push("delete_recording");
 
         // capture_status, pull_progress, detected_tier, log_path,
         // list_templates, ask_recording, setup_status, pause, resume, start,

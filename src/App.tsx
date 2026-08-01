@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
+import { useAutoUpdate } from "./hooks/useAutoUpdate";
 import { useTheme } from "./hooks/useTheme";
 import { Sidebar } from "./components/Sidebar";
 import { NoteView } from "./components/NoteView";
@@ -57,6 +58,10 @@ function App() {
   const [askOpen, setAskOpen] = useState(false);
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
   const [modelsMissing, setModelsMissing] = useState(false);
+
+  // Keep installed copies current without ever restarting during a recording.
+  // The updater itself verifies the signed artifact before installation.
+  useAutoUpdate(capture.status.state === "idle");
 
   const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
     setModelsMissing((setup?.missing.length ?? 0) > 0);
@@ -208,6 +213,9 @@ function App() {
               onSaveSummary={lib.saveSummary}
               onRenameRecording={lib.renameRecording}
               onAssignTask={lib.assignTask}
+              onArchiveRecording={lib.archiveRecording}
+              onRestoreRecording={lib.restoreRecording}
+              onDeleteRecording={lib.deleteRecording}
               onSaveNotes={lib.saveNotes}
               onSetTemplate={lib.setTemplate}
               onToggleAction={lib.toggleAction}

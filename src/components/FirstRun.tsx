@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, LANGUAGE_CHOICES } from "../lib/ipc";
-import type { FoundModel, OllamaStatus, PullProgress, Settings as SettingsData } from "../lib/ipc";
+import type { FoundModel, OllamaStatus, PullProgress, Settings as SettingsData, SetupStatus } from "../lib/ipc";
 
 export interface FirstRunProps {
   onDismiss: () => void;
@@ -144,6 +144,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [progress, setProgress] = useState<PullProgress[]>([]);
   const [foundModels, setFoundModels] = useState<FoundModel[]>([]);
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [pulling, setPulling] = useState(false);
   const [downloadingModels, setDownloadingModels] = useState(false);
   const [adoptingModels, setAdoptingModels] = useState(false);
@@ -164,6 +165,12 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
     } catch (err) {
       setLoadError(describeError(err));
     }
+    try {
+      const next = await api.setupStatus();
+      setSetup(next ?? null);
+    } catch (err) {
+      setLoadError(describeError(err));
+    }
   }, []);
 
   useEffect(() => {
@@ -177,8 +184,18 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
       }
     })();
     api
-      .findExistingModels()
-      .then((found) => setFoundModels(found ?? []))
+      .setupStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setSetup(status ?? null);
+        // Looking through download folders only helps when models are actually
+        // absent. A completed setup used to scan needlessly and, worse, the UI
+        // then looked "not started" because it only knew in-memory progress.
+        if ((status?.missing.length ?? 0) === 0) return;
+        return api.findExistingModels().then((found) => {
+          if (!cancelled) setFoundModels(found ?? []);
+        });
+      })
       .catch((err) => {
         if (!cancelled) setLoadError(describeError(err));
       });
@@ -252,11 +269,11 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
 
   const speechEntries = progress.filter((p) => p.kind === "speech");
   const speechStatus: ItemStatus =
-    speechEntries.length === 0
-      ? "not-started"
-      : speechEntries.every((p) => p.done && !p.error)
-        ? "done"
-        : "in-progress";
+    setup?.missing.length === 0
+      ? "done"
+      : speechEntries.some((p) => !p.done)
+        ? "in-progress"
+        : "not-started";
 
   const ollamaEntry = settings
     ? progress.find((p) => p.kind === "ollama" && p.name === settings.llmModel)

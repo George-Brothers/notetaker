@@ -248,6 +248,17 @@ impl Index {
         Ok(())
     }
 
+    /// Removes a recording from both searchable tables after archiving or
+    /// deletion. Rebuilding would eventually do this too, but it must vanish
+    /// immediately from a search result that is already on screen.
+    pub fn remove(&mut self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM recordings WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM recordings_fts WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         let match_expr = fts_phrase(query);
         let mut stmt = self.conn.prepare(&format!(

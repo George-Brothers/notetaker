@@ -60,6 +60,11 @@ fn list_recordings(rt: State<'_, Runtime>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn list_archived_recordings(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "list_archived_recordings", json!({}))
+}
+
+#[tauri::command]
 fn get_recording(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
     call(&rt, "get_recording", json!({ "id": id }))
 }
@@ -91,6 +96,21 @@ fn assign_task(rt: State<'_, Runtime>, id: String, task: String) -> Result<Value
 #[tauri::command]
 fn rename_recording(rt: State<'_, Runtime>, id: String, title: String) -> Result<Value, String> {
     call(&rt, "rename_recording", json!({ "id": id, "title": title }))
+}
+
+#[tauri::command]
+fn archive_recording(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "archive_recording", json!({ "id": id }))
+}
+
+#[tauri::command]
+fn restore_recording(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "restore_recording", json!({ "id": id }))
+}
+
+#[tauri::command]
+fn delete_recording(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "delete_recording", json!({ "id": id }))
 }
 
 #[tauri::command]
@@ -314,12 +334,16 @@ pub fn run() {
             list_tasks,
             create_task,
             list_recordings,
+            list_archived_recordings,
             get_recording,
             search,
             process_now,
             update_summary,
             assign_task,
             rename_recording,
+            archive_recording,
+            restore_recording,
+            delete_recording,
             rename_speaker,
             save_notes,
             list_templates,
