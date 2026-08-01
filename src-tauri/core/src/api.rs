@@ -1090,7 +1090,10 @@ mod tests {
         }
         // Sanity-check: the resulting file is around 44 bytes (WAV header only).
         let size = std::fs::metadata(&wav_path).unwrap().len();
-        assert!(size > 40 && size < 50, "header-only WAV is ~44 bytes, got {size}");
+        assert!(
+            size > 40 && size < 50,
+            "header-only WAV is ~44 bytes, got {size}"
+        );
 
         // Add a mic track so the result is not empty (the test still works if
         // there is nothing left, but the message is clearer this way).
@@ -1138,8 +1141,7 @@ mod tests {
             sample_format: hound::SampleFormat::Int,
         };
         {
-            let mut writer =
-                hound::WavWriter::create(rec.dir.join("audio-mic.wav"), spec).unwrap();
+            let mut writer = hound::WavWriter::create(rec.dir.join("audio-mic.wav"), spec).unwrap();
             writer.write_sample(0i16).unwrap();
             writer.finalize().unwrap();
         }
@@ -1167,8 +1169,11 @@ mod tests {
         // A genuinely corrupt file: garbage bytes, not a valid WAV at all.
         // `hound::WavReader::open()` will fail, and we should treat it as not
         // a track without panicking or propagating the error.
-        std::fs::write(rec.dir.join("audio-mic.wav"), b"this is not a wav file at all")
-            .unwrap();
+        std::fs::write(
+            rec.dir.join("audio-mic.wav"),
+            b"this is not a wav file at all",
+        )
+        .unwrap();
 
         // Add a system track so the result is not empty (the test still works
         // if there is nothing left, but the message is clearer this way).
