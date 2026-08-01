@@ -800,7 +800,15 @@ impl Runtime {
     // --- settings --------------------------------------------------------
 
     pub fn get_settings(&self) -> Result<Settings> {
-        api::get_settings(&self.inner.settings_path)
+        let started = Instant::now();
+        log::info!("get_settings: entered");
+        let result = api::get_settings(&self.inner.settings_path);
+        log::info!(
+            "get_settings: exited after {} ms ({})",
+            started.elapsed().as_millis(),
+            if result.is_ok() { "ok" } else { "error" }
+        );
+        result
     }
 
     /// Persists settings and rebuilds everything that holds a snapshot of them.
@@ -979,8 +987,18 @@ impl Runtime {
     // --- local models -----------------------------------------------------
 
     pub fn ollama_status(&self) -> Result<OllamaStatus> {
-        let settings = self.get_settings()?;
-        Ok(ollama::status(&settings.llm_base_url, &settings.llm_model))
+        let started = Instant::now();
+        log::info!("ollama_status: entered");
+        let result = (|| {
+            let settings = self.get_settings()?;
+            Ok(ollama::status(&settings.llm_base_url, &settings.llm_model))
+        })();
+        log::info!(
+            "ollama_status: exited after {} ms ({})",
+            started.elapsed().as_millis(),
+            if result.is_ok() { "ok" } else { "error" }
+        );
+        result
     }
 
     /// Starts a model download in the background and returns immediately;
@@ -1151,6 +1169,8 @@ impl Runtime {
     /// The hardware tier detected for this machine, as the same string
     /// `Settings::tier_override` accepts.
     pub fn detected_tier(&self) -> String {
+        let started = Instant::now();
+        log::info!("detected_tier: entered");
         let mut system = sysinfo::System::new();
         system.refresh_memory();
         let ram_gb = system.total_memory() / 1_073_741_824;
@@ -1162,12 +1182,17 @@ impl Runtime {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        tier_name(detect_tier(
+        let tier = tier_name(detect_tier(
             ram_gb,
             cores,
             cfg!(target_os = "macos") && cfg!(target_arch = "aarch64"),
         ))
-        .to_string()
+        .to_string();
+        log::info!(
+            "detected_tier: exited after {} ms (ok)",
+            started.elapsed().as_millis()
+        );
+        tier
     }
 
     // --- scheduler --------------------------------------------------------
