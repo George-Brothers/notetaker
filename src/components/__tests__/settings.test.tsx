@@ -406,6 +406,16 @@ describe("First-run checklist", () => {
     expect(languageIndex).toBeLessThan(downloadIndex);
   });
 
+  it("says nothing is transcribed until the models are downloaded", async () => {
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+
+    expect(
+      within(card).getByText(/Nothing is transcribed until these are downloaded/i),
+    ).toBeInTheDocument();
+    expect(within(card).queryByText(/automatically in the background/i)).not.toBeInTheDocument();
+  });
+
   it("choosing a language on first run saves it without leaving the checklist", async () => {
     render(<App />);
     const card = await screen.findByRole("region", { name: "Getting started" });

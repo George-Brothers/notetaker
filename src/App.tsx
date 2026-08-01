@@ -21,7 +21,7 @@ import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { IconButton, Notice, TooltipProvider } from "./components/ui";
-import { api, type CaptureStatus } from "./lib/ipc";
+import { api, type CaptureStatus, type SetupStatus } from "./lib/ipc";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
 
@@ -56,6 +56,11 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
+  const [modelsMissing, setModelsMissing] = useState(false);
+
+  const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
+    setModelsMissing((setup?.missing.length ?? 0) > 0);
+  }, []);
 
   function dismissFirstRun() {
     setFirstRunDismissed(true);
@@ -138,7 +143,7 @@ function App() {
         {capture.captureError && (
           <Notice className="mx-3 mt-2 shrink-0">{capture.captureError}</Notice>
         )}
-        <SetupNotice onOpenSettings={() => setSettingsOpen(true)} />
+        <SetupNotice onOpenSettings={() => setSettingsOpen(true)} onStatus={observeSetupStatus} />
         {processBlocked && (
           <Notice className="mx-3 mt-2 shrink-0">
             {processBlocked}{" "}
@@ -186,6 +191,7 @@ function App() {
             onSearch={lib.search}
             searchResults={lib.searchResults}
             onOpenPalette={() => setPaletteOpen(true)}
+            modelsMissing={modelsMissing}
           />
 
           <main className={lib.selectedId ? "flex min-w-0 flex-1" : "hidden min-w-0 flex-1 md:flex"}>

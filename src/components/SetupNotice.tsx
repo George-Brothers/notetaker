@@ -50,19 +50,28 @@ export function setupMessage(status: SetupStatus | null): string | null {
   return `Recording works, but nothing is being transcribed yet — the speech models aren't downloaded (${size}).${waiting}`;
 }
 
-export function SetupNotice({ onOpenSettings }: { onOpenSettings?: () => void }) {
+export function SetupNotice({
+  onOpenSettings,
+  onStatus,
+}: {
+  onOpenSettings?: () => void;
+  onStatus?: (status: SetupStatus | null) => void;
+}) {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [hidden, setHidden] = useState(false);
   const [starting, setStarting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await api.setupStatus());
+      const next = await api.setupStatus();
+      setStatus(next);
+      onStatus?.(next);
     } catch {
       // A status check that cannot run is not worth interrupting anyone over.
       setStatus(null);
+      onStatus?.(null);
     }
-  }, []);
+  }, [onStatus]);
 
   useEffect(() => {
     void refresh();

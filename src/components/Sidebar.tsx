@@ -42,6 +42,8 @@ export interface SidebarProps {
   onSearch: (q: string) => void;
   searchResults: SearchHit[] | null;
   onOpenPalette: () => void;
+  /** True while a queued recording cannot process because speech models are absent. */
+  modelsMissing?: boolean;
   /** Layout only — the shell decides whether the rail is showing. */
   className?: string;
 }
@@ -98,10 +100,12 @@ function RecordingItem({
   row,
   selected,
   onSelect,
+  modelsMissing,
 }: {
   row: RecordingRow;
   selected: boolean;
   onSelect: () => void;
+  modelsMissing: boolean;
 }) {
   return (
     <button
@@ -141,6 +145,9 @@ function RecordingItem({
       {row.status === "failed" && row.error && (
         <span className="text-[11px] leading-snug text-error">{row.error}</span>
       )}
+      {row.status === "queued" && modelsMissing && (
+        <span className="text-[11px] leading-snug text-fg-muted">Waiting on the speech models</span>
+      )}
     </button>
   );
 }
@@ -157,6 +164,7 @@ export function Sidebar({
   onSearch,
   searchResults,
   onOpenPalette,
+  modelsMissing = false,
   className,
 }: SidebarProps) {
   const [tasksOpen, setTasksOpen] = useState(true);
@@ -361,6 +369,7 @@ export function Sidebar({
                             row={row}
                             selected={row.id === selectedId}
                             onSelect={() => onSelectRecording(row.id)}
+                            modelsMissing={modelsMissing}
                           />
                         </li>
                       ))}

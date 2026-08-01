@@ -295,7 +295,8 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
               </button>
               {speechEntries.length === 0 && (
                 <p className="first-run__item-hint">
-                  Happens automatically in the background — or download now.
+                  Nothing is transcribed until these are downloaded — about 1.9 GB. It only happens
+                  when you press the button.
                 </p>
               )}
             </>
