@@ -1,0 +1,111 @@
+name: Release desktop app
+
+# A release is deliberate: merging a PR does not publish it. Pushing a v* tag
+# builds the Windows installer, signs its update metadata, and makes it the
+# GitHub Release that installed copies query from Settings.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    name: Signed Windows release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: windows-release
+          prefix-key: v2-notetaker-release
+          cache-directories: |
+            ~/AppData/Local/sherpa-rs
+
+      - name: Install LLVM for bindgen
+        run: choco install llvm --no-progress -y
+      - name: Point bindgen at libclang
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      # The sherpa build script copies native runtime libraries; refreshing its
+      # crate avoids a stale cache producing a package without them.
+      - name: Restore sherpa runtime libraries
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          cargo clean -p sherpa-rs-sys || true
+          cargo clean -p sherpa-rs-sys --release || true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # App-local MSVC libraries make a fresh Windows installation work too.
+      # Tauri validates bundle resources at compile time, so copy them before
+      # compiling the app.
+      - name: Put the MSVC runtime beside the app
+        shell: pwsh
+        run: |
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -property installationPath
+          if (-not $vs) { throw "vswhere found no Visual Studio installation" }
+          $version = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt").Trim()
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\$version\x64\Microsoft.VC*.CRT" -Directory | Select-Object -First 1
+          if (-not $crt) { throw "no x64 MSVC runtime found" }
+          New-Item -ItemType Directory -Force -Path 'src-tauri/target/release' | Out-Null
+          Copy-Item "$($crt.FullName)\*.dll" 'src-tauri/target/release' -Force
+
+      - name: Compile release dependencies
+        working-directory: src-tauri
+        run: |
+          cargo build --release -p notetaker-core
+          cargo build --release -p notetaker
+
+      - name: Build signed updater artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm tauri build
+
+      - name: Write the signed update manifest
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis/*.exe' | Select-Object -First 1
+          if (-not $installer) { throw "no NSIS installer was produced" }
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path $signaturePath)) { throw "no updater signature found for $($installer.Name)" }
+          $signature = (Get-Content $signaturePath -Raw).Trim()
+          $release = @{
+            version = $env:RELEASE_TAG.TrimStart('v')
+            notes = 'See the release notes on GitHub.'
+            pub_date = (Get-Date).ToUniversalTime().ToString('o')
+            platforms = @{
+              'windows-x86_64' = @{
+                signature = $signature
+                url = "https://github.com/George-Brothers/notetaker/releases/download/$env:RELEASE_TAG/$($installer.Name)"
+              }
+            }
+          }
+          $release | ConvertTo-Json -Depth 5 | Set-Content 'latest.json' -NoNewline
+          Get-Content 'latest.json'
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sig
+            latest.json

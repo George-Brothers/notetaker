@@ -6,8 +6,10 @@ import { api } from "../../lib/ipc";
 import { applyIpcDefaults } from "../../test/ipcMock";
 import type { CaptureStatus, FoundModel, OllamaStatus, PullProgress, Settings, SetupStatus } from "../../lib/ipc";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { checkForUpdate, installUpdate } from "../../lib/updater";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
+vi.mock("../../lib/updater", () => ({ checkForUpdate: vi.fn(), installUpdate: vi.fn() }));
 
 vi.mock("../../lib/ipc", async (importOriginal) => {
   // Keys derived from the real contract, so adding a command to ipc.ts can
@@ -118,6 +120,8 @@ beforeEach(() => {
   applyIpcDefaults();
   localStorage.clear();
   setupApi();
+  vi.mocked(checkForUpdate).mockResolvedValue({ kind: "unavailable" });
+  vi.mocked(installUpdate).mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -126,6 +130,32 @@ afterEach(() => {
 });
 
 describe("Settings screen", () => {
+  it("checks for a desktop update only when asked", async () => {
+    vi.mocked(checkForUpdate).mockResolvedValue({ kind: "current" });
+    const dialog = await openSettings();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check for updates" }));
+
+    await waitFor(() => expect(checkForUpdate).toHaveBeenCalledOnce());
+    expect(within(dialog).getByText("You’re up to date.")).toBeInTheDocument();
+  });
+
+  it("downloads a found update and restarts when requested", async () => {
+    const update = {
+      version: "0.1.2",
+      body: "Faster recording meter.",
+      downloadAndInstall: vi.fn(),
+    };
+    vi.mocked(checkForUpdate).mockResolvedValue({ kind: "available", update });
+    const dialog = await openSettings();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check for updates" }));
+    expect(await within(dialog).findByText("Version 0.1.2 is ready.")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Download and restart" }));
+
+    await waitFor(() => expect(installUpdate).toHaveBeenCalledWith(update, expect.any(Function)));
+  });
+
   it("loads and displays the current settings when opened", async () => {
     const dialog = await openSettings();
     // Called at least once by Settings itself (the first-run card, mounted

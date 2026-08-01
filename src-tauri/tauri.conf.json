@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Notetaker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.georgebrothers.notetaker",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -31,6 +31,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "dmg",
       "app",
@@ -46,5 +47,16 @@
     ],
     "shortDescription": "A fully local notetaker",
     "longDescription": "Records your meetings and classes, transcribes and summarizes them on this computer, and never sends anything anywhere."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ4MTQ1RkE3Njc3OTE2QUQKUldTdEZubG5wMThVU05CUzBtWlFjM2F5aXRxNEYrUzBmVHNzS3dSVlUwL0ZUN3hmTXJ5RDhoWVYK",
+      "endpoints": [
+        "https://github.com/George-Brothers/notetaker/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

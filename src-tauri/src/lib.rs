@@ -293,6 +293,8 @@ fn open_runtime(app_dir: &Path) -> anyhow::Result<Runtime> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let app_dir = app.path().app_data_dir()?;
             logging::install(&app_dir);

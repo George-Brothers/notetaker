@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, LANGUAGE_CHOICES } from "../lib/ipc";
+import { checkForUpdate, installUpdate } from "../lib/updater";
+import type { PendingUpdate, UpdateProgress } from "../lib/updater";
 import type {
   AutoRecordPolicy,
   OllamaStatus,
@@ -94,6 +96,11 @@ export function Settings({ onClose }: SettingsProps) {
   const [progress, setProgress] = useState<PullProgress[]>([]);
   const [pulling, setPulling] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [update, setUpdate] = useState<PendingUpdate | null>(null);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
 
   const [storageDraft, setStorageDraft] = useState("");
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
@@ -204,6 +211,42 @@ export function Settings({ onClose }: SettingsProps) {
     } catch (err) {
       setLoadError(describeError(err));
       setPulling(false);
+    }
+  }
+
+  async function handleCheckForUpdate() {
+    setCheckingUpdate(true);
+    setUpdate(null);
+    setUpdateProgress(null);
+    setUpdateMessage(null);
+    try {
+      const result = await checkForUpdate();
+      if (result.kind === "available") {
+        setUpdate(result.update);
+      } else if (result.kind === "current") {
+        setUpdateMessage("You’re up to date.");
+      } else {
+        setUpdateMessage("Updates are available in the installed desktop app.");
+      }
+    } catch (err) {
+      setUpdateMessage(`Couldn’t check for updates: ${describeError(err)}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!update) return;
+    setInstallingUpdate(true);
+    setUpdateMessage("Downloading update…");
+    try {
+      await installUpdate(update, setUpdateProgress);
+      // `relaunch` normally closes this window. This is a useful fallback if
+      // the platform takes a moment before it exits.
+      setUpdateMessage("Update installed. Restarting Notetaker…");
+    } catch (err) {
+      setUpdateMessage(`Couldn’t install the update: ${describeError(err)}`);
+      setInstallingUpdate(false);
     }
   }
 
@@ -571,6 +614,52 @@ export function Settings({ onClose }: SettingsProps) {
               </section>
             </>
           )}
+
+          <section className="settings-section" aria-labelledby="settings-updates-heading">
+            <h3 id="settings-updates-heading">Updates</h3>
+            <p className="settings-hint">
+              Check for a signed Notetaker update. Nothing is downloaded until you choose to install it.
+            </p>
+            <div className="settings-update">
+              <button type="button" onClick={() => void handleCheckForUpdate()} disabled={checkingUpdate || installingUpdate}>
+                {checkingUpdate ? "Checking for updates…" : "Check for updates"}
+              </button>
+              {update && (
+                <div className="settings-update__available">
+                  <p role="status">Version {update.version} is ready.</p>
+                  {update.body && <p className="settings-hint">{update.body}</p>}
+                  <button type="button" onClick={() => void handleInstallUpdate()} disabled={installingUpdate}>
+                    {installingUpdate ? "Downloading update…" : "Download and restart"}
+                  </button>
+                </div>
+              )}
+              {updateProgress && (
+                <div className="progress-bar" aria-live="polite">
+                  <span className="progress-bar__label">
+                    {updateProgress.total
+                      ? `${Math.min(100, Math.round((updateProgress.received / updateProgress.total) * 100))}% downloaded`
+                      : "Downloading update…"}
+                  </span>
+                  {updateProgress.total && (
+                    <span
+                      className="progress-bar__track"
+                      role="progressbar"
+                      aria-label="Update download progress"
+                      aria-valuenow={Math.min(100, Math.round((updateProgress.received / updateProgress.total) * 100))}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                    >
+                      <span
+                        className="progress-bar__fill"
+                        style={{ width: `${Math.min(100, (updateProgress.received / updateProgress.total) * 100)}%` }}
+                      />
+                    </span>
+                  )}
+                </div>
+              )}
+              {updateMessage && <p className="settings-hint settings-update__message" role="status">{updateMessage}</p>}
+            </div>
+          </section>
         </div>
       </div>
     </div>
