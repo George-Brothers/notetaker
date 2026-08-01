@@ -19,6 +19,8 @@
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -36,13 +38,21 @@ const PULL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The executable's name, looked up on `PATH` to tell "installed but not
 /// running" apart from "not installed".
+#[cfg(windows)]
+const BINARY_NAME: &str = "ollama.exe";
+#[cfg(not(windows))]
 const BINARY_NAME: &str = "ollama";
+
+/// System-wide Windows installer location, which is not necessarily on `PATH`.
+#[cfg(windows)]
+const EXTRA_INSTALL_LOCATIONS: &[&str] = &[r"C:\Program Files\Ollama\ollama.exe"];
 
 /// Places Ollama lands that are not necessarily on `PATH`. The macOS app
 /// bundle keeps its CLI inside itself and only symlinks it into
 /// `/usr/local/bin` once the user accepts the "install command line tools"
 /// prompt — so the bundle existing is a real "installed" signal that a `PATH`
 /// scan alone would miss.
+#[cfg(not(windows))]
 const EXTRA_INSTALL_LOCATIONS: &[&str] = &[
     "/Applications/Ollama.app",
     "/usr/local/bin/ollama",
@@ -69,7 +79,7 @@ pub struct OllamaStatus {
     pub models: Vec<String>,
     /// Whether the model the app is configured to use is among `models`.
     pub model_ready: bool,
-    /// `Some` only when Ollama is not installed at all: what to do about it.
+    /// `Some` with the next action when Ollama is not currently answering.
     pub install_hint: Option<String>,
 }
 
@@ -159,11 +169,7 @@ pub fn status(base_url: &str, wanted_model: &str) -> OllamaStatus {
         running,
         models,
         model_ready,
-        install_hint: if installed {
-            None
-        } else {
-            Some(INSTALL_HINT.to_string())
-        },
+        install_hint: hint(installed, running),
     }
 }
 
@@ -371,9 +377,34 @@ fn binary_present() -> bool {
     if on_path(std::env::var_os("PATH").as_deref()) {
         return true;
     }
-    EXTRA_INSTALL_LOCATIONS
+    if EXTRA_INSTALL_LOCATIONS
         .iter()
         .any(|p| Path::new(p).exists())
+    {
+        return true;
+    }
+
+    #[cfg(windows)]
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local_app_data)
+            .join("Programs")
+            .join("Ollama")
+            .join(BINARY_NAME)
+            .is_file();
+    }
+
+    false
+}
+
+fn hint(installed: bool, running: bool) -> Option<String> {
+    match (installed, running) {
+        (_, true) => None,
+        (true, false) => Some(
+            "Ollama is installed but not running. Open it and summaries will start working — nothing else needs setting up."
+                .to_string(),
+        ),
+        (false, false) => Some(INSTALL_HINT.to_string()),
+    }
 }
 
 /// Scans a `PATH`-shaped variable for an executable named `ollama`. Split out
@@ -439,9 +470,9 @@ mod tests {
         // Whether the binary happens to exist on the test machine is not ours
         // to assert, but the hint must track it exactly.
         assert_eq!(
-            s.installed,
-            s.install_hint.is_none(),
-            "install_hint is present exactly when Ollama is not installed"
+            s.install_hint,
+            hint(s.installed, false),
+            "a stopped Ollama should receive the appropriate next-step guidance"
         );
     }
 
@@ -547,9 +578,42 @@ mod tests {
     // --- binary detection -----------------------------------------------
 
     #[test]
+    fn the_binary_name_carries_the_platform_extension() {
+        if cfg!(windows) {
+            assert_eq!(BINARY_NAME, "ollama.exe");
+        } else {
+            assert_eq!(BINARY_NAME, "ollama");
+        }
+    }
+
+    #[test]
+    fn an_installed_but_stopped_ollama_is_told_to_start_not_to_download() {
+        let hint = hint(true, false).expect("a stopped Ollama needs a sentence");
+        assert!(
+            hint.contains("not running"),
+            "must say it is not running: {hint}"
+        );
+        assert!(
+            !hint.to_lowercase().contains("download"),
+            "must not send someone who has it to download it: {hint}"
+        );
+    }
+
+    #[test]
+    fn a_running_ollama_needs_no_hint_at_all() {
+        assert_eq!(hint(true, true), None);
+    }
+
+    #[test]
+    fn an_absent_ollama_still_says_where_to_get_it() {
+        let hint = hint(false, false).expect("an absent Ollama needs a sentence");
+        assert!(hint.contains("ollama.com/download"));
+    }
+
+    #[test]
     fn on_path_finds_an_executable_ollama_in_a_path_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("ollama");
+        let binary = dir.path().join(BINARY_NAME);
         std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
         #[cfg(unix)]
         {

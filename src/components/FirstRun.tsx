@@ -306,10 +306,10 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         </ChecklistItem>
 
         <ChecklistItem index={4} title="Install Ollama and download the summary model" status={ollamaItemStatus}>
-          {ollama && !ollama.installed && ollama.installHint && (
+          {ollama?.installHint && (
             <p className="first-run__item-hint">{ollama.installHint}</p>
           )}
-          {ollama?.installed && !ollama.modelReady && settings && (
+          {ollama?.running && !ollama.modelReady && settings && (
             <>
               <button type="button" onClick={handlePull} disabled={pulling}>
                 Pull the summary model

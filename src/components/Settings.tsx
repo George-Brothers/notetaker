@@ -379,10 +379,10 @@ export function Settings({ onClose }: SettingsProps) {
                       {ollamaStatusLabel(ollama)}
                     </span>
                   </p>
-                  {ollama && !ollama.installed && ollama.installHint && (
+                  {ollama?.installHint && (
                     <p className="settings-hint settings-hint--action">{ollama.installHint}</p>
                   )}
-                  {ollama?.installed && (
+                  {ollama?.running && (
                     <div className="settings-pull">
                       <button type="button" onClick={handlePull} disabled={pulling}>
                         {ollama.modelReady ? "Pull again" : "Pull model"}

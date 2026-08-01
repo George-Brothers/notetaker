@@ -59,6 +59,14 @@ const OLLAMA_NEEDS_MODEL: OllamaStatus = {
   installHint: null,
 };
 
+const OLLAMA_STOPPED: OllamaStatus = {
+  installed: true,
+  running: false,
+  models: [],
+  modelReady: false,
+  installHint: "Ollama is installed but not running. Open it and summaries will start working — nothing else needs setting up.",
+};
+
 const OLLAMA_READY: OllamaStatus = {
   installed: true,
   running: true,
@@ -294,6 +302,15 @@ describe("Settings screen", () => {
     expect(within(dialog).queryByRole("button", { name: /pull/i })).not.toBeInTheDocument();
   });
 
+  it("tells someone whose Ollama is stopped to open it, not to download it", async () => {
+    setupApi({ ollama: OLLAMA_STOPPED });
+    const dialog = await openSettings();
+
+    expect(await within(dialog).findByText(OLLAMA_STOPPED.installHint as string)).toBeInTheDocument();
+    expect(within(dialog).getByText("Installed, not running")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /pull/i })).not.toBeInTheDocument();
+  });
+
   it("shows Ollama as ready when running with the configured model present", async () => {
     setupApi({ ollama: OLLAMA_READY });
     const dialog = await openSettings();
@@ -360,6 +377,15 @@ describe("First-run checklist", () => {
       .getByText("Install Ollama and download the summary model")
       .closest("li") as HTMLElement;
     await waitFor(() => expect(within(item).getByText("Done")).toBeInTheDocument());
+  });
+
+  it("tells someone whose Ollama is stopped to open it", async () => {
+    setupApi({ ollama: OLLAMA_STOPPED });
+    render(<App />);
+    const card = await screen.findByRole("region", { name: "Getting started" });
+
+    expect(await within(card).findByText(OLLAMA_STOPPED.installHint as string)).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /pull/i })).not.toBeInTheDocument();
   });
 
   it("asks which languages you speak before offering to download anything", async () => {
