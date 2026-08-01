@@ -37,7 +37,7 @@ He answered four questions on 2026-07-30. His answers are the spec.
 | # | Ask | State |
 |---|---|---|
 | 1 | Never block; be honest about what won't work | **Done**, shipped |
-| 2 | Playback on every recording, processed or not | Not started |
+| 2 | Playback on every recording, processed or not | **Done** |
 | 3 | Settings — all four gaps | Not started |
 | 4 | Detect existing Ollama, let him pick the model | Not started |
 | 5 | Processing automatic + manual button | Design already correct; only honesty was missing (#1) |
@@ -70,17 +70,18 @@ is the entire feature, so `SetupNotice.test.ts` tests the wording.
 
 ### 2. Playback on every recording
 
-He was explicit: a player at the top of **any** recording, whether or not it has
-been transcribed, so raw audio is listenable the second recording stops. He also
-liked a play button on each library row.
+**Done.** The player itself was never broken: it lived below
+`TranscriptPanel`'s no-segments guard, exactly as this handover suspected. An
+unprocessed recording therefore had audio on disk but no route to play it.
+`NoteView` now owns the single player, which opens from the Listen toolbar
+control (or automatically on the Transcript tab); the transcript consumes that
+same player for timestamp seeking and active-line highlighting.
 
-There *is* a working player — it was verified in a browser against the served UI,
-click-to-seek and line highlighting and all. The bug is almost certainly that it
-is reachable only through the transcript view, so an unprocessed recording has no
-route to it. **Confirm that before building anything**; it may be a five-line fix
-rather than a feature. `audio_path` is already a wired command and
-`lib/transport.ts` already owns `audioSrc`, which is the one place the desktop
-and served transports genuinely differ.
+The work also found a second cause of apparent silence. `audio_tracks` accepted
+a 44-byte, header-only WAV as playable, so the player chose that empty system
+track by default. It now accepts FLACs with bytes and WAVs with frames, which
+keeps genuinely quiet audio playable while leaving a no-sample WAV out of the
+chooser.
 
 ### 3. Settings — he picked all four
 

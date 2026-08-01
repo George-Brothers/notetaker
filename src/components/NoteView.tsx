@@ -17,6 +17,7 @@ import {
   Check,
   ChevronLeft,
   FileAudio,
+  Headphones,
   Loader2,
   NotebookPen,
   RefreshCw,
@@ -25,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import type { RecordingDetail as RecordingDetailData, Template } from "../lib/ipc";
+import { useAudio } from "../hooks/useAudio";
 import { fullDateTime, roughDuration } from "../lib/format";
 import { cn } from "../lib/cn";
 import { StatusChip } from "./StatusChip";
@@ -33,6 +35,7 @@ import { Markdown } from "./Markdown";
 import { ActionItems } from "./ActionItems";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { AskPanel } from "./AskPanel";
+import { PlayerBar } from "./PlayerBar";
 import {
   Button,
   IconButton,
@@ -62,6 +65,8 @@ export interface NoteViewProps {
   onSetTemplate: (id: string, template: string) => void;
   onToggleAction: (id: string, index: number, done: boolean) => void;
   onProcessNow: (id: string) => void;
+  /** The recording currently being captured, if any. Null when idle. */
+  liveRecordingId: string | null;
   /** Closes the recording. Only reachable on the narrow layout. */
   onBack: () => void;
 }
@@ -100,6 +105,7 @@ export function NoteView({
   onSetTemplate,
   onToggleAction,
   onProcessNow,
+  liveRecordingId,
   onBack,
 }: NoteViewProps) {
   const [editingTitle, setEditingTitle] = useState(false);
@@ -111,6 +117,12 @@ export function NoteView({
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState("");
+  const [listenOpen, setListenOpen] = useState(false);
+  const [track, setTrack] = useState<string | null>(null);
+
+  // This hook belongs above the early returns — hooks cannot be conditional,
+  // and the one player belongs to this note rather than the transcript tab.
+  const audio = useAudio(detail?.id ?? "", track, detail?.durationS ?? 0);
 
   useEffect(() => {
     titleEditRef.current = false;
@@ -118,7 +130,12 @@ export function NoteView({
     setSavedTitle(null);
     setSaveState("idle");
     setEditingSummary(false);
-  }, [detail?.id]);
+    setListenOpen(false);
+    // Default to everyone else in a meeting. `audioTracks` includes only
+    // tracks with actual audio, so a quiet system track is never chosen.
+    const tracks = detail?.audioTracks ?? [];
+    setTrack(tracks.includes("system") ? "system" : (tracks[0] ?? null));
+  }, [detail?.id, detail?.audioTracks]);
 
   useEffect(() => {
     setSummaryDraft(detail?.summaryMd ?? "");
@@ -276,10 +293,43 @@ export function NoteView({
                 {rec.captureNote}
               </Notice>
             )}
+
+            {listenOpen && (
+              <PlayerBar
+                audio={audio}
+                durationS={rec.durationS}
+                tracks={rec.audioTracks}
+                track={track}
+                onTrackChange={setTrack}
+                onCollapse={() => setListenOpen(false)}
+                live={liveRecordingId === rec.id}
+              />
+            )}
+
+            {/* Kept outside `listenOpen`: minimising must not stop audio. */}
+            {audio.src && liveRecordingId !== rec.id && (
+              <audio
+                ref={audio.ref}
+                src={audio.src}
+                preload="metadata"
+                onPlay={() => audio.setPlaying(true)}
+                onPause={() => audio.setPlaying(false)}
+                onEnded={() => audio.setPlaying(false)}
+                onTimeUpdate={(e) => audio.setCurrentTime(e.currentTarget.currentTime)}
+                onError={() => audio.setPlaying(false)}
+                className="hidden"
+              />
+            )}
           </header>
 
           {/* --- tabs and toolbar --------------------------------------- */}
-          <Tabs defaultValue="notes" className="flex flex-col">
+          <Tabs
+            defaultValue="notes"
+            onValueChange={(value) => {
+              if (value === "transcript") setListenOpen(true);
+            }}
+            className="flex flex-col"
+          >
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
               <TabList>
                 <Tab value="notes">
@@ -328,6 +378,17 @@ export function NoteView({
                     {processed ? "Re-enhance" : "Process now"}
                   </Button>
                 </Tip>
+
+                <Button
+                  size="sm"
+                  variant={listenOpen ? "primary" : "ghost"}
+                  onClick={() => setListenOpen((open) => !open)}
+                  aria-pressed={listenOpen}
+                  className={cn(!listenOpen && audio.playing && "text-accent")}
+                >
+                  <Headphones size={13} />
+                  Listen
+                </Button>
 
                 <Button
                   size="sm"
@@ -416,6 +477,7 @@ export function NoteView({
             <TabPanel value="transcript" className="focus:outline-none">
               <TranscriptPanel
                 detail={rec}
+                audio={audio}
                 onRenameSpeaker={(key, name) => onRenameSpeaker(rec.id, key, name)}
               />
             </TabPanel>

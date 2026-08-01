@@ -21,7 +21,7 @@ import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { IconButton, Notice, TooltipProvider } from "./components/ui";
-import { api } from "./lib/ipc";
+import { api, type CaptureStatus } from "./lib/ipc";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
 
@@ -33,6 +33,18 @@ function readFirstRunDismissed(): boolean {
     // "not dismissed yet" rather than crash the shell over a nagging card.
     return false;
   }
+}
+
+/**
+ * Which recording is mid-capture, if any.
+ *
+ * Every non-idle state counts, `finishing` included: until the recording has
+ * landed, the file on disk is still moving and should not be played.
+ */
+export function liveRecordingId(
+  status: Pick<CaptureStatus, "state" | "recordingId">,
+): string | null {
+  return status.state === "idle" ? null : status.recordingId;
 }
 
 function App() {
@@ -180,6 +192,7 @@ function App() {
             <NoteView
               detail={lib.detail}
               loading={lib.detailLoading}
+              liveRecordingId={liveRecordingId(capture.status)}
               onBack={lib.clearSelection}
               tasks={lib.tasks}
               templates={lib.templates}

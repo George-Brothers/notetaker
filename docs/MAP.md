@@ -74,6 +74,8 @@ first two is load-bearing — see "How this is verified".
   - `lib/ipc.ts` is the contract; `lib/transport.ts` switches between Tauri IPC
     and HTTP, and owns `audioSrc` — the one place the two transports genuinely
     differ rather than carrying the same JSON.
+  - `NoteView` owns the one audio player for a recording; `TranscriptPanel`
+    consumes it for timestamp seeking and active-line highlighting.
   - Tailwind v4 + Radix + Lucide + cmdk + a self-hosted Inter. Every colour is
     a token in `styles/theme.css`; **no component may hardcode one**, or the
     dark theme silently loses that element. `styles/panels.css` styles Settings
@@ -469,9 +471,12 @@ passing tests because none of it is a *failure* — it is the app being silent.
    `Runtime::setup_status` plus a notice that never blocks. **His rule for this
    whole area: "dont force it — i just want the app to be like okay fine but
    just so u know it wont work."**
-2. **Playback, on every recording, processed or not.** Currently it appears to
-   be reachable only through the transcript view, so an unprocessed recording
-   cannot be listened to at all.
+2. **DONE. Playback, on every recording, processed or not.** The player was
+   never broken; it sat below `TranscriptPanel`'s no-segments guard, so raw
+   audio had no route to it. `NoteView` now owns one shared player, opened from
+   its Listen control or the Transcript tab. `audio_tracks` also rejects
+   header-only WAVs while retaining genuinely quiet recordings, so a silent
+   system track is no longer offered as playback.
 3. **Settings — all four are wrong**, his answer: nothing is pre-filled with
    what the app already chose; no microphone picker; no model status
    (downloaded, size, re-download, tier); storage location neither visible nor

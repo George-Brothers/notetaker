@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { PlayerBar } from "../PlayerBar";
 import { TranscriptPanel } from "../TranscriptPanel";
+import { NoteView } from "../NoteView";
 import { TooltipProvider } from "../ui";
+import { liveRecordingId } from "../../App";
 import type { AudioPlayer } from "../../hooks/useAudio";
 import type { RecordingDetail } from "../../lib/ipc";
 
@@ -206,5 +208,124 @@ describe("TranscriptPanel", () => {
       </TooltipProvider>,
     );
     expect(container.querySelector("audio")).toBeNull();
+  });
+});
+
+function note(over: Partial<React.ComponentProps<typeof NoteView>> = {}) {
+  const props: React.ComponentProps<typeof NoteView> = {
+    detail: detailWith(),
+    loading: false,
+    tasks: [],
+    templates: [],
+    askOpen: false,
+    liveRecordingId: null,
+    onToggleAsk: vi.fn(),
+    onRenameSpeaker: vi.fn(),
+    onSaveSummary: vi.fn(),
+    onRenameRecording: vi.fn(),
+    onAssignTask: vi.fn(),
+    onSaveNotes: vi.fn().mockResolvedValue(undefined),
+    onSetTemplate: vi.fn(),
+    onToggleAction: vi.fn(),
+    onProcessNow: vi.fn(),
+    onBack: vi.fn(),
+    ...over,
+  };
+  render(
+    <TooltipProvider>
+      <NoteView {...props} />
+    </TooltipProvider>,
+  );
+}
+
+describe("Listen", () => {
+  it("is closed until you press it", () => {
+    note();
+    expect(screen.queryByRole("group", { name: /playback/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    expect(screen.getByRole("group", { name: /playback/i })).toBeInTheDocument();
+  });
+
+  it("opens on a recording that has never been processed", () => {
+    // The regression this whole feature exists for: no segments, no
+    // transcript, and audio sitting on disk the entire time.
+    note({
+      detail: detailWith({
+        status: "recorded",
+        segments: [],
+        transcriptMd: "",
+        audioTracks: ["mic"],
+      }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+  });
+
+  it("minimises back into the toolbar", () => {
+    note();
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    fireEvent.click(screen.getByRole("button", { name: /minimise/i }));
+    expect(screen.queryByRole("group", { name: /playback/i })).not.toBeInTheDocument();
+  });
+
+  it("opens itself when you go to the transcript", () => {
+    note();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /transcript/i }));
+    expect(screen.getByRole("group", { name: /playback/i })).toBeInTheDocument();
+  });
+
+  it("keeps exactly one audio element however it was opened", async () => {
+    note();
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /transcript/i }));
+    await waitFor(() => expect(document.querySelectorAll("audio")).toHaveLength(1));
+  });
+
+  it("does not stop playing when it is minimised", async () => {
+    // "Minimise", not "close". The element has to outlive the bar.
+    note();
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    await waitFor(() => expect(document.querySelectorAll("audio")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: /minimise/i }));
+    expect(screen.queryByRole("group", { name: /playback/i })).not.toBeInTheDocument();
+    expect(document.querySelectorAll("audio")).toHaveLength(1);
+  });
+
+  it("refuses plainly while that recording is still capturing", () => {
+    note({ detail: detailWith({ id: "rec-1" }), liveRecordingId: "rec-1" });
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    expect(
+      screen.getByText("This recording is still going. It'll be listenable as soon as you stop."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not refuse a different recording during that same capture", () => {
+    note({ detail: detailWith({ id: "rec-1" }), liveRecordingId: "rec-9" });
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+  });
+
+  it("says so when the recording saved no audio at all", () => {
+    note({ detail: detailWith({ audioTracks: [] }) });
+    fireEvent.click(screen.getByRole("button", { name: /listen/i }));
+    expect(screen.getByText("No audio was saved for this recording.")).toBeInTheDocument();
+  });
+});
+
+describe("liveRecordingId", () => {
+  it("is null while nothing is being captured", () => {
+    expect(liveRecordingId({ state: "idle", recordingId: null })).toBeNull();
+  });
+
+  it("names the recording while it is being captured", () => {
+    expect(liveRecordingId({ state: "recording", recordingId: "rec-1" })).toBe("rec-1");
+  });
+
+  it("still names it while paused", () => {
+    expect(liveRecordingId({ state: "paused", recordingId: "rec-1" })).toBe("rec-1");
+  });
+
+  it("still names it while finishing", () => {
+    expect(liveRecordingId({ state: "finishing", recordingId: "rec-1" })).toBe("rec-1");
   });
 });
