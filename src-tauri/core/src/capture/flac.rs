@@ -40,11 +40,30 @@ const BITS_PER_SAMPLE: usize = 16;
 /// exactly the same audio, and only then removes the WAV — and only if
 /// `keep_wav` is false.
 ///
-/// Returns the path of the FLAC. Errors leave `wav_path` untouched: an
-/// unreadable input, a FLAC that will not write, and a FLAC that decodes to
-/// anything other than the source audio all end here with the WAV still on
-/// disk.
-pub fn finalize_to_flac(wav_path: &Path, keep_wav: bool) -> Result<PathBuf> {
+/// What a finalization actually did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finalized {
+    /// The verified lossless copy of the audio.
+    pub flac: PathBuf,
+    /// The original WAV that could not be removed after a successful encode.
+    pub wav_kept: Option<PathBuf>,
+}
+
+/// Returns the verified FLAC, plus whether the original WAV had to remain.
+/// Errors leave `wav_path` untouched: an unreadable input, a FLAC that will
+/// not write, and a FLAC that decodes to anything other than the source audio
+/// all end here with the WAV still on disk.
+pub fn finalize_to_flac(wav_path: &Path, keep_wav: bool) -> Result<Finalized> {
+    finalize_with_remove(wav_path, keep_wav, remove_with_one_retry)
+}
+
+/// Implementation seam for a cleanup failure that cannot be reproduced
+/// reliably on Unix: Windows refuses to unlink an open audio handle while
+/// Unix permits it.
+fn finalize_with_remove<F>(wav_path: &Path, keep_wav: bool, mut remove: F) -> Result<Finalized>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
     let flac_path = wav_path.with_extension("flac");
 
     let source = load_mono_16k(wav_path)
@@ -68,15 +87,42 @@ pub fn finalize_to_flac(wav_path: &Path, keep_wav: bool) -> Result<PathBuf> {
         return Err(e);
     }
 
-    if !keep_wav {
-        std::fs::remove_file(wav_path).with_context(|| {
-            format!(
-                "removing {} after its FLAC was verified",
-                wav_path.display()
-            )
-        })?;
+    // The encode is verified: the audio is safe in the FLAC. Whether the WAV
+    // goes away is a disk-space question, and must never be reported as a
+    // lost recording. Windows can refuse while the capture handle is closing;
+    // anything still open after the retry is reported to the caller.
+    let wav_kept = if !keep_wav {
+        match remove(wav_path) {
+            Ok(()) => None,
+            Err(e) => {
+                log::warn!(
+                    "keeping {} as WAV after a verified FLAC: {e}",
+                    wav_path.display()
+                );
+                Some(wav_path.to_path_buf())
+            }
+        }
+    } else {
+        None
+    };
+    Ok(Finalized {
+        flac: flac_path,
+        wav_kept,
+    })
+}
+
+/// Removes a file, retrying once after a short pause.
+///
+/// A capture handle that is only just closing makes the first removal fail on
+/// Windows. Unix succeeds on the first attempt, so it never waits.
+fn remove_with_one_retry(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            std::fs::remove_file(path)
+        }
     }
-    Ok(flac_path)
 }
 
 /// Writes `samples` to `flac_path` as 16 kHz mono FLAC.
@@ -196,7 +242,7 @@ mod tests {
         write_wav(&wav, &tone(1.0, 0.6));
 
         let before = load_mono_16k(&wav).unwrap();
-        let flac = finalize_to_flac(&wav, true).unwrap();
+        let flac = finalize_to_flac(&wav, true).unwrap().flac;
         let after = load_mono_16k(&flac).unwrap();
 
         assert_eq!(flac, dir.path().join("audio-mic.flac"));
@@ -228,7 +274,7 @@ mod tests {
             write_wav(&wav, &frames);
 
             let before = load_mono_16k(&wav).unwrap();
-            let flac = finalize_to_flac(&wav, true).unwrap();
+            let flac = finalize_to_flac(&wav, true).unwrap().flac;
             assert_eq!(load_mono_16k(&flac).unwrap(), before, "{name}");
 
             let head = std::fs::read(&flac).unwrap();
@@ -253,12 +299,31 @@ mod tests {
 
         let dropped = dir.path().join("dropped.wav");
         write_wav(&dropped, &frames);
-        let flac = finalize_to_flac(&dropped, false).unwrap();
+        let flac = finalize_to_flac(&dropped, false).unwrap().flac;
         assert!(
             !dropped.exists(),
             "keep_wav = false must reclaim the space once the FLAC is verified"
         );
         assert_eq!(load_mono_16k(&flac).unwrap().len(), frames.len());
+    }
+
+    #[test]
+    fn a_wav_that_cannot_be_deleted_is_still_a_successful_encode() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("audio-mic.wav");
+        write_wav(&wav, &tone(0.3, 0.4));
+
+        let done = finalize_with_remove(&wav, false, |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .expect("a verified FLAC is a success whatever the delete did");
+
+        assert!(done.flac.exists(), "the FLAC must survive");
+        assert_eq!(
+            done.wav_kept.as_deref(),
+            Some(wav.as_path()),
+            "the surviving WAV must be reported, not silently left"
+        );
     }
 
     #[test]

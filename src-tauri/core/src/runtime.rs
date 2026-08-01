@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 
 use crate::api::{self, RecordingDetail, RecordingRow, SearchHit, Settings};
-use crate::capture::flac::finalize_to_flac;
+use crate::capture::flac::{finalize_to_flac, Finalized};
 use crate::capture::recover::recover_orphans;
 use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
@@ -83,6 +83,7 @@ use crate::watch::{AutoRecordPolicy, MeetingEvent};
 /// keeps its own copies private.
 const TRANSCRIPT_FILE: &str = "transcript.md";
 const SUMMARY_FILE: &str = "summary.md";
+const WAV_KEPT_NOTE: &str = "This recording is saved twice — a compressed copy and the original. Both play fine; the original just takes more space. You can delete the .wav file if you want the room back.";
 
 /// File names inside the app's own data directory.
 const SETTINGS_FILE: &str = "settings.json";
@@ -1547,7 +1548,14 @@ impl Inner {
     /// either extension, so the recording still transcribes normally; the only
     /// cost is the space. Failing the stop over it would be trading a lecture
     /// for a compression ratio.
-    fn compress_tracks(&self, rec: &RecordingRef) {
+    fn compress_tracks(&self, rec: &mut RecordingRef) {
+        self.compress_tracks_with(rec, finalize_to_flac);
+    }
+
+    fn compress_tracks_with<F>(&self, rec: &mut RecordingRef, mut finalize: F)
+    where
+        F: FnMut(&Path, bool) -> Result<Finalized>,
+    {
         let keep_wav = api::get_settings(&self.settings_path)
             .unwrap_or_default()
             .keep_wav;
@@ -1556,8 +1564,14 @@ impl Inner {
             if !wav.exists() {
                 continue;
             }
-            if let Err(e) = finalize_to_flac(&wav, keep_wav) {
-                log::warn!("keeping {} as wav: {e:#}", wav.display());
+            match finalize(&wav, keep_wav) {
+                Ok(done) => {
+                    if let Some(kept) = done.wav_kept {
+                        append_capture_note(rec, WAV_KEPT_NOTE);
+                        log::warn!("could not remove {} after verified FLAC", kept.display());
+                    }
+                }
+                Err(e) => log::warn!("keeping {} as wav: {e:#}", wav.display()),
             }
         }
     }
@@ -1613,7 +1627,7 @@ impl Inner {
         *lock(&self.last_recording) = Some(id.clone());
 
         let mut rec = self.find(&id)?;
-        self.compress_tracks(&rec);
+        self.compress_tracks(&mut rec);
         Queue { store: &self.store }.enqueue(&mut rec)?;
         // Index it now so a brand-new recording is findable by title
         // immediately; the transcript follows when processing finishes.
@@ -1686,6 +1700,22 @@ fn tier_from_name(name: &str) -> Option<Tier> {
 /// advisory, so recovering the guard beats taking the app down with it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Adds a durable fact about the captured audio without overwriting another
+/// reason a recording deserves attention.
+fn append_capture_note(rec: &mut RecordingRef, note: &str) {
+    match &mut rec.meta.capture_note {
+        Some(existing) if !existing.is_empty() => {
+            if existing.contains(note) {
+                return;
+            }
+            existing.push(' ');
+            existing.push_str(note);
+        }
+        Some(existing) => *existing = note.to_string(),
+        None => rec.meta.capture_note = Some(note.to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2039,6 +2069,36 @@ mod tests {
         // And it is still readable audio, not just a file with the right name.
         let samples = crate::pipeline::audio::load_mono_16k(&flac).unwrap();
         assert!(!samples.is_empty());
+    }
+
+    #[test]
+    fn a_wav_left_after_verified_compression_reaches_the_recordings_capture_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.3);
+        let mut rec = rt
+            .inner
+            .store
+            .create_recording("Lecture", Mode::InPerson, chrono::Local::now())
+            .unwrap();
+        let wav = rec.dir.join(format!("{}.wav", capture::MIC_TRACK));
+        std::fs::write(&wav, b"a placeholder is enough for the injected finalizer").unwrap();
+
+        rt.inner.compress_tracks_with(&mut rec, |path, _| {
+            Ok(crate::capture::flac::Finalized {
+                flac: path.with_extension("flac"),
+                wav_kept: Some(path.to_path_buf()),
+            })
+        });
+        rt.inner.store.save_meta(&rec).unwrap();
+
+        let detail = rt.get_recording(&rec.meta.id).unwrap();
+        assert!(
+            detail
+                .capture_note
+                .unwrap_or_default()
+                .contains("saved twice"),
+            "a surviving WAV is a fact about the capture, not a hidden log line"
+        );
     }
 
     /// When `stop_capture` returns an id, that recording must be *ready* —
