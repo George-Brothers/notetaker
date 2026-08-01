@@ -11,6 +11,7 @@ pub mod api;
 pub mod capture;
 pub mod dispatch;
 pub mod index;
+pub mod logging;
 pub mod models;
 pub mod notes;
 pub mod ollama;

@@ -5,6 +5,9 @@ import App from "../../App";
 import { api } from "../../lib/ipc";
 import { applyIpcDefaults } from "../../test/ipcMock";
 import type { CaptureStatus, OllamaStatus, PullProgress, Settings } from "../../lib/ipc";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
 
 vi.mock("../../lib/ipc", async (importOriginal) => {
   // Keys derived from the real contract, so adding a command to ipc.ts can
@@ -79,6 +82,7 @@ function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus } = {}
   vi.mocked(api.pullProgress).mockResolvedValue([]);
   vi.mocked(api.pullModel).mockResolvedValue(undefined);
   vi.mocked(api.downloadModels).mockResolvedValue(undefined);
+  vi.mocked(api.logPath).mockResolvedValue("/Users/george/Library/Notetaker/logs/notetaker.log");
 }
 
 async function openSettings() {
@@ -113,6 +117,16 @@ describe("Settings screen", () => {
     );
     expect(within(dialog).getByLabelText("AI service address")).toHaveValue("http://localhost:11434");
     expect(within(dialog).getByLabelText("Summary AI model")).toHaveValue("qwen2.5:7b");
+  });
+
+  it("reveals the log file's folder when asked", async () => {
+    const dialog = await openSettings();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open the log folder" }));
+    await waitFor(() =>
+      expect(revealItemInDir).toHaveBeenCalledWith(
+        "/Users/george/Library/Notetaker/logs/notetaker.log",
+      ),
+    );
   });
 
   it("persists the storage location when the field is edited and blurred", async () => {

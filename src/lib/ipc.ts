@@ -332,6 +332,8 @@ export const api = {
    */
   audioPath: (id: string, track: string) =>
     invoke<string>("audio_path", { id, track }),
+  /** The current log file, which the desktop shell can reveal to the user. */
+  logPath: () => invoke<string>("log_path"),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
 

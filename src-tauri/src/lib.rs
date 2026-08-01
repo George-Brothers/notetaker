@@ -21,8 +21,11 @@
 //! it as "the button does nothing". `runtime::COMMANDS` is the written-down
 //! contract, and a test fails the build if either side drifts from it.
 
+use std::path::Path;
+
 use notetaker_core::capture::platform::PlatformSources;
 use notetaker_core::dispatch::dispatch;
+use notetaker_core::logging;
 use notetaker_core::paths;
 use notetaker_core::power::probe::default_probe;
 use notetaker_core::runtime::Runtime;
@@ -153,6 +156,11 @@ fn audio_path(rt: State<'_, Runtime>, id: String, track: String) -> Result<Value
     call(&rt, "audio_path", json!({ "id": id, "track": track }))
 }
 
+#[tauri::command]
+fn log_path(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "log_path", json!({}))
+}
+
 // --- settings --------------------------------------------------------------
 
 #[tauri::command]
@@ -241,12 +249,12 @@ fn download_models(rt: State<'_, Runtime>) -> Result<Value, String> {
 
 #[tauri::command]
 fn detected_tier(rt: State<'_, Runtime>) -> Result<Value, String> {
-    call(&rt, "detected_tier", json!({}
+    call(&rt, "detected_tier", json!({}))
+}
 
 #[tauri::command]
 fn setup_status(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "setup_status", json!({}))
-}))
 }
 
 /// Builds the runtime the whole app hangs off.
@@ -254,13 +262,12 @@ fn setup_status(rt: State<'_, Runtime>) -> Result<Value, String> {
 /// Identical to what `notetaker-serve` does, deliberately: two transports over
 /// one runtime, constructed the same way, so a bug cannot be present in one and
 /// absent in the other.
-fn open_runtime() -> anyhow::Result<Runtime> {
+fn open_runtime(app_dir: &Path) -> anyhow::Result<Runtime> {
     let storage_root = paths::default_storage_root()?;
-    let app_dir = paths::default_app_dir()?;
     log::info!("library: {}", storage_root.display());
 
     Runtime::open(
-        &app_dir,
+        app_dir,
         &storage_root,
         Box::new(PlatformSources::new()),
         default_probe(),
@@ -272,7 +279,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let runtime = open_runtime()?;
+            let app_dir = app.path().app_data_dir()?;
+            logging::install(&app_dir);
+            let runtime = open_runtime(&app_dir)?;
 
             // Recovers what a crash left behind, rebuilds the search index, and
             // starts transcribing in the background. One call, shared with
@@ -301,6 +310,7 @@ pub fn run() {
             set_action_done,
             ask_recording,
             audio_path,
+            log_path,
             get_settings,
             set_settings,
             set_auto_record,

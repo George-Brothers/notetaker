@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, LANGUAGE_CHOICES } from "../lib/ipc";
 import type {
   AutoRecordPolicy,
@@ -216,6 +217,14 @@ export function Settings({ onClose }: SettingsProps) {
     }
   }
 
+  async function openLogFolder() {
+    try {
+      await revealItemInDir(await api.logPath());
+    } catch (err) {
+      setLoadError(describeError(err));
+    }
+  }
+
   function commitBaseUrl() {
     if (!settings) return;
     const trimmed = baseUrlDraft.trim();
@@ -318,6 +327,14 @@ export function Settings({ onClose }: SettingsProps) {
                     onChange={(e) => setStorageDraft(e.target.value)}
                     onBlur={commitStorage}
                   />
+                </div>
+                <div className="settings-field">
+                  <button type="button" onClick={() => void openLogFolder()}>
+                    Open the log folder
+                  </button>
+                  <p className="settings-hint">
+                    If something goes wrong, this is what to send.
+                  </p>
                 </div>
               </section>
 

@@ -73,6 +73,7 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
             to_json(rt.ask_recording(str_arg(args, "id")?, str_arg(args, "question")?)?)
         }
         "audio_path" => to_json(rt.audio_path(str_arg(args, "id")?, str_arg(args, "track")?)?),
+        "log_path" => to_json(rt.log_path()),
 
         // --- settings ---------------------------------------------------
         "get_settings" => to_json(rt.get_settings()?),
@@ -218,6 +219,7 @@ mod tests {
             "set_action_done",
             "ask_recording",
             "audio_path",
+            "log_path",
             "get_settings",
             "set_settings",
             "set_auto_record",

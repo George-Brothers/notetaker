@@ -50,6 +50,7 @@ use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
 use crate::capture::{self, CaptureState, CaptureStatus, DiskSpace};
 use crate::index::Index;
+use crate::logging;
 use crate::models::{detect_tier, ensure_segmentation_unpacked, registry, Downloader, Tier};
 use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
 use crate::pipeline::diarize::{Diarizer, SherpaDiarizer};
@@ -201,6 +202,10 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "audio_path",
         args: &["id", "track"],
+    },
+    Command {
+        name: "log_path",
+        args: &[],
     },
     Command {
         name: "get_settings",
@@ -731,6 +736,16 @@ impl Runtime {
     pub fn audio_path(&self, id: &str, track: &str) -> Result<String> {
         let path = api::audio_path(&self.inner.store, id, track)?;
         Ok(path.to_string_lossy().into_owned())
+    }
+
+    /// The log file beside settings and the disposable search index.
+    pub fn log_path(&self) -> String {
+        let app_data = self
+            .inner
+            .settings_path
+            .parent()
+            .expect("settings.json always has an app data directory");
+        logging::log_file(app_data).to_string_lossy().into_owned()
     }
 
     /// Files a recording under a task, moving its directory to match.
@@ -3151,6 +3166,10 @@ mod tests {
         let _ = rt.pull_progress();
         let _ = rt.detected_tier();
         assert!(
+            Path::new(&rt.log_path()).ends_with(Path::new("logs").join("notetaker.log")),
+            "the UI must receive the log file path"
+        );
+        assert!(
             !rt.list_templates().is_empty(),
             "the picker would have nothing to show"
         );
@@ -3183,11 +3202,11 @@ mod tests {
             "two recordings were made above and neither can be processed"
         );
 
-        // capture_status, pull_progress, detected_tier, list_templates,
-        // ask_recording, setup_status, pause, resume, start, stop — ten not in
-        // the list above.
+        // capture_status, pull_progress, detected_tier, log_path,
+        // list_templates, ask_recording, setup_status, pause, resume, start,
+        // stop — eleven not in the list above.
         assert_eq!(
-            called.len() + 10,
+            called.len() + 11,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

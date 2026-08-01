@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use notetaker_core::capture::platform::PlatformSources;
+use notetaker_core::logging;
 use notetaker_core::paths;
 use notetaker_core::power::probe::default_probe;
 use notetaker_core::runtime::Runtime;
@@ -30,13 +31,14 @@ fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info");
     }
-    env_logger_init();
-
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         return Ok(());
     }
+
+    let app_dir = paths::default_app_dir()?;
+    logging::install(&app_dir);
 
     let lan = args.iter().any(|a| a == "--lan");
     let port = flag_value(&args, "--port")
@@ -69,7 +71,6 @@ fn main() -> Result<()> {
     }
 
     let storage_root = paths::default_storage_root()?;
-    let app_dir = paths::default_app_dir()?;
     log::info!("library: {}", storage_root.display());
 
     let runtime = Runtime::open(
@@ -105,30 +106,4 @@ fn print_help() {
 
 Without --lan the server is reachable only from this computer."
     );
-}
-
-/// Minimal `env_logger` stand-in so this binary adds no dependency for the sake
-/// of three log lines.
-///
-/// A `static` logger rather than a boxed one: `log::set_boxed_logger` needs the
-/// crate's `std` feature, which core does not enable.
-struct Simple;
-
-impl log::Log for Simple {
-    fn enabled(&self, m: &log::Metadata) -> bool {
-        m.level() <= log::Level::Info
-    }
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            eprintln!("{}: {}", record.level(), record.args());
-        }
-    }
-    fn flush(&self) {}
-}
-
-static LOGGER: Simple = Simple;
-
-fn env_logger_init() {
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Info);
 }
