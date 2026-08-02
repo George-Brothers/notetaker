@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/notetaker.svg" />
+    <!-- viewport-fit=cover so the served UI reaches the edges on a phone,
+         which is the whole point of serving it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- Paints the browser chrome to match, and follows the theme rather than
+         picking one. Two tags: a browser uses whichever media query matches. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf8f3" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16150f" />
+    <title>Notetaker</title>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
