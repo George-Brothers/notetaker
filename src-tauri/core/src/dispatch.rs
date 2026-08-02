@@ -41,15 +41,25 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         // --- library ----------------------------------------------------
         "list_tasks" => to_json(rt.list_tasks()?),
         "create_task" => to_json(rt.create_task(str_arg(args, "name")?)?),
+        "rename_task" => {
+            to_json(rt.rename_task(str_arg(args, "oldName")?, str_arg(args, "newName")?)?)
+        }
+        "delete_task" => to_json(rt.delete_task(str_arg(args, "name")?)?),
         "list_recordings" => to_json(rt.list_recordings()?),
         "list_archived_recordings" => to_json(rt.list_archived_recordings()?),
         "get_recording" => to_json(rt.get_recording(str_arg(args, "id")?)?),
         "search" => to_json(rt.search(str_arg(args, "query")?)?),
         "process_now" => to_json(rt.process_now(str_arg(args, "id")?)?),
+        "queue_snapshot" => to_json(rt.queue_snapshot()?),
+        "pause_processing" => to_json(rt.pause_processing(str_arg(args, "id")?)?),
+        "resume_processing" => to_json(rt.resume_processing(str_arg(args, "id")?)?),
+        "cancel_processing" => to_json(rt.cancel_processing(str_arg(args, "id")?)?),
+        "retry_processing" => to_json(rt.retry_processing(str_arg(args, "id")?)?),
         "update_summary" => {
             to_json(rt.update_summary(str_arg(args, "id")?, str_arg(args, "summaryMd")?)?)
         }
         "assign_task" => to_json(rt.assign_task(str_arg(args, "id")?, str_arg(args, "task")?)?),
+        "unassign_task" => to_json(rt.unassign_task(str_arg(args, "id")?)?),
         "rename_recording" => {
             to_json(rt.rename_recording(str_arg(args, "id")?, str_arg(args, "title")?)?)
         }
@@ -212,13 +222,21 @@ mod tests {
         const ARMS: &[&str] = &[
             "list_tasks",
             "create_task",
+            "rename_task",
+            "delete_task",
             "list_recordings",
             "list_archived_recordings",
             "get_recording",
             "search",
             "process_now",
+            "queue_snapshot",
+            "pause_processing",
+            "resume_processing",
+            "cancel_processing",
+            "retry_processing",
             "update_summary",
             "assign_task",
+            "unassign_task",
             "rename_recording",
             "archive_recording",
             "restore_recording",

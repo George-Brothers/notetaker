@@ -117,11 +117,45 @@ export interface RecordingDetail extends RecordingRow {
   audioTracks: string[];
 }
 
+export type SearchHitKind = "title" | "folder" | "transcript" | "summary" | "notes";
+
 export interface SearchHit {
   id: string;
   title: string;
   task: string | null;
   snippet: string;
+  kind: SearchHitKind;
+}
+
+export type QueueItemState =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "retryable"
+  | "failed"
+  | "paused"
+  | "cancelled";
+
+export interface QueueItem {
+  id: string;
+  title: string;
+  state: QueueItemState;
+  stage: string | null;
+  stageIndex: number;
+  stageCount: number;
+  startedAt: string | null;
+  elapsedS: number;
+  position: number | null;
+  attempts: number;
+  error: string | null;
+  created: string;
+}
+
+export interface QueueSnapshot {
+  items: QueueItem[];
+  processingEnabled: boolean;
+  idleAllowed: boolean;
+  modelsReady: boolean;
 }
 
 /** What the app does when a known meeting app appears. */
@@ -210,6 +244,9 @@ export const LANGUAGE_CHOICES: ReadonlyArray<{
   { code: "other", label: "Another language", senseVoice: false },
 ];
 
+/** Safe default offered when Ollama has no downloaded models yet. */
+export const RECOMMENDED_LLM_MODEL = "qwen3:8b";
+
 /**
  * `finishing` is the stretch after the last sample and before the recording is
  * queued: the tracks are still being re-encoded and indexed. It is not idle —
@@ -288,15 +325,24 @@ export interface PullProgress {
 export const api = {
   listTasks: () => invoke<string[]>("list_tasks"),
   createTask: (name: string) => invoke<void>("create_task", { name }),
+  renameTask: (oldName: string, newName: string) =>
+    invoke<void>("rename_task", { oldName, newName }),
+  deleteTask: (name: string) => invoke<void>("delete_task", { name }),
   listRecordings: () => invoke<RecordingRow[]>("list_recordings"),
   listArchivedRecordings: () => invoke<RecordingRow[]>("list_archived_recordings"),
   getRecording: (id: string) => invoke<RecordingDetail>("get_recording", { id }),
   search: (query: string) => invoke<SearchHit[]>("search", { query }),
   processNow: (id: string) => invoke<void>("process_now", { id }),
+  queueSnapshot: () => invoke<QueueSnapshot>("queue_snapshot"),
+  pauseProcessing: (id: string) => invoke<void>("pause_processing", { id }),
+  resumeProcessing: (id: string) => invoke<void>("resume_processing", { id }),
+  cancelProcessing: (id: string) => invoke<void>("cancel_processing", { id }),
+  retryProcessing: (id: string) => invoke<void>("retry_processing", { id }),
   /** Persists a user's edits to the AI-written summary. */
   updateSummary: (id: string, summaryMd: string) =>
     invoke<void>("update_summary", { id, summaryMd }),
   assignTask: (id: string, task: string) => invoke<void>("assign_task", { id, task }),
+  unassignTask: (id: string) => invoke<void>("unassign_task", { id }),
   /**
    * Renames a recording. Recordings start with an auto-generated title
    * ("Meeting — Jul 27, 2:30 PM") so that hitting record never blocks on

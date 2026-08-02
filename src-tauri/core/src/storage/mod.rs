@@ -32,6 +32,18 @@ pub enum Status {
     Failed,
 }
 
+/// User control over a processing job. Separate from [`Status`] so the
+/// recording lifecycle remains backward-compatible while the queue can show
+/// paused and cancelled work explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueControl {
+    #[default]
+    Active,
+    Paused,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Meta {
     pub id: String, // uuid v4
@@ -74,6 +86,21 @@ pub struct Meta {
     /// recording filed under a template a later version drops still opens.
     #[serde(default)]
     pub template: Option<String>,
+    /// Defaults keep older `meta.json` files active and runnable.
+    #[serde(default)]
+    pub queue_control: QueueControl,
+    /// Persisted stage information makes a background job explainable after a
+    /// restart, without inventing a percentage the pipeline cannot know.
+    #[serde(default)]
+    pub processing_stage: Option<String>,
+    #[serde(default)]
+    pub processing_stage_index: u8,
+    #[serde(default)]
+    pub processing_stage_count: u8,
+    #[serde(default)]
+    pub processing_started_at: Option<String>,
+    #[serde(default)]
+    pub processing_elapsed_s: f64,
 }
 
 /// How long one pipeline stage took, for diagnostics.
@@ -156,6 +183,12 @@ impl Store {
             stages: Vec::new(),
             capture_note: None,
             template: None,
+            queue_control: QueueControl::Active,
+            processing_stage: None,
+            processing_stage_index: 0,
+            processing_stage_count: 0,
+            processing_started_at: None,
+            processing_elapsed_s: 0.0,
         };
 
         let rec = RecordingRef {
@@ -239,6 +272,53 @@ impl Store {
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))
     }
 
+    /// Renames a folder without touching any recording inside it. Refusing to
+    /// merge with an existing folder avoids a surprising half-rename.
+    pub fn rename_task(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let old = safe_task_name(old_name)?;
+        let new = safe_task_name(new_name)?;
+        if old == new {
+            return Ok(());
+        }
+        let old_dir = self.root.join(TASKS_DIR).join(&old);
+        if !old_dir.is_dir() {
+            anyhow::bail!("there is no folder called {old:?}");
+        }
+        let new_dir = self.root.join(TASKS_DIR).join(&new);
+        if new_dir.exists() {
+            anyhow::bail!("a folder called {new:?} already exists");
+        }
+        fs::rename(&old_dir, &new_dir)
+            .with_context(|| format!("renaming folder {old:?} to {new:?}"))
+    }
+
+    /// Removes only the folder container. Its recordings move to Unsorted,
+    /// preserving every file and metadata field.
+    pub fn delete_task(&self, name: &str) -> Result<()> {
+        let name = safe_task_name(name)?;
+        let task_dir = self.root.join(TASKS_DIR).join(&name);
+        if !task_dir.is_dir() {
+            anyhow::bail!("there is no folder called {name:?}");
+        }
+        let unsorted = self.root.join(UNSORTED_DIR);
+        fs::create_dir_all(&unsorted)
+            .with_context(|| format!("creating {}", unsorted.display()))?;
+
+        for dir in list_subdirs(&task_dir)? {
+            let file_name = dir
+                .file_name()
+                .context("recording folder has no file name")?;
+            let dest = unique_dir(&unsorted, &file_name.to_string_lossy());
+            fs::rename(&dir, &dest)
+                .with_context(|| format!("moving {} to Unsorted", dir.display()))?;
+        }
+
+        // Do not remove unexpected files. Leaving the container is safer than
+        // deleting something the files-first contract did not create.
+        fs::remove_dir(&task_dir)
+            .with_context(|| format!("removing empty folder {}", task_dir.display()))
+    }
+
     /// Moves the recording's folder into `Tasks/<task>/`, then re-derives
     /// its `RecordingRef` from the new location.
     pub fn assign_task(&self, rec: &RecordingRef, task: &str) -> Result<RecordingRef> {
@@ -256,6 +336,26 @@ impl Store {
             .with_context(|| format!("moving {} to {}", rec.dir.display(), dest.display()))?;
 
         load_ref(&dest, Some(task), false)
+    }
+
+    /// Moves a filed recording back to Unsorted without changing any of its
+    /// files or metadata. Selecting "Unsorted" in the detail view is a real
+    /// reassignment, not a no-op placeholder.
+    pub fn unassign_task(&self, rec: &RecordingRef) -> Result<RecordingRef> {
+        if rec.task.is_none() {
+            return Ok(rec.clone());
+        }
+        let unsorted = self.root.join(UNSORTED_DIR);
+        fs::create_dir_all(&unsorted)
+            .with_context(|| format!("creating {}", unsorted.display()))?;
+        let file_name = rec
+            .dir
+            .file_name()
+            .context("recording dir has no file name")?;
+        let dest = unique_dir(&unsorted, &file_name.to_string_lossy());
+        fs::rename(&rec.dir, &dest)
+            .with_context(|| format!("moving {} to Unsorted", rec.dir.display()))?;
+        load_ref(&dest, None, false)
     }
 
     /// Retitles a recording: rewrites `meta.title` and renames the folder to
@@ -468,6 +568,38 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].meta.title, "Lecture 3");
         assert_eq!(s.list_tasks().unwrap(), vec!["Accounting 302"]);
+    }
+
+    #[test]
+    fn rename_and_delete_task_preserve_recordings_and_move_them_to_unsorted() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path());
+        s.create_task("Finance").unwrap();
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Planning call", Mode::Meeting, created)
+            .unwrap();
+        let filed = s.assign_task(&r, "Finance").unwrap();
+        let id = filed.meta.id.clone();
+        fs::write(filed.dir.join("notes.md"), "Keep this note.").unwrap();
+
+        s.rename_task("Finance", "Planning").unwrap();
+        assert_eq!(s.list_tasks().unwrap(), vec!["Planning"]);
+        let after_rename = s.scan().unwrap();
+        assert_eq!(after_rename[0].task.as_deref(), Some("Planning"));
+
+        s.delete_task("Planning").unwrap();
+        assert!(s.list_tasks().unwrap().is_empty());
+        let moved = s.scan().unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].meta.id, id);
+        assert!(moved[0].task.is_none());
+        assert_eq!(
+            fs::read_to_string(moved[0].dir.join("notes.md")).unwrap(),
+            "Keep this note."
+        );
     }
 
     #[test]

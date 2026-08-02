@@ -22,6 +22,16 @@ pub struct SearchHit {
     pub title: String,
     pub task: Option<String>,
     pub snippet: String,
+    pub kind: SearchHitKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchHitKind {
+    Title,
+    Folder,
+    Transcript,
+    Summary,
+    Notes,
 }
 
 /// FTS5's default `unicode61` tokenizer treats a whole run of Han
@@ -115,17 +125,17 @@ fn status_str(s: Status) -> &'static str {
 }
 
 /// The searchable columns, in order. `snippet()` addresses columns by index,
-/// so `notes` is appended rather than inserted — putting it before `summary`
-/// would silently change which column the snippet comes from.
-const FTS_COLUMNS: &[&str] = &["id", "title", "transcript", "summary", "notes"];
+/// so the order is a schema contract. New fields are appended only when the
+/// cache migration intentionally changes the table.
+const FTS_COLUMNS: &[&str] = &["id", "title", "metadata", "transcript", "summary", "notes"];
 
-/// The column `search` draws its snippet from: `transcript`, at index 2.
-const SNIPPET_COLUMN: usize = 2;
+/// The first content column `search` checks: `title`, at index 1.
+const SNIPPET_COLUMN: usize = 1;
 
 /// Fallback snippet column when a recording has no transcript yet: `notes`, at
-/// index 4. A recording the user typed notes into but has not processed is
+/// index 5. A recording the user typed notes into but has not processed is
 /// findable, and an empty snippet on the result would read as a broken row.
-const SNIPPET_FALLBACK_COLUMN: usize = 4;
+const SNIPPET_FALLBACK_COLUMN: usize = 5;
 
 /// True if `recordings_fts` already has exactly [`FTS_COLUMNS`].
 ///
@@ -210,6 +220,23 @@ impl Index {
         let transcript = read_text(&rec.dir, "transcript.md");
         let summary = read_text(&rec.dir, "summary.md");
         let notes = read_text(&rec.dir, crate::notes::NOTES_FILE);
+        let speakers = rec
+            .meta
+            .speakers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let metadata = format!(
+            "{} {} {} {} {} {} {}",
+            rec.task.as_deref().unwrap_or("Unsorted"),
+            rec.meta.created,
+            mode_str(rec.meta.mode),
+            status_str(rec.meta.status),
+            speakers,
+            rec.meta.capture_note.as_deref().unwrap_or(""),
+            rec.meta.template.as_deref().unwrap_or(""),
+        );
 
         self.conn.execute(
             "INSERT INTO recordings(id, title, task, created, duration_s, mode, status, dir)
@@ -234,11 +261,12 @@ impl Index {
         self.conn
             .execute("DELETE FROM recordings_fts WHERE id = ?1", params![id])?;
         self.conn.execute(
-            "INSERT INTO recordings_fts(id, title, transcript, summary, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO recordings_fts(id, title, metadata, transcript, summary, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 id,
                 segment_cjk(&rec.meta.title),
+                segment_cjk(&metadata),
                 segment_cjk(&transcript),
                 segment_cjk(&summary),
                 segment_cjk(&notes),
@@ -261,33 +289,57 @@ impl Index {
 
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         let match_expr = fts_phrase(query);
+        let trimmed = query.trim();
+        let title_prefix = format!("%{trimmed}%");
         let mut stmt = self.conn.prepare(&format!(
             "SELECT r.id, r.title, r.task,
-                    snippet(recordings_fts, {SNIPPET_COLUMN}, '<b>', '</b>', '…', 12) AS snip,
+                    snippet(recordings_fts, {SNIPPET_COLUMN}, '<b>', '</b>', '…', 12) AS title_snip,
+                    snippet(recordings_fts, 2, '<b>', '</b>', '…', 12) AS metadata_snip,
+                    snippet(recordings_fts, 3, '<b>', '</b>', '…', 12) AS transcript_snip,
+                    snippet(recordings_fts, 4, '<b>', '</b>', '…', 12) AS summary_snip,
                     snippet(recordings_fts, {SNIPPET_FALLBACK_COLUMN}, '<b>', '</b>', '…', 12) AS notes_snip
              FROM recordings_fts
              JOIN recordings r ON r.id = recordings_fts.id
              WHERE recordings_fts MATCH ?1
-             ORDER BY rank"
+             ORDER BY CASE
+                 WHEN lower(r.title) = lower(?2) THEN 0
+                 WHEN lower(r.title) LIKE lower(?3) THEN 1
+                 WHEN lower(coalesce(r.task, '')) LIKE lower(?3) THEN 2
+                 ELSE 3
+             END, rank"
         ))?;
-        let rows = stmt.query_map(params![match_expr], |row| {
+        let rows = stmt.query_map(params![match_expr, trimmed, title_prefix], |row| {
             let id: String = row.get(0)?;
             let title: String = row.get(1)?;
             let task: Option<String> = row.get(2)?;
-            let snip: String = row.get(3)?;
-            let notes_snip: String = row.get(4)?;
-            // A recording with notes but no transcript yet is still findable,
-            // and would otherwise show a blank row.
-            let best = if snip.trim().is_empty() {
-                notes_snip
-            } else {
-                snip
-            };
+            let snippets = [
+                (row.get::<_, String>(3)?, SearchHitKind::Title),
+                (row.get::<_, String>(4)?, SearchHitKind::Folder),
+                (row.get::<_, String>(5)?, SearchHitKind::Transcript),
+                (row.get::<_, String>(6)?, SearchHitKind::Summary),
+                (row.get::<_, String>(7)?, SearchHitKind::Notes),
+            ];
+            // FTS5 returns the column text even when that column did not
+            // contain the match. The marker is the reliable signal for which
+            // field actually matched; otherwise a title would hide a notes or
+            // transcript hit in the result row.
+            let (best, kind) = snippets
+                .iter()
+                .find(|(snippet, _)| snippet.contains("<b>"))
+                .cloned()
+                .or_else(|| {
+                    snippets
+                        .iter()
+                        .find(|(snippet, _)| !snippet.trim().is_empty())
+                        .cloned()
+                })
+                .unwrap_or_else(|| (String::new(), SearchHitKind::Transcript));
             Ok(SearchHit {
                 id,
                 title,
                 task,
                 snippet: desegment_cjk(&best),
+                kind,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -322,6 +374,35 @@ mod tests {
         assert_eq!(ix.search("budget hiring").unwrap().len(), 1);
         // A word that is absent must still exclude the recording.
         assert_eq!(ix.search("budget parking").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn global_search_indexes_folder_and_recording_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path().join("root"));
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let r = s
+            .create_recording("Untitled call", Mode::Meeting, created)
+            .unwrap();
+        let mut filed = s.assign_task(&r, "Finance").unwrap();
+        filed
+            .meta
+            .speakers
+            .insert("spk1".to_string(), "Jamie".to_string());
+        filed.meta.capture_note = Some("Microphone clipped".to_string());
+        s.save_meta(&filed).unwrap();
+
+        let db = dir.path().join("ix.sqlite");
+        let mut ix = Index::open(&db).unwrap();
+        ix.rebuild(&s).unwrap();
+
+        let folder = ix.search("Finance").unwrap();
+        assert_eq!(folder.len(), 1);
+        assert_eq!(folder[0].kind, SearchHitKind::Folder);
+        assert_eq!(ix.search("Jamie").unwrap().len(), 1);
+        assert_eq!(ix.search("Microphone").unwrap().len(), 1);
     }
 
     #[test]
@@ -659,7 +740,7 @@ mod tests {
 
     #[test]
     fn the_snippet_column_constants_address_the_columns_they_name() {
-        assert_eq!(FTS_COLUMNS[SNIPPET_COLUMN], "transcript");
+        assert_eq!(FTS_COLUMNS[SNIPPET_COLUMN], "title");
         assert_eq!(FTS_COLUMNS[SNIPPET_FALLBACK_COLUMN], "notes");
     }
 }

@@ -59,6 +59,13 @@ export function applyIpcDefaults(): void {
   vi.mocked(api.listRecordings).mockResolvedValue([]);
   vi.mocked(api.listArchivedRecordings).mockResolvedValue([]);
   vi.mocked(api.search).mockResolvedValue([]);
+  vi.mocked(api.unassignTask).mockResolvedValue(undefined);
+  vi.mocked(api.queueSnapshot).mockResolvedValue({
+    items: [],
+    processingEnabled: false,
+    idleAllowed: true,
+    modelsReady: false,
+  });
   vi.mocked(api.listTemplates).mockResolvedValue([
     { id: "default", name: "General notes", blurb: "A good default for any conversation." },
     { id: "lecture", name: "Lecture or class", blurb: "One person teaching." },

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { api, LANGUAGE_CHOICES } from "../lib/ipc";
+import { api, LANGUAGE_CHOICES, RECOMMENDED_LLM_MODEL } from "../lib/ipc";
 import { checkForUpdate, installUpdate } from "../lib/updater";
 import type { PendingUpdate, UpdateProgress } from "../lib/updater";
 import type {
@@ -60,6 +60,11 @@ function ollamaStatusKind(status: OllamaStatus | null): "recorded" | "processing
   return "ready";
 }
 
+function modelMatches(installed: string, configured: string): boolean {
+  if (installed === configured) return true;
+  return !configured.includes(":") && installed.split(":", 1)[0] === configured;
+}
+
 function PullBar({ entry, fallbackName }: { entry: PullProgress | undefined; fallbackName: string }) {
   if (entry?.error) {
     return (
@@ -104,7 +109,6 @@ export function Settings({ onClose }: SettingsProps) {
 
   const [storageDraft, setStorageDraft] = useState("");
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
-  const [modelDraft, setModelDraft] = useState("");
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -128,30 +132,34 @@ export function Settings({ onClose }: SettingsProps) {
         if (loaded) {
           setStorageDraft(loaded.storageRoot);
           setBaseUrlDraft(loaded.llmBaseUrl);
-          setModelDraft(loaded.llmModel);
         }
       } catch (err) {
         if (!cancelled) setLoadError(describeError(err));
       }
     })();
-    (async () => {
-      try {
-        const tier = await api.detectedTier();
-        if (!cancelled) setDetectedTier(tier ?? null);
-      } catch (err) {
-        if (!cancelled) setLoadError(describeError(err));
-      }
-    })();
-    (async () => {
-      try {
-        const status = await api.ollamaStatus();
-        if (!cancelled) setOllama(status ?? null);
-      } catch (err) {
-        if (!cancelled) setLoadError(describeError(err));
-      }
-    })();
+    // Hardware probing and the Ollama HTTP check can be slow on a fresh
+    // machine. Let the settings fields paint first, then fill in diagnostics.
+    const deferred = window.setTimeout(() => {
+      void api
+        .detectedTier()
+        .then((tier) => {
+          if (!cancelled) setDetectedTier(tier ?? null);
+        })
+        .catch((err) => {
+          if (!cancelled) setLoadError(describeError(err));
+        });
+      void api
+        .ollamaStatus()
+        .then((status) => {
+          if (!cancelled) setOllama(status ?? null);
+        })
+        .catch((err) => {
+          if (!cancelled) setLoadError(describeError(err));
+        });
+    }, 0);
     return () => {
       cancelled = true;
+      window.clearTimeout(deferred);
     };
   }, []);
 
@@ -188,7 +196,10 @@ export function Settings({ onClose }: SettingsProps) {
     };
   }, [pulling, refreshPullProgress]);
 
-  const pullEntry = settings ? progress.find((p) => p.name === settings.llmModel) : undefined;
+  const modelTarget = settings?.llmModel.trim() || RECOMMENDED_LLM_MODEL;
+  const pullEntry = settings ? progress.find((p) => p.name === modelTarget) : undefined;
+  const installedModels = ollama?.models ?? [];
+  const selectedInstalledModel = installedModels.find((model) => modelMatches(model, modelTarget)) ?? "";
 
   useEffect(() => {
     if (pullEntry?.done) {
@@ -207,7 +218,7 @@ export function Settings({ onClose }: SettingsProps) {
     setLoadError(null);
     setPulling(true);
     try {
-      await api.pullModel(settings.llmModel);
+      await api.pullModel(modelTarget);
     } catch (err) {
       setLoadError(describeError(err));
       setPulling(false);
@@ -275,16 +286,6 @@ export function Settings({ onClose }: SettingsProps) {
       updateSettings({ ...settings, llmBaseUrl: trimmed });
     } else {
       setBaseUrlDraft(settings.llmBaseUrl);
-    }
-  }
-
-  function commitModel() {
-    if (!settings) return;
-    const trimmed = modelDraft.trim();
-    if (trimmed && trimmed !== settings.llmModel) {
-      updateSettings({ ...settings, llmModel: trimmed });
-    } else {
-      setModelDraft(settings.llmModel);
     }
   }
 
@@ -399,14 +400,47 @@ export function Settings({ onClose }: SettingsProps) {
                 </div>
                 <div className="settings-field">
                   <label htmlFor="settings-llm-model">Summary AI model</label>
-                  <p className="settings-hint">Which model on that service writes your summaries.</p>
-                  <input
+                  <p className="settings-hint">
+                    Choose from models already downloaded in Ollama. Notetaker never sends your recordings
+                    to a cloud model.
+                  </p>
+                  <select
                     id="settings-llm-model"
-                    type="text"
-                    value={modelDraft}
-                    onChange={(e) => setModelDraft(e.target.value)}
-                    onBlur={commitModel}
-                  />
+                    value={selectedInstalledModel}
+                    disabled={!ollama?.running || installedModels.length === 0}
+                    onChange={(e) => updateSettings({ ...settings, llmModel: e.target.value })}
+                  >
+                    {!selectedInstalledModel && (
+                      <option value="" disabled>
+                        {ollama === null
+                          ? "Checking downloaded models…"
+                          : !ollama.running
+                            ? "Open Ollama to see downloaded models"
+                            : installedModels.length === 0
+                              ? "No downloaded models yet"
+                              : `Configured model unavailable (${modelTarget})`}
+                      </option>
+                    )}
+                    {installedModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model} — {modelMatches(model, RECOMMENDED_LLM_MODEL)
+                          ? "Recommended, downloaded"
+                          : "Downloaded"}
+                      </option>
+                    ))}
+                  </select>
+                  {ollama?.running && installedModels.length === 0 && (
+                    <p className="settings-hint settings-hint--action">
+                      No local models are downloaded yet. Use the button below to download the recommended
+                      model ({RECOMMENDED_LLM_MODEL}).
+                    </p>
+                  )}
+                  {ollama?.running && installedModels.length > 0 && !selectedInstalledModel && (
+                    <p className="settings-hint settings-hint--action">
+                      The configured model is unavailable on this computer. Pick one of the downloaded
+                      models above.
+                    </p>
+                  )}
                 </div>
 
                 <div className="settings-field">
@@ -428,10 +462,10 @@ export function Settings({ onClose }: SettingsProps) {
                   {ollama?.running && (
                     <div className="settings-pull">
                       <button type="button" onClick={handlePull} disabled={pulling}>
-                        {ollama.modelReady ? "Pull again" : "Pull model"}
+                        {ollama.modelReady ? "Download again" : `Download ${modelTarget}`}
                       </button>
                       {(pulling || pullEntry?.error) && (
-                        <PullBar entry={pullEntry} fallbackName={settings.llmModel} />
+                        <PullBar entry={pullEntry} fallbackName={modelTarget} />
                       )}
                     </div>
                   )}

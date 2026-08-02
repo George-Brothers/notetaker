@@ -158,6 +158,7 @@ describe("Settings screen", () => {
   });
 
   it("loads and displays the current settings when opened", async () => {
+    setupApi({ ollama: OLLAMA_READY });
     const dialog = await openSettings();
     // Called at least once by Settings itself (the first-run card, mounted
     // in the background, also reads settings to know which model to pull).
@@ -201,11 +202,16 @@ describe("Settings screen", () => {
     );
   });
 
-  it("persists the summary AI model name when edited and blurred", async () => {
+  it("persists a selected downloaded summary AI model", async () => {
+    setupApi({
+      ollama: {
+        ...OLLAMA_READY,
+        models: ["qwen2.5:7b", "llama3:8b"],
+      },
+    });
     const dialog = await openSettings();
-    const input = within(dialog).getByLabelText("Summary AI model");
-    fireEvent.change(input, { target: { value: "llama3:8b" } });
-    fireEvent.blur(input);
+    const select = within(dialog).getByLabelText("Summary AI model");
+    fireEvent.change(select, { target: { value: "llama3:8b" } });
 
     await waitFor(() =>
       expect(api.setSettings).toHaveBeenCalledWith({ ...BASE_SETTINGS, llmModel: "llama3:8b" })
@@ -370,7 +376,7 @@ describe("Settings screen", () => {
         })
     );
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Pull model" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Download qwen2.5:7b" }));
 
     await waitFor(() => expect(api.pullModel).toHaveBeenCalledWith("qwen2.5:7b"));
 
@@ -387,7 +393,7 @@ describe("Settings screen", () => {
       { kind: "ollama", name: "qwen2.5:7b", percent: 10, error: "Connection refused", done: true },
     ]);
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Pull model" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Download qwen2.5:7b" }));
 
     expect(await within(dialog).findByText("Connection refused")).toBeInTheDocument();
     expect(
@@ -476,6 +482,7 @@ describe("First-run checklist", () => {
     render(<App />);
     const card = await screen.findByRole("region", { name: "Getting started" });
 
+    fireEvent.click(within(card).getByRole("button", { name: "Look for existing speech models" }));
     expect(await within(card).findByText(/Found a copy of this on your computer/i)).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "Use it instead" }));
     await waitFor(() => expect(api.adoptModels).toHaveBeenCalledOnce());

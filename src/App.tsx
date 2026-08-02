@@ -12,6 +12,7 @@ import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
 import { useAutoUpdate } from "./hooks/useAutoUpdate";
+import { useProcessingQueue } from "./hooks/useProcessingQueue";
 import { useTheme } from "./hooks/useTheme";
 import { Sidebar } from "./components/Sidebar";
 import { NoteView } from "./components/NoteView";
@@ -21,6 +22,7 @@ import { Settings } from "./components/Settings";
 import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
+import { QueuePanel } from "./components/QueuePanel";
 import { IconButton, Notice, TooltipProvider } from "./components/ui";
 import { api, type CaptureStatus, type SetupStatus } from "./lib/ipc";
 
@@ -51,9 +53,13 @@ export function liveRecordingId(
 function App() {
   const lib = useLibrary();
   const capture = useCapture();
+  const processingQueue = useProcessingQueue();
   const theme = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [processBlocked, setProcessBlocked] = useState<string | null>(null);
+  const [processFeedback, setProcessFeedback] = useState<string | null>(null);
+  const [processFeedbackTone, setProcessFeedbackTone] = useState<"ok" | "error">("ok");
+  const [processSubmitting, setProcessSubmitting] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
@@ -107,18 +113,31 @@ function App() {
   // explanation. So: ask first, and say the true thing instead.
   const processNow = useCallback(
     async (id: string) => {
-      const setup = await api.setupStatus().catch(() => null);
-      if (setup && !setup.transcribing) {
-        setProcessBlocked(
-          setup.missing.length > 0
-            ? "Nothing can be transcribed yet — the speech models aren't downloaded. This recording is safe and will be processed as soon as they are."
-            : "Transcription isn't running. Your recording is safe; restarting the app usually fixes this.",
-        );
+      if (processSubmitting === id) return;
+      setProcessSubmitting(id);
+      setProcessBlocked(null);
+      setProcessFeedbackTone("ok");
+      setProcessFeedback("Adding this recording to the processing queue…");
+      try {
+        const setup = await api.setupStatus().catch(() => null);
+        if (setup && !setup.transcribing) {
+          setProcessBlocked(
+            setup.missing.length > 0
+              ? "Nothing can be transcribed yet — the speech models aren't downloaded. This recording is safe and will be processed as soon as they are."
+              : "Transcription isn't running. Your recording is safe; restarting the app usually fixes this.",
+          );
+        }
+        await api.processNow(id);
+        await Promise.all([lib.refreshRecordings(), processingQueue.refresh()]);
+        setProcessFeedback("Added to the processing queue. You can keep working while it runs.");
+      } catch (err) {
+        setProcessFeedbackTone("error");
+        setProcessFeedback(err instanceof Error ? `Couldn’t queue it: ${err.message}` : String(err));
+      } finally {
+        setProcessSubmitting(null);
       }
-      await api.processNow(id);
-      await lib.refreshRecordings();
     },
-    [lib],
+    [lib, processSubmitting, processingQueue],
   );
 
   return (
@@ -161,6 +180,22 @@ function App() {
             </button>
           </Notice>
         )}
+        {processFeedback && (
+          <Notice
+            tone={processFeedbackTone}
+            className="mx-3 mt-2 shrink-0"
+            role={processFeedbackTone === "error" ? "alert" : "status"}
+          >
+            {processFeedback}{" "}
+            <button
+              type="button"
+              onClick={() => setProcessFeedback(null)}
+              className="underline underline-offset-2"
+            >
+              Dismiss
+            </button>
+          </Notice>
+        )}
         {lib.loadError && (
           <Notice className="mx-3 mt-2 shrink-0">
             {lib.loadError}{" "}
@@ -189,6 +224,8 @@ function App() {
             activeView={lib.view}
             onSelectView={lib.setView}
             onCreateTask={lib.createTask}
+            onRenameTask={lib.renameTask}
+            onDeleteTask={lib.deleteTask}
             recordings={lib.recordings}
             selectedId={lib.selectedId}
             onSelectRecording={lib.selectRecording}
@@ -220,26 +257,25 @@ function App() {
               onSetTemplate={lib.setTemplate}
               onToggleAction={lib.toggleAction}
               onProcessNow={processNow}
+              processPending={processSubmitting === lib.selectedId}
             />
           </main>
         </div>
 
+        <QueuePanel
+          snapshot={processingQueue.snapshot}
+          error={processingQueue.error}
+          onSelectRecording={lib.selectRecording}
+          onPause={processingQueue.pause}
+          onResume={processingQueue.resume}
+          onCancel={processingQueue.cancel}
+          onRetry={processingQueue.retry}
+        />
+
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
-          recordings={lib.recordings}
           onSelectRecording={lib.selectRecording}
-          capture={capture.status}
-          themeIsDark={theme.resolved === "dark"}
-          canAsk={lib.selectedId !== null}
-          actions={{
-            startMeeting: () => capture.start("meeting", ""),
-            startInPerson: () => capture.start("in_person", ""),
-            stop: () => void stopAndOpen(),
-            openSettings: () => setSettingsOpen(true),
-            toggleTheme: theme.toggle,
-            openAsk: () => setAskOpen(true),
-          }}
         />
 
         {capture.pendingMeeting && (

@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::index::Index;
-use crate::storage::{Mode, RecordingRef, Status, Store};
+use crate::storage::{Mode, QueueControl, RecordingRef, Status, Store};
 use crate::watch::AutoRecordPolicy;
 
 /// Sidecar file name, inside a recording's own directory, holding the AI's
@@ -112,6 +112,55 @@ pub struct SearchHit {
     pub title: String,
     pub task: Option<String>,
     pub snippet: String,
+    pub kind: SearchHitKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchHitKind {
+    Title,
+    Folder,
+    Transcript,
+    Summary,
+    Notes,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueItemState {
+    Queued,
+    Processing,
+    Completed,
+    Retryable,
+    Failed,
+    Paused,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueItem {
+    pub id: String,
+    pub title: String,
+    pub state: QueueItemState,
+    pub stage: Option<String>,
+    pub stage_index: u8,
+    pub stage_count: u8,
+    pub started_at: Option<String>,
+    pub elapsed_s: f64,
+    pub position: Option<usize>,
+    pub attempts: u32,
+    pub error: Option<String>,
+    pub created: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueSnapshot {
+    pub items: Vec<QueueItem>,
+    pub processing_enabled: bool,
+    pub idle_allowed: bool,
+    pub models_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -399,8 +448,107 @@ pub fn search(index: &Index, query: &str) -> Result<Vec<SearchHit>> {
             title: h.title,
             task: h.task,
             snippet: h.snippet,
+            kind: match h.kind {
+                crate::index::SearchHitKind::Title => SearchHitKind::Title,
+                crate::index::SearchHitKind::Folder => SearchHitKind::Folder,
+                crate::index::SearchHitKind::Transcript => SearchHitKind::Transcript,
+                crate::index::SearchHitKind::Summary => SearchHitKind::Summary,
+                crate::index::SearchHitKind::Notes => SearchHitKind::Notes,
+            },
         })
         .collect())
+}
+
+/// A restart-safe view of processing work. It reads the recording metadata
+/// directly, so it remains useful while the disposable search index is being
+/// rebuilt in the background.
+pub fn queue_snapshot(
+    store: &Store,
+    processing_enabled: bool,
+    idle_allowed: bool,
+    models_ready: bool,
+) -> Result<QueueSnapshot> {
+    let mut records = store.scan()?;
+    records.sort_by(|a, b| b.meta.created.cmp(&a.meta.created));
+    let mut queued = records
+        .iter()
+        .filter(|r| r.meta.status == Status::Queued && r.meta.queue_control == QueueControl::Active)
+        .collect::<Vec<_>>();
+    queued.sort_by(|a, b| a.meta.created.cmp(&b.meta.created));
+
+    // Keep the panel useful on a large library: active work and failures are
+    // always visible, while only the five most recent completed recordings are
+    // retained as recent queue history.
+    let mut completed_seen = 0usize;
+    let visible = records.iter().filter(|rec| {
+        if rec.meta.status != Status::Ready {
+            return true;
+        }
+        if completed_seen >= 5 {
+            return false;
+        }
+        completed_seen += 1;
+        true
+    });
+    let items = visible
+        .map(|rec| {
+            let state = match (rec.meta.status, rec.meta.queue_control) {
+                (_, QueueControl::Paused) => QueueItemState::Paused,
+                (_, QueueControl::Cancelled) => QueueItemState::Cancelled,
+                (Status::Processing, _) => QueueItemState::Processing,
+                (Status::Queued, _) if rec.meta.attempts > 0 => QueueItemState::Retryable,
+                (Status::Queued | Status::Recorded, _) => QueueItemState::Queued,
+                (Status::Ready, _) => QueueItemState::Completed,
+                (Status::Failed, _) => QueueItemState::Failed,
+            };
+            let elapsed_s = if state == QueueItemState::Processing {
+                rec.meta
+                    .processing_started_at
+                    .as_deref()
+                    .and_then(|value| value.parse::<chrono::DateTime<chrono::FixedOffset>>().ok())
+                    .map(|started| {
+                        chrono::Utc::now()
+                            .signed_duration_since(started.with_timezone(&chrono::Utc))
+                            .num_milliseconds()
+                            .max(0) as f64
+                            / 1000.0
+                    })
+                    .unwrap_or(rec.meta.processing_elapsed_s)
+            } else {
+                rec.meta.processing_elapsed_s
+            };
+            QueueItem {
+                id: rec.meta.id.clone(),
+                title: rec.meta.title.clone(),
+                state,
+                stage: rec.meta.processing_stage.clone(),
+                stage_index: rec.meta.processing_stage_index,
+                stage_count: rec.meta.processing_stage_count,
+                started_at: rec.meta.processing_started_at.clone(),
+                elapsed_s,
+                position: if rec.meta.status == Status::Queued
+                    && rec.meta.queue_control == QueueControl::Active
+                {
+                    queued
+                        .iter()
+                        .position(|item| item.meta.id == rec.meta.id)
+                        .map(|i| i + 1)
+                } else {
+                    None
+                },
+                attempts: rec.meta.attempts,
+                error: rec.meta.error.clone(),
+                created: rec.meta.created.clone(),
+            }
+        })
+        .collect();
+
+    Ok(QueueSnapshot {
+        items,
+        processing_enabled,
+        idle_allowed,
+        models_ready,
+    })
 }
 
 /// User-requested "process this now": unlike the idle-time queue's
@@ -413,9 +561,20 @@ pub fn process_now(store: &Store, id: &str) -> Result<()> {
     match rec.meta.status {
         Status::Recorded | Status::Failed | Status::Ready => {
             rec.meta.status = Status::Queued;
+            rec.meta.queue_control = QueueControl::Active;
+            rec.meta.processing_stage = None;
+            rec.meta.processing_stage_index = 0;
+            rec.meta.processing_stage_count = 0;
+            rec.meta.processing_started_at = None;
+            rec.meta.processing_elapsed_s = 0.0;
             store.save_meta(&rec)?;
         }
-        Status::Queued | Status::Processing => {}
+        Status::Queued | Status::Processing => {
+            if rec.meta.queue_control != QueueControl::Active {
+                rec.meta.queue_control = QueueControl::Active;
+                store.save_meta(&rec)?;
+            }
+        }
     }
     Ok(())
 }
@@ -445,6 +604,15 @@ pub fn assign_task(store: &Store, index: &mut Index, id: &str, task: &str) -> Re
     // sidecar so the "Suggested: …" banner doesn't keep showing on a
     // recording that already lives in that task.
     let _ = fs::remove_file(moved.dir.join(SUGGESTED_TASK_FILE));
+    index.upsert(&moved)?;
+    Ok(())
+}
+
+/// Moves a recording from a folder back to Unsorted and re-indexes it so the
+/// sidebar and global search agree immediately.
+pub fn unassign_task(store: &Store, index: &mut Index, id: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    let moved = store.unassign_task(&rec)?;
     index.upsert(&moved)?;
     Ok(())
 }
@@ -765,6 +933,14 @@ mod tests {
         assert!(moved
             .dir
             .starts_with(dir.path().join("Tasks").join("Accounting 302")));
+
+        unassign_task(&s, &mut ix, &rec.meta.id).unwrap();
+        let hits = ix.search("budget").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].task, None);
+        let unsorted = find_by_id(&s, &rec.meta.id).unwrap();
+        assert!(unsorted.task.is_none());
+        assert!(unsorted.dir.starts_with(dir.path().join("Unsorted")));
     }
 
     // --- rename_recording ------------------------------------------------
