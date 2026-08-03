@@ -54,6 +54,24 @@ fn create_task(rt: State<'_, Runtime>, name: String) -> Result<Value, String> {
     call(&rt, "create_task", json!({ "name": name }))
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn rename_task(
+    rt: State<'_, Runtime>,
+    old_name: String,
+    new_name: String,
+) -> Result<Value, String> {
+    call(
+        &rt,
+        "rename_task",
+        json!({ "oldName": old_name, "newName": new_name }),
+    )
+}
+
+#[tauri::command]
+fn delete_task(rt: State<'_, Runtime>, name: String) -> Result<Value, String> {
+    call(&rt, "delete_task", json!({ "name": name }))
+}
+
 #[tauri::command]
 fn list_recordings(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "list_recordings", json!({}))
@@ -79,6 +97,31 @@ fn process_now(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
     call(&rt, "process_now", json!({ "id": id }))
 }
 
+#[tauri::command]
+fn queue_snapshot(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "queue_snapshot", json!({}))
+}
+
+#[tauri::command]
+fn pause_processing(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "pause_processing", json!({ "id": id }))
+}
+
+#[tauri::command]
+fn resume_processing(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "resume_processing", json!({ "id": id }))
+}
+
+#[tauri::command]
+fn cancel_processing(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "cancel_processing", json!({ "id": id }))
+}
+
+#[tauri::command]
+fn retry_processing(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "retry_processing", json!({ "id": id }))
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn update_summary(rt: State<'_, Runtime>, id: String, summary_md: String) -> Result<Value, String> {
     call(
@@ -91,6 +134,11 @@ fn update_summary(rt: State<'_, Runtime>, id: String, summary_md: String) -> Res
 #[tauri::command]
 fn assign_task(rt: State<'_, Runtime>, id: String, task: String) -> Result<Value, String> {
     call(&rt, "assign_task", json!({ "id": id, "task": task }))
+}
+
+#[tauri::command]
+fn unassign_task(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "unassign_task", json!({ "id": id }))
 }
 
 #[tauri::command]
@@ -320,12 +368,11 @@ pub fn run() {
             logging::install(&app_dir);
             let runtime = open_runtime(&app_dir)?;
 
-            // Recovers what a crash left behind, rebuilds the search index, and
-            // starts transcribing in the background. One call, shared with
-            // `notetaker-serve`, because this crate never compiles on the
-            // development machine — anything written here and nowhere else is
-            // unverified until CI.
-            runtime.launch();
+            // Start recovery, index rebuild, and model loading after the
+            // desktop shell can paint. The work is still shared with
+            // `notetaker-serve`; only the desktop transport needs the faster
+            // first paint.
+            runtime.launch_background();
 
             app.manage(runtime);
             Ok(())
@@ -333,13 +380,21 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_tasks,
             create_task,
+            rename_task,
+            delete_task,
             list_recordings,
             list_archived_recordings,
             get_recording,
             search,
             process_now,
+            queue_snapshot,
+            pause_processing,
+            resume_processing,
+            cancel_processing,
+            retry_processing,
             update_summary,
             assign_task,
+            unassign_task,
             rename_recording,
             archive_recording,
             restore_recording,

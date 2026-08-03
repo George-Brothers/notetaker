@@ -7,9 +7,9 @@
 //! `Processing` status on disk, and a later startup sweep can requeue it.
 
 use anyhow::Result;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 
-use crate::storage::{RecordingRef, Status, Store};
+use crate::storage::{QueueControl, RecordingRef, Status, Store};
 
 /// Whether the machine is idle enough to start a processing job right now.
 /// The real macOS idle-time implementation lives elsewhere (Plan B); this
@@ -63,6 +63,8 @@ impl<'a> Queue<'a> {
         match rec.meta.status {
             Status::Recorded | Status::Failed => {
                 rec.meta.status = Status::Queued;
+                rec.meta.queue_control = QueueControl::Active;
+                clear_progress(rec);
                 // Clear any error from a previous failed attempt so the UI
                 // does not show a stale "download interrupted" on a
                 // recording that is now queued to run again.
@@ -87,7 +89,9 @@ impl<'a> Queue<'a> {
             .store
             .scan()?
             .into_iter()
-            .filter(|r| r.meta.status == Status::Queued)
+            .filter(|r| {
+                r.meta.status == Status::Queued && r.meta.queue_control == QueueControl::Active
+            })
             .collect();
         queued.sort_by_key(created_key);
         Ok(queued.into_iter().next())
@@ -114,6 +118,12 @@ impl<'a> Queue<'a> {
         };
 
         rec.meta.status = Status::Processing;
+        rec.meta.queue_control = QueueControl::Active;
+        rec.meta.processing_started_at = Some(Utc::now().to_rfc3339());
+        rec.meta.processing_stage = None;
+        rec.meta.processing_stage_index = 0;
+        rec.meta.processing_stage_count = 0;
+        rec.meta.processing_elapsed_s = 0.0;
         self.store.save_meta(&rec)?;
 
         let result = process(&rec);
@@ -128,6 +138,9 @@ impl<'a> Queue<'a> {
         match result {
             Ok(()) => {
                 rec.meta.status = Status::Ready;
+                rec.meta.processing_elapsed_s =
+                    elapsed_since(&rec).unwrap_or(rec.meta.processing_elapsed_s);
+                clear_progress(&mut rec);
                 self.store.save_meta(&rec)?;
                 Ok(RunOutcome::Ran)
             }
@@ -136,16 +149,40 @@ impl<'a> Queue<'a> {
                 if rec.meta.attempts >= MAX_ATTEMPTS {
                     rec.meta.status = Status::Failed;
                     rec.meta.error = Some(e.to_string());
+                    rec.meta.processing_elapsed_s =
+                        elapsed_since(&rec).unwrap_or(rec.meta.processing_elapsed_s);
+                    rec.meta.processing_started_at = None;
                     self.store.save_meta(&rec)?;
                     Ok(RunOutcome::FailedFinal)
                 } else {
                     rec.meta.status = Status::Queued;
+                    rec.meta.processing_elapsed_s =
+                        elapsed_since(&rec).unwrap_or(rec.meta.processing_elapsed_s);
+                    rec.meta.processing_started_at = None;
                     self.store.save_meta(&rec)?;
                     Ok(RunOutcome::FailedWillRetry)
                 }
             }
         }
     }
+}
+
+fn clear_progress(rec: &mut RecordingRef) {
+    rec.meta.processing_stage = None;
+    rec.meta.processing_stage_index = 0;
+    rec.meta.processing_stage_count = 0;
+    rec.meta.processing_started_at = None;
+}
+
+fn elapsed_since(rec: &RecordingRef) -> Option<f64> {
+    let started = rec
+        .meta
+        .processing_started_at
+        .as_deref()?
+        .parse::<DateTime<FixedOffset>>()
+        .ok()?;
+    let elapsed = Utc::now().signed_duration_since(started.with_timezone(&Utc));
+    Some(elapsed.num_milliseconds().max(0) as f64 / 1000.0)
 }
 
 /// Sort key for `Meta.created` (RFC3339), used to find the oldest queued

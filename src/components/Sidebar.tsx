@@ -16,13 +16,17 @@ import {
   ChevronDown,
   ChevronRight,
   Archive,
+  Check,
   FolderOpen,
   Inbox,
   Layers,
   NotebookPen,
+  Pencil,
   Plus,
   Search,
   Sparkles,
+  Trash2,
+  X,
 } from "lucide-react";
 import type { RecordingRow, SearchHit } from "../lib/ipc";
 import type { LibraryView } from "../hooks/useLibrary";
@@ -36,6 +40,8 @@ export interface SidebarProps {
   activeView: LibraryView;
   onSelectView: (view: LibraryView) => void;
   onCreateTask: (name: string) => void;
+  onRenameTask?: (oldName: string, newName: string) => void;
+  onDeleteTask?: (name: string) => void;
   recordings: RecordingRow[];
   selectedId: string | null;
   onSelectRecording: (id: string) => void;
@@ -153,11 +159,147 @@ function RecordingItem({
   );
 }
 
+function FolderItem({
+  name,
+  active,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  name: string;
+  active: boolean;
+  onSelect: () => void;
+  onRename: (newName: string) => void;
+  onDelete: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [draft, setDraft] = useState(name);
+
+  function beginRename() {
+    setDraft(name);
+    setEditing(true);
+    setConfirming(false);
+  }
+
+  function submitRename(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === name) {
+      setEditing(false);
+      setDraft(name);
+      return;
+    }
+    onRename(trimmed);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <form onSubmit={submitRename} className="flex items-center gap-1 px-1 py-0.5">
+        <label htmlFor={`rename-folder-${name}`} className="sr-only">
+          Rename folder {name}
+        </label>
+        <input
+          id={`rename-folder-${name}`}
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+              setDraft(name);
+            }
+          }}
+          className="h-7 min-w-0 flex-1 rounded-[var(--radius-control)] border border-border bg-raised px-2 text-[13px] text-fg focus:border-accent focus:outline-none"
+        />
+        <button
+          type="submit"
+          aria-label={`Save folder ${name}`}
+          className="rounded p-1 text-accent hover:bg-hover"
+        >
+          <Check size={13} />
+        </button>
+        <button
+          type="button"
+          aria-label={`Cancel renaming ${name}`}
+          onClick={() => {
+            setEditing(false);
+            setDraft(name);
+          }}
+          className="rounded p-1 text-fg-faint hover:bg-hover hover:text-fg"
+        >
+          <X size={13} />
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <>
+      <div className="group flex items-center gap-0.5">
+        <div className="min-w-0 flex-1">
+          <NavItem active={active} icon={<FolderOpen size={14} />} onClick={onSelect}>
+            {name}
+          </NavItem>
+        </div>
+        <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <button
+            type="button"
+            aria-label={`Rename folder ${name}`}
+            title={`Rename ${name}`}
+            onClick={beginRename}
+            className="rounded p-1 text-fg-faint hover:bg-hover hover:text-fg"
+          >
+            <Pencil size={12} />
+          </button>
+          <button
+            type="button"
+            aria-label={`Delete folder ${name}`}
+            title={`Delete ${name}`}
+            onClick={() => setConfirming(true)}
+            className="rounded p-1 text-fg-faint hover:bg-hover hover:text-error"
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      </div>
+      {confirming && (
+        <div role="alert" className="mx-2 my-1 rounded-[var(--radius-control)] bg-sunken px-2 py-1.5 text-[11px] leading-snug text-fg-muted">
+          Delete this folder? Its recordings will move to Unsorted.
+          <div className="mt-1.5 flex gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setConfirming(false);
+                onDelete();
+              }}
+              className="rounded px-1.5 py-0.5 font-medium text-error hover:bg-hover"
+            >
+              Delete folder
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="rounded px-1.5 py-0.5 text-fg-faint hover:bg-hover hover:text-fg"
+            >
+              Keep it
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function Sidebar({
   tasks,
   activeView,
   onSelectView,
   onCreateTask,
+  onRenameTask = () => {},
+  onDeleteTask = () => {},
   recordings,
   selectedId,
   onSelectRecording,
@@ -168,7 +310,7 @@ export function Sidebar({
   modelsMissing = false,
   className,
 }: SidebarProps) {
-  const [tasksOpen, setTasksOpen] = useState(true);
+  const [foldersOpen, setFoldersOpen] = useState(true);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState("");
   const groups = useMemo(() => groupByDay(recordings), [recordings]);
@@ -210,18 +352,17 @@ export function Sidebar({
             value={query}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search everything"
-            aria-label="Search transcripts and summaries"
+            aria-label="Search local library"
             className="h-8 w-full rounded-[var(--radius-control)] border border-border bg-sunken pl-8 pr-2 text-[13px] text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none"
           />
         </div>
-        {/* A separate entry point from search: the palette also reaches
-            commands and settings, and is the faster path once you know it. */}
+        {/* A keyboard-first entry point for the same local search. */}
         <button
           type="button"
           onClick={onOpenPalette}
           className="flex items-center justify-between rounded-[var(--radius-control)] px-1 py-0.5 text-[11px] text-fg-faint transition-colors hover:text-fg-muted"
         >
-          <span>Jump to anything</span>
+          <span>Search local content</span>
           <Kbd>{modKey()} K</Kbd>
         </button>
       </div>
@@ -248,13 +389,11 @@ export function Sidebar({
                       )}
                     >
                       <span className="truncate text-[13px] text-fg">{hit.title}</span>
-                      <span className="text-[11px] text-fg-faint">{hit.task ?? "Unsorted"}</span>
+                      <span className="text-[11px] text-fg-faint">
+                        {hit.task ?? "Unsorted"} · {searchKindLabel(hit.kind)}
+                      </span>
                       <span className="line-clamp-2 text-[12px] leading-snug text-fg-muted">
-                        {/* SQLite's snippet() wraps matches in <b>. Rendered as
-                            text rather than HTML: the tags are noise, and
-                            injecting markup here would be the one XSS surface
-                            in an app that otherwise renders no HTML at all. */}
-                        {hit.snippet.replace(/<\/?b>/g, "")}
+                        {highlightSnippet(hit.snippet)}
                       </span>
                     </button>
                   </li>
@@ -295,53 +434,53 @@ export function Sidebar({
               </NavItem>
             </section>
 
-            <section aria-label="Tasks" className="mt-4">
+            <section aria-label="Folders" className="mt-4">
               <div className="flex items-center justify-between px-2 pb-1">
                 <button
                   type="button"
-                  onClick={() => setTasksOpen((o) => !o)}
-                  aria-expanded={tasksOpen}
+                  onClick={() => setFoldersOpen((o) => !o)}
+                  aria-expanded={foldersOpen}
                   className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-fg-faint hover:text-fg-muted"
                 >
-                  {tasksOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  Tasks
+                  {foldersOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  Folders
                 </button>
                 <button
                   type="button"
                   onClick={() => setCreating(true)}
-                  aria-label="New task"
+                  aria-label="New folder"
                   className="rounded p-0.5 text-fg-faint hover:bg-hover hover:text-fg"
                 >
                   <Plus size={13} />
                 </button>
               </div>
-              {tasksOpen && (
+              {foldersOpen && (
                 <div className="flex flex-col gap-0.5">
                   {tasks.map((task) => (
-                    <NavItem
+                    <FolderItem
                       key={task}
                       active={isActive(activeView, { kind: "task", name: task })}
-                      icon={<FolderOpen size={14} />}
-                      onClick={() => onSelectView({ kind: "task", name: task })}
-                    >
-                      {task}
-                    </NavItem>
+                      name={task}
+                      onSelect={() => onSelectView({ kind: "task", name: task })}
+                      onRename={(newName) => onRenameTask(task, newName)}
+                      onDelete={() => onDeleteTask(task)}
+                    />
                   ))}
                   {tasks.length === 0 && !creating && (
                     <p className="px-2 py-1 text-[12px] text-fg-faint">
-                      No tasks yet. Recordings stay in Unsorted until you make one.
+                      No folders yet. Recordings stay in Unsorted until you make one.
                     </p>
                   )}
                   {creating && (
                     <form onSubmit={submitCreate} className="flex gap-1 px-2 py-1">
-                      <label htmlFor="new-task-input" className="sr-only">
-                        New task name
+                      <label htmlFor="new-folder-input" className="sr-only">
+                        New folder name
                       </label>
                       <input
-                        id="new-task-input"
+                        id="new-folder-input"
                         autoFocus
                         value={draft}
-                        placeholder="Task name"
+                        placeholder="Folder name"
                         onChange={(e) => setDraft(e.target.value)}
                         onKeyDown={handleDraftKeyDown}
                         className="h-7 min-w-0 flex-1 rounded-[var(--radius-control)] border border-border bg-raised px-2 text-[13px] text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none"
@@ -391,4 +530,29 @@ export function Sidebar({
       </div>
     </nav>
   );
+}
+
+function searchKindLabel(kind: SearchHit["kind"]): string {
+  return kind === "title"
+    ? "Title"
+    : kind === "folder"
+      ? "Folder"
+      : kind === "transcript"
+        ? "Transcript"
+        : kind === "summary"
+          ? "Summary"
+          : "Notes";
+}
+
+function highlightSnippet(snippet: string) {
+  return snippet.split(/(<b>[\s\S]*?<\/b>)/gi).map((part, index) => {
+    const match = part.match(/^<b>([\s\S]*)<\/b>$/i);
+    return match ? (
+      <mark key={index} className="rounded bg-accent-soft px-0.5 text-fg">
+        {match[1]}
+      </mark>
+    ) : (
+      <span key={index}>{part}</span>
+    );
+  });
 }

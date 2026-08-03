@@ -147,6 +147,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [pulling, setPulling] = useState(false);
   const [downloadingModels, setDownloadingModels] = useState(false);
+  const [scanningModels, setScanningModels] = useState(false);
   const [adoptingModels, setAdoptingModels] = useState(false);
   const [savingLanguages, setSavingLanguages] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -188,13 +189,6 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
       .then((status) => {
         if (cancelled) return;
         setSetup(status ?? null);
-        // Looking through download folders only helps when models are actually
-        // absent. A completed setup used to scan needlessly and, worse, the UI
-        // then looked "not started" because it only knew in-memory progress.
-        if ((status?.missing.length ?? 0) === 0) return;
-        return api.findExistingModels().then((found) => {
-          if (!cancelled) setFoundModels(found ?? []);
-        });
       })
       .catch((err) => {
         if (!cancelled) setLoadError(describeError(err));
@@ -251,6 +245,18 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
       setLoadError(describeError(err));
     } finally {
       setDownloadingModels(false);
+    }
+  }
+
+  async function handleFindExistingModels() {
+    setLoadError(null);
+    setScanningModels(true);
+    try {
+      setFoundModels((await api.findExistingModels()) ?? []);
+    } catch (err) {
+      setLoadError(describeError(err));
+    } finally {
+      setScanningModels(false);
     }
   }
 
@@ -328,6 +334,11 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         <ChecklistItem index={3} title="Download the speech models" status={speechStatus}>
           {speechStatus !== "done" && (
             <>
+              {foundModels.length === 0 && (
+                <button type="button" onClick={handleFindExistingModels} disabled={scanningModels}>
+                  {scanningModels ? "Checking this computer…" : "Look for existing speech models"}
+                </button>
+              )}
               {foundModels.length > 0 && (
                 <div className="first-run__item-hint">
                   <p>Found a copy of this on your computer. Use it instead of downloading?</p>

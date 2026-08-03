@@ -63,7 +63,7 @@ export interface NoteViewProps {
   onRenameSpeaker: (id: string, key: string, name: string) => void;
   onSaveSummary: (id: string, summaryMd: string) => void;
   onRenameRecording: (id: string, title: string) => void;
-  onAssignTask: (id: string, task: string) => void;
+  onAssignTask: (id: string, task: string | null) => void;
   onArchiveRecording?: (id: string) => void;
   onRestoreRecording?: (id: string) => void;
   onDeleteRecording?: (id: string) => void;
@@ -71,6 +71,7 @@ export interface NoteViewProps {
   onSetTemplate: (id: string, template: string) => void;
   onToggleAction: (id: string, index: number, done: boolean) => void;
   onProcessNow: (id: string) => void;
+  processPending?: boolean;
   /** The recording currently being captured, if any. Null when idle. */
   liveRecordingId: string | null;
   /** Closes the recording. Only reachable on the narrow layout. */
@@ -114,6 +115,7 @@ export function NoteView({
   onSetTemplate,
   onToggleAction,
   onProcessNow,
+  processPending = false,
   liveRecordingId,
   onBack,
 }: NoteViewProps) {
@@ -272,13 +274,13 @@ export function NoteView({
                 <span>Archived</span>
               ) : (
                 <>
-                  <label className="sr-only" htmlFor="note-task">
-                    Task
+                  <label className="sr-only" htmlFor="note-folder">
+                    Folder
                   </label>
                   <select
-                    id="note-task"
+                    id="note-folder"
                     value={rec.task ?? ""}
-                    onChange={(e) => e.target.value && onAssignTask(rec.id, e.target.value)}
+                    onChange={(e) => onAssignTask(rec.id, e.target.value || null)}
                     className="rounded border border-border bg-raised px-1.5 py-0.5 text-[12px] text-fg-muted focus:border-accent focus:outline-none"
                   >
                     <option value="">Unsorted</option>
@@ -390,9 +392,9 @@ export function NoteView({
                 </Popover>}
 
                 {!rec.archived && <Tip label={processed ? "Rewrite the AI notes from your notes and the transcript" : "Process this recording now"}>
-                  <Button size="sm" variant="ghost" onClick={() => onProcessNow(rec.id)}>
+                  <Button size="sm" variant="ghost" onClick={() => onProcessNow(rec.id)} disabled={processPending}>
                     <RefreshCw size={13} />
-                    {processed ? "Re-enhance" : "Process now"}
+                    {processPending ? "Queued…" : processed ? "Re-enhance" : "Process now"}
                   </Button>
                 </Tip>}
 

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
 
 use crate::pipeline::audio::load_mono_16k;
 use crate::pipeline::diarize::{Diarizer, SpeakerSpan};
@@ -64,16 +65,23 @@ pub fn process_recording(
 ) -> Result<ProcessOutput> {
     let mut stages: Vec<StageTiming> = Vec::new();
     let mut speakers: BTreeMap<String, String> = BTreeMap::new();
+    let stage_count = match rec.meta.mode {
+        Mode::InPerson => 6,
+        Mode::Meeting => 8,
+    };
 
     let utterances = match rec.meta.mode {
         Mode::InPerson => {
             let mic =
                 require_track(&rec.dir, "audio-mic").context("locating in-person mic track")?;
+            mark_stage(store, rec, "Loading audio", 1, stage_count)?;
             let samples = timed(&mut stages, "load-audio", || load_mono_16k(&mic))?;
 
+            mark_stage(store, rec, "Separating speakers", 2, stage_count)?;
             let spans = timed(&mut stages, "diarize", || deps.diarizer.diarize(&samples))
                 .context("diarization")?;
             let ranges = spans_to_ranges(&spans);
+            mark_stage(store, rec, "Transcribing", 3, stage_count)?;
             let texts = timed(&mut stages, "transcribe", || {
                 deps.transcriber.transcribe(&samples, &ranges)
             })
@@ -87,18 +95,23 @@ pub fn process_recording(
                 .context("meeting recordings need a system-audio track; none found")?;
             let mic = require_track(&rec.dir, "audio-mic").context("locating meeting mic track")?;
 
+            mark_stage(store, rec, "Loading system audio", 1, stage_count)?;
             let system_samples = timed(&mut stages, "load-system", || load_mono_16k(&system))?;
+            mark_stage(store, rec, "Loading microphone audio", 2, stage_count)?;
             let mic_samples = timed(&mut stages, "load-mic", || load_mono_16k(&mic))?;
 
+            mark_stage(store, rec, "Separating speakers", 3, stage_count)?;
             let spans = timed(&mut stages, "diarize", || {
                 deps.diarizer.diarize(&system_samples)
             })
             .context("diarization")?;
             let ranges = spans_to_ranges(&spans);
+            mark_stage(store, rec, "Transcribing call audio", 4, stage_count)?;
             let others_texts = timed(&mut stages, "transcribe-system", || {
                 deps.transcriber.transcribe(&system_samples, &ranges)
             })
             .context("transcription (system track)")?;
+            mark_stage(store, rec, "Transcribing microphone audio", 5, stage_count)?;
             let mic_texts = timed(&mut stages, "transcribe-mic", || {
                 deps.transcriber.transcribe(&mic_samples, &[])
             })
@@ -128,6 +141,17 @@ pub fn process_recording(
     // `summarize`'s module note.
     let notes_md = crate::notes::read(&rec.dir);
 
+    mark_stage(
+        store,
+        rec,
+        "Writing AI notes",
+        if rec.meta.mode == Mode::InPerson {
+            4
+        } else {
+            6
+        },
+        stage_count,
+    )?;
     let summary_md = timed(&mut stages, "summarize", || {
         summarize(
             deps.llm,
@@ -137,6 +161,17 @@ pub fn process_recording(
         )
     })
     .context("summarization")?;
+    mark_stage(
+        store,
+        rec,
+        "Choosing a folder",
+        if rec.meta.mode == Mode::InPerson {
+            5
+        } else {
+            7
+        },
+        stage_count,
+    )?;
     let suggestion = timed(&mut stages, "suggest-task", || {
         suggest_task(deps.llm, &summary_md, &deps.tasks)
     })
@@ -145,6 +180,17 @@ pub fn process_recording(
     // A better title than the timestamp, offered for one-click accept. Never
     // fails the run: the transcript and summary are already good, and a
     // recording with a dull title is a far better outcome than a lost one.
+    mark_stage(
+        store,
+        rec,
+        "Finishing up",
+        if rec.meta.mode == Mode::InPerson {
+            6
+        } else {
+            8
+        },
+        stage_count,
+    )?;
     let suggested_title = timed(&mut stages, "suggest-title", || {
         Ok(suggest_title(deps.llm, &summary_md).unwrap_or_else(|e| {
             log::warn!("could not suggest a title for {}: {e:#}", rec.meta.id);
@@ -160,7 +206,10 @@ pub fn process_recording(
 
     // Record speakers and stage timings without touching status. Both are
     // real `Meta` fields now, so a plain save_meta persists them durably.
-    let mut updated = rec.clone();
+    // Reload because the stage markers above are intentionally durable while
+    // this run is in flight; a stale clone would erase the latest marker just
+    // before the queue flips the recording to Ready.
+    let mut updated = store.reload(rec)?;
     updated.meta.speakers = speakers;
     updated.meta.stages = stages;
     store.save_meta(&updated)?;
@@ -180,6 +229,8 @@ pub fn requeue_stale(store: &Store) -> Result<usize> {
     for mut rec in store.scan()? {
         if rec.meta.status == Status::Processing {
             rec.meta.status = Status::Queued;
+            rec.meta.queue_control = crate::storage::QueueControl::Active;
+            rec.meta.processing_started_at = None;
             store.save_meta(&rec)?;
             n += 1;
         }
@@ -251,6 +302,32 @@ fn timed<T, F: FnOnce() -> Result<T>>(
         ms: start.elapsed().as_millis() as u64,
     });
     out
+}
+
+/// Persists a human-readable stage before the expensive work begins. The
+/// timestamp is written only once per run, so the UI can calculate elapsed time
+/// without another timer or a made-up completion percentage.
+fn mark_stage(store: &Store, rec: &RecordingRef, stage: &str, index: u8, count: u8) -> Result<()> {
+    let mut updated = store.reload(rec)?;
+    updated.meta.processing_stage = Some(stage.to_string());
+    updated.meta.processing_stage_index = index;
+    updated.meta.processing_stage_count = count;
+    if updated.meta.processing_started_at.is_none() {
+        updated.meta.processing_started_at = Some(Utc::now().to_rfc3339());
+    }
+    if let Some(started) = updated
+        .meta
+        .processing_started_at
+        .as_deref()
+        .and_then(|value| value.parse::<chrono::DateTime<chrono::FixedOffset>>().ok())
+    {
+        updated.meta.processing_elapsed_s = Utc::now()
+            .signed_duration_since(started.with_timezone(&Utc))
+            .num_milliseconds()
+            .max(0) as f64
+            / 1000.0;
+    }
+    store.save_meta(&updated)
 }
 
 #[cfg(test)]

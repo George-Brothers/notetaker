@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "notetaker"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "log",

@@ -55,6 +55,7 @@ export function useLibrary() {
   const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestRef = useRef(0);
 
   const refreshTasks = useCallback(async () => {
     try {
@@ -105,10 +106,43 @@ export function useLibrary() {
     [refreshTasks]
   );
 
-  const assignTask = useCallback(
-    async (id: string, task: string) => {
+  const renameTask = useCallback(
+    async (oldName: string, newName: string) => {
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed === oldName) return;
       try {
-        await api.assignTask(id, task);
+        await api.renameTask(oldName, trimmed);
+        await refreshTasks();
+        if (view.kind === "task" && view.name === oldName) {
+          setView({ kind: "task", name: trimmed });
+        }
+        await refreshRecordings();
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [refreshRecordings, refreshTasks, view]
+  );
+
+  const deleteTask = useCallback(
+    async (name: string) => {
+      try {
+        await api.deleteTask(name);
+        await refreshTasks();
+        await refreshRecordings();
+        if (view.kind === "task" && view.name === name) setView({ kind: "unsorted" });
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [refreshRecordings, refreshTasks, view]
+  );
+
+  const assignTask = useCallback(
+    async (id: string, task: string | null) => {
+      try {
+        if (task) await api.assignTask(id, task);
+        else await api.unassignTask(id);
         await refreshRecordings();
         if (selectedId === id) {
           setDetail(await api.getRecording(id));
@@ -298,6 +332,7 @@ export function useLibrary() {
 
   const search = useCallback((q: string) => {
     setQuery(q);
+    const request = ++searchRequestRef.current;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!q.trim()) {
       setSearchResults(null);
@@ -305,9 +340,10 @@ export function useLibrary() {
     }
     debounceRef.current = setTimeout(async () => {
       try {
-        setSearchResults(await api.search(q));
+        const results = await api.search(q);
+        if (request === searchRequestRef.current) setSearchResults(results);
       } catch (err) {
-        setLoadError(describeError(err));
+        if (request === searchRequestRef.current) setLoadError(describeError(err));
       }
     }, SEARCH_DEBOUNCE_MS);
   }, []);
@@ -333,6 +369,8 @@ export function useLibrary() {
     detail,
     detailLoading,
     createTask,
+    renameTask,
+    deleteTask,
     assignTask,
     renameRecording,
     archiveRecording,

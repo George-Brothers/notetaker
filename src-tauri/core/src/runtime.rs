@@ -63,7 +63,7 @@ use crate::pipeline::transcribe::{SenseVoiceTranscriber, Transcriber, WhisperTra
 use crate::power::{PowerPolicy, PowerState, SystemProbe};
 use crate::queue::{IdleSource, Queue, RunOutcome};
 use crate::scheduler;
-use crate::storage::{Mode, RecordingRef, Status, Store};
+use crate::storage::{Mode, QueueControl, RecordingRef, Status, Store};
 use crate::templates;
 
 /// What [`Runtime::start_up`] found and did, so the app can tell the user
@@ -155,6 +155,14 @@ pub const COMMANDS: &[Command] = &[
         args: &["name"],
     },
     Command {
+        name: "rename_task",
+        args: &["oldName", "newName"],
+    },
+    Command {
+        name: "delete_task",
+        args: &["name"],
+    },
+    Command {
         name: "list_recordings",
         args: &[],
     },
@@ -175,12 +183,36 @@ pub const COMMANDS: &[Command] = &[
         args: &["id"],
     },
     Command {
+        name: "queue_snapshot",
+        args: &[],
+    },
+    Command {
+        name: "pause_processing",
+        args: &["id"],
+    },
+    Command {
+        name: "resume_processing",
+        args: &["id"],
+    },
+    Command {
+        name: "cancel_processing",
+        args: &["id"],
+    },
+    Command {
+        name: "retry_processing",
+        args: &["id"],
+    },
+    Command {
         name: "update_summary",
         args: &["id", "summaryMd"],
     },
     Command {
         name: "assign_task",
         args: &["id", "task"],
+    },
+    Command {
+        name: "unassign_task",
+        args: &["id"],
     },
     Command {
         name: "rename_recording",
@@ -718,6 +750,24 @@ impl Runtime {
         api::create_task(&self.inner.store, name)
     }
 
+    /// Renames a library folder and refreshes the disposable index so search
+    /// reflects the new folder immediately.
+    pub fn rename_task(&self, old_name: &str, new_name: &str) -> Result<()> {
+        self.inner.refuse_task_move_while_processing(old_name)?;
+        self.inner.store.rename_task(old_name, new_name)?;
+        lock(&self.inner.index).rebuild(&self.inner.store)?;
+        Ok(())
+    }
+
+    /// Moves a folder's recordings to Unsorted. The recordings remain intact;
+    /// only their category changes.
+    pub fn delete_task(&self, name: &str) -> Result<()> {
+        self.inner.refuse_task_move_while_processing(name)?;
+        self.inner.store.delete_task(name)?;
+        lock(&self.inner.index).rebuild(&self.inner.store)?;
+        Ok(())
+    }
+
     pub fn list_recordings(&self) -> Result<Vec<RecordingRow>> {
         api::list_recordings(&self.inner.store)
     }
@@ -833,6 +883,14 @@ impl Runtime {
         api::assign_task(&self.inner.store, &mut lock(&self.inner.index), id, task)
     }
 
+    /// Returns a recording to Unsorted, moving its directory and refreshing
+    /// the disposable index just like filing it under a folder does.
+    pub fn unassign_task(&self, id: &str) -> Result<()> {
+        self.inner
+            .refuse_while_capturing(id, "returned to Unsorted")?;
+        api::unassign_task(&self.inner.store, &mut lock(&self.inner.index), id)
+    }
+
     /// Renames a recording, moving its directory to match.
     ///
     /// The title is half the on-disk folder name (`2026-07-27 14.30 Standup`),
@@ -886,6 +944,73 @@ impl Runtime {
     /// now" means now rather than "within thirty seconds".
     pub fn process_now(&self, id: &str) -> Result<()> {
         api::process_now(&self.inner.store, id)?;
+        self.wake_scheduler();
+        Ok(())
+    }
+
+    /// Returns the persistent queue surface. This call never waits for a
+    /// pipeline stage or for the search index.
+    pub fn queue_snapshot(&self) -> Result<api::QueueSnapshot> {
+        api::queue_snapshot(
+            &self.inner.store,
+            lock(&self.inner.scheduler).is_some(),
+            self.idle_ok(),
+            self.missing_models().is_empty(),
+        )
+    }
+
+    pub fn pause_processing(&self, id: &str) -> Result<()> {
+        let mut rec = self.inner.find(id)?;
+        if rec.meta.status != Status::Queued {
+            bail!("this recording is not waiting in the queue, so it cannot be paused");
+        }
+        if rec.meta.queue_control == QueueControl::Cancelled {
+            bail!("this recording is cancelled; retry it to put it back in the queue");
+        }
+        rec.meta.queue_control = QueueControl::Paused;
+        self.inner.store.save_meta(&rec)
+    }
+
+    pub fn resume_processing(&self, id: &str) -> Result<()> {
+        let mut rec = self.inner.find(id)?;
+        if rec.meta.queue_control != QueueControl::Paused {
+            bail!("this recording is not paused");
+        }
+        rec.meta.queue_control = QueueControl::Active;
+        rec.meta.status = Status::Queued;
+        self.inner.store.save_meta(&rec)?;
+        self.wake_scheduler();
+        Ok(())
+    }
+
+    pub fn cancel_processing(&self, id: &str) -> Result<()> {
+        let mut rec = self.inner.find(id)?;
+        if rec.meta.status == Status::Processing {
+            bail!("the current processing stage cannot be cancelled safely; wait for it to finish");
+        }
+        if matches!(rec.meta.status, Status::Ready) {
+            bail!("this recording is already complete");
+        }
+        rec.meta.queue_control = QueueControl::Cancelled;
+        rec.meta.processing_started_at = None;
+        self.inner.store.save_meta(&rec)
+    }
+
+    pub fn retry_processing(&self, id: &str) -> Result<()> {
+        let mut rec = self.inner.find(id)?;
+        if matches!(rec.meta.status, Status::Processing | Status::Ready) {
+            bail!("this recording is already being processed or is complete");
+        }
+        rec.meta.status = Status::Queued;
+        rec.meta.queue_control = QueueControl::Active;
+        rec.meta.error = None;
+        rec.meta.attempts = 0;
+        rec.meta.processing_stage = None;
+        rec.meta.processing_stage_index = 0;
+        rec.meta.processing_stage_count = 0;
+        rec.meta.processing_started_at = None;
+        rec.meta.processing_elapsed_s = 0.0;
+        self.inner.store.save_meta(&rec)?;
         self.wake_scheduler();
         Ok(())
     }
@@ -1373,6 +1498,19 @@ impl Runtime {
         }
     }
 
+    /// Starts startup recovery and model loading without holding the desktop
+    /// window on a synchronous first paint. The server keeps using `launch`
+    /// directly; the desktop shell can show its responsive shell immediately.
+    pub fn launch_background(&self) {
+        let runtime = self.clone();
+        if let Err(err) = std::thread::Builder::new()
+            .name("notetaker-startup".into())
+            .spawn(move || runtime.launch())
+        {
+            log::warn!("could not start background startup housekeeping: {err}");
+        }
+    }
+
     /// Loads this machine's models and starts background processing.
     ///
     /// **This is the call that makes the app work rather than merely run.**
@@ -1688,6 +1826,37 @@ impl Inner {
             bail!(
                 "this recording is still being recorded, so it cannot be {action} yet — \
                  stop the recording first, then try again"
+            );
+        }
+        drop(slot);
+
+        if self
+            .store
+            .scan()?
+            .into_iter()
+            .any(|rec| rec.meta.id == id && rec.meta.status == Status::Processing)
+        {
+            bail!(
+                "this recording is being processed in the background, so it cannot be {action} yet — \
+                 wait for processing to finish, then try again"
+            );
+        }
+        Ok(())
+    }
+
+    /// Moving an entire folder while its pipeline is writing stage metadata
+    /// would strand that run on the old path. Keep the folder operation
+    /// transactional from the user's point of view by asking them to wait.
+    fn refuse_task_move_while_processing(&self, task: &str) -> Result<()> {
+        if self
+            .store
+            .scan()?
+            .into_iter()
+            .any(|rec| rec.task.as_deref() == Some(task) && rec.meta.status == Status::Processing)
+        {
+            bail!(
+                "this folder contains a recording being processed in the background — \
+                 wait for processing to finish, then try again"
             );
         }
         Ok(())
@@ -2435,6 +2604,63 @@ mod tests {
         assert!(!detail.summary_md.is_empty());
     }
 
+    #[test]
+    fn queue_controls_are_persistent_and_snapshot_reports_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.2);
+        let first = record(&rt, Mode::InPerson, "First lecture");
+        let second = record(&rt, Mode::InPerson, "Second lecture");
+
+        let snapshot = rt.queue_snapshot().unwrap();
+        let first_item = snapshot.items.iter().find(|item| item.id == first).unwrap();
+        let second_item = snapshot
+            .items
+            .iter()
+            .find(|item| item.id == second)
+            .unwrap();
+        assert!(matches!(first_item.state, api::QueueItemState::Queued));
+        assert!(matches!(second_item.state, api::QueueItemState::Queued));
+        assert_eq!(first_item.position, Some(1));
+        assert_eq!(second_item.position, Some(2));
+
+        rt.pause_processing(&first).unwrap();
+        assert!(matches!(
+            rt.queue_snapshot()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.id == first)
+                .unwrap()
+                .state,
+            api::QueueItemState::Paused
+        ));
+
+        rt.resume_processing(&first).unwrap();
+        rt.cancel_processing(&second).unwrap();
+        assert!(matches!(
+            rt.queue_snapshot()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.id == second)
+                .unwrap()
+                .state,
+            api::QueueItemState::Cancelled
+        ));
+
+        rt.retry_processing(&second).unwrap();
+        assert!(matches!(
+            rt.queue_snapshot()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.id == second)
+                .unwrap()
+                .state,
+            api::QueueItemState::Queued
+        ));
+    }
+
     /// Carry-over I3, as its own regression: a fresh recording used to be
     /// invisible to search until the whole index was rebuilt.
     #[test]
@@ -3069,6 +3295,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn moving_a_recording_while_processing_is_refused_before_the_folder_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.2);
+        rt.create_task("Finance").unwrap();
+        let id = record(&rt, Mode::InPerson, "Planning call");
+        rt.assign_task(&id, "Finance").unwrap();
+        let mut rec = rt.inner.find(&id).unwrap();
+        rec.meta.status = Status::Processing;
+        rt.inner.store.save_meta(&rec).unwrap();
+
+        let rename_err = rt
+            .rename_recording(&id, "Renamed while processing")
+            .unwrap_err();
+        assert!(format!("{rename_err:#}").contains("being processed"));
+        let assign_err = rt.assign_task(&id, "Finance").unwrap_err();
+        assert!(format!("{assign_err:#}").contains("being processed"));
+        let task_err = rt.delete_task("Finance").unwrap_err();
+        assert!(format!("{task_err:#}").contains("being processed"));
+        assert_eq!(rt.get_recording(&id).unwrap().title, "Planning call");
+        assert_eq!(
+            rt.get_recording(&id).unwrap().task.as_deref(),
+            Some("Finance")
+        );
+    }
+
     /// A recording that is not live is fair game even while it is still being
     /// put away — its files are closed by then. Guarding too much would make
     /// renaming feel randomly broken just after a stop.
@@ -3411,6 +3663,7 @@ mod tests {
         let fallible: Vec<(&str, Result<()>)> = vec![
             ("list_tasks", rt.list_tasks().map(|_| ())),
             ("create_task", rt.create_task("Accounting 302")),
+            ("rename_task", rt.rename_task("Accounting 302", "Finance")),
             ("list_recordings", rt.list_recordings().map(|_| ())),
             ("get_recording", rt.get_recording(&id).map(|_| ())),
             ("search", rt.search("lecture").map(|_| ())),
@@ -3426,10 +3679,17 @@ mod tests {
                 rt.set_action_done(&id, 0, true).map(|_| ()),
             ),
             ("audio_path", rt.audio_path(&id, "mic").map(|_| ())),
-            ("assign_task", rt.assign_task(&id, "Accounting 302")),
+            ("assign_task", rt.assign_task(&id, "Finance")),
+            ("unassign_task", rt.unassign_task(&id)),
+            ("delete_task", rt.delete_task("Finance")),
             ("rename_recording", rt.rename_recording(&id, "Lecture 3")),
             ("rename_speaker", rt.rename_speaker(&id, "spk1", "Jamie")),
             ("process_now", rt.process_now(&id)),
+            ("queue_snapshot", rt.queue_snapshot().map(|_| ())),
+            ("pause_processing", rt.pause_processing(&id)),
+            ("resume_processing", rt.resume_processing(&id)),
+            ("cancel_processing", rt.cancel_processing(&id)),
+            ("retry_processing", rt.retry_processing(&id)),
             ("get_settings", rt.get_settings().map(|_| ())),
             ("set_settings", rt.set_settings(&settings)),
             (

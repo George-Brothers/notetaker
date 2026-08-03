@@ -311,10 +311,12 @@ export function Notice({
   tone = "error",
   children,
   className,
+  role,
 }: {
   tone?: "error" | "warn" | "ok";
   children: React.ReactNode;
   className?: string;
+  role?: "alert" | "status";
 }) {
   const tones = {
     error: "bg-error-soft text-error",
@@ -323,7 +325,7 @@ export function Notice({
   } as const;
   return (
     <p
-      role={tone === "error" ? "alert" : undefined}
+      role={role ?? (tone === "error" ? "alert" : undefined)}
       className={cn(
         "rounded-[var(--radius-control)] px-3 py-2 text-[13px] leading-snug",
         tones[tone],
