@@ -23,7 +23,7 @@ import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { QueuePanel } from "./components/QueuePanel";
-import { IconButton, Notice, TooltipProvider } from "./components/ui";
+import { Button, IconButton, Notice, TooltipProvider } from "./components/ui";
 import { api, type CaptureStatus, type SetupStatus } from "./lib/ipc";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
@@ -65,9 +65,9 @@ function App() {
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
   const [modelsMissing, setModelsMissing] = useState(false);
 
-  // Keep installed copies current without ever restarting during a recording.
-  // The updater itself verifies the signed artifact before installation.
-  useAutoUpdate(capture.status.state === "idle");
+  // Check signed releases in the background, but keep the restart in the
+  // user's hands so an update never interrupts a live recording.
+  const updater = useAutoUpdate(capture.status.state === "idle");
 
   const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
     setModelsMissing((setup?.missing.length ?? 0) > 0);
@@ -167,6 +167,42 @@ function App() {
         {capture.captureError && (
           <Notice className="mx-3 mt-2 shrink-0">{capture.captureError}</Notice>
         )}
+        {updater.update && (
+          <Notice tone="ok" className="mx-3 mt-2 shrink-0" role="status">
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="min-w-0 flex-1">
+                <span className="font-medium">Notetaker {updater.update.version} is ready.</span>
+                {updater.update.body && (
+                  <span className="ml-1 text-fg-muted">{updater.update.body}</span>
+                )}
+                {updater.error && <span className="ml-1 text-error">{updater.error}</span>}
+              </span>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={updater.installing || capture.status.state !== "idle"}
+                onClick={() => void updater.install()}
+              >
+                {updater.installing
+                  ? updater.progress?.total
+                    ? `${Math.min(100, Math.round((updater.progress.received / updater.progress.total) * 100))}% downloaded`
+                    : "Downloading update…"
+                  : capture.status.state === "idle"
+                    ? "Update now"
+                    : "Stop recording to update"}
+              </Button>
+              {!updater.installing && (
+                <button
+                  type="button"
+                  onClick={updater.dismiss}
+                  className="text-[12px] underline underline-offset-2"
+                >
+                  Later
+                </button>
+              )}
+            </span>
+          </Notice>
+        )}
         <SetupNotice onOpenSettings={() => setSettingsOpen(true)} onStatus={observeSetupStatus} />
         {processBlocked && (
           <Notice className="mx-3 mt-2 shrink-0">
@@ -228,7 +264,16 @@ function App() {
             onDeleteTask={lib.deleteTask}
             recordings={lib.recordings}
             selectedId={lib.selectedId}
+            selectedIds={lib.selectedIds}
             onSelectRecording={lib.selectRecording}
+            onToggleRecordingSelection={lib.toggleRecordingSelection}
+            onSelectAllRecordings={lib.selectAllRecordings}
+            onClearSelected={lib.clearSelected}
+            onMoveSelected={lib.moveSelected}
+            onArchiveSelected={lib.archiveSelected}
+            onRestoreSelected={lib.restoreSelected}
+            onDeleteSelected={lib.deleteSelected}
+            bulkWorking={lib.bulkWorking}
             query={lib.query}
             onSearch={lib.search}
             searchResults={lib.searchResults}
@@ -288,7 +333,12 @@ function App() {
           />
         )}
 
-        {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+        {settingsOpen && (
+          <Settings
+            onClose={() => setSettingsOpen(false)}
+            safeToRestart={capture.status.state === "idle"}
+          />
+        )}
 
         {!firstRunDismissed && <FirstRun onDismiss={dismissFirstRun} />}
       </div>

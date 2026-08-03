@@ -14,6 +14,8 @@ import type {
 
 export interface SettingsProps {
   onClose: () => void;
+  /** Installing relaunches the app, so never offer it during a live capture. */
+  safeToRestart?: boolean;
 }
 
 const PULL_POLL_MS = 700;
@@ -94,7 +96,7 @@ function PullBar({ entry, fallbackName }: { entry: PullProgress | undefined; fal
   );
 }
 
-export function Settings({ onClose }: SettingsProps) {
+export function Settings({ onClose, safeToRestart = true }: SettingsProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [detectedTier, setDetectedTier] = useState<string | null>(null);
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
@@ -248,6 +250,10 @@ export function Settings({ onClose }: SettingsProps) {
 
   async function handleInstallUpdate() {
     if (!update) return;
+    if (!safeToRestart) {
+      setUpdateMessage("Stop recording before installing the update.");
+      return;
+    }
     setInstallingUpdate(true);
     setUpdateMessage("Downloading update…");
     try {
@@ -662,8 +668,16 @@ export function Settings({ onClose }: SettingsProps) {
                 <div className="settings-update__available">
                   <p role="status">Version {update.version} is ready.</p>
                   {update.body && <p className="settings-hint">{update.body}</p>}
-                  <button type="button" onClick={() => void handleInstallUpdate()} disabled={installingUpdate}>
-                    {installingUpdate ? "Downloading update…" : "Download and restart"}
+                  <button
+                    type="button"
+                    onClick={() => void handleInstallUpdate()}
+                    disabled={installingUpdate || !safeToRestart}
+                  >
+                    {installingUpdate
+                      ? "Downloading update…"
+                      : safeToRestart
+                        ? "Download and restart"
+                        : "Stop recording to update"}
                   </button>
                 </div>
               )}

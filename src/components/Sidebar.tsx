@@ -23,6 +23,7 @@ import {
   NotebookPen,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Sparkles,
   Trash2,
@@ -44,7 +45,16 @@ export interface SidebarProps {
   onDeleteTask?: (name: string) => void;
   recordings: RecordingRow[];
   selectedId: string | null;
+  selectedIds?: string[];
   onSelectRecording: (id: string) => void;
+  onToggleRecordingSelection?: (id: string) => void;
+  onSelectAllRecordings?: (ids: string[], selected: boolean) => void;
+  onClearSelected?: () => void;
+  onMoveSelected?: (task: string | null) => void;
+  onArchiveSelected?: () => void;
+  onRestoreSelected?: () => void;
+  onDeleteSelected?: () => void;
+  bulkWorking?: boolean;
   query: string;
   onSearch: (q: string) => void;
   searchResults: SearchHit[] | null;
@@ -106,35 +116,53 @@ function NavItem({
 function RecordingItem({
   row,
   selected,
+  selectionChecked,
   onSelect,
+  onToggleSelection,
   modelsMissing,
 }: {
   row: RecordingRow;
   selected: boolean;
+  selectionChecked: boolean;
   onSelect: () => void;
+  onToggleSelection: () => void;
   modelsMissing: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-current={selected ? "true" : undefined}
+    <div
       className={cn(
         "flex w-full flex-col gap-0.5 rounded-[var(--radius-control)] px-2 py-1.5 text-left transition-colors",
         selected ? "bg-selected" : "hover:bg-hover",
       )}
     >
-      <span className="flex items-center gap-1.5">
-        <span className={cn("min-w-0 flex-1 truncate text-[13px] text-fg", selected && "font-medium")}>
-          {row.title}
-        </span>
-        {row.hasNotes && (
-          <NotebookPen size={12} className="shrink-0 text-fg-faint" aria-label="Has your notes" />
-        )}
-        {row.suggestedTitle && (
-          <Sparkles size={12} className="shrink-0 text-accent" aria-label="A better title is suggested" />
-        )}
-      </span>
+      <div className="flex items-start gap-1.5">
+        <input
+          type="checkbox"
+          checked={selectionChecked}
+          onChange={onToggleSelection}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Select ${row.title}`}
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[var(--c-accent)]"
+        />
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-current={selected ? "true" : undefined}
+          className="min-w-0 flex-1 text-left"
+        >
+          <span className="flex items-center gap-1.5">
+            <span className={cn("min-w-0 flex-1 truncate text-[13px] text-fg", selected && "font-medium")}>
+              {row.title}
+            </span>
+            {row.hasNotes && (
+              <NotebookPen size={12} className="shrink-0 text-fg-faint" aria-label="Has your notes" />
+            )}
+            {row.suggestedTitle && (
+              <Sparkles size={12} className="shrink-0 text-accent" aria-label="A better title is suggested" />
+            )}
+          </span>
+        </button>
+      </div>
       <span className="flex items-center gap-1.5 text-[11px] text-fg-faint">
         <span>{timeOfDay(row.created)}</span>
         <span aria-hidden>·</span>
@@ -155,7 +183,119 @@ function RecordingItem({
       {row.status === "queued" && modelsMissing && (
         <span className="text-[11px] leading-snug text-fg-muted">Waiting on the speech models</span>
       )}
-    </button>
+    </div>
+  );
+}
+
+function BulkActions({
+  count,
+  tasks,
+  archiveView,
+  working,
+  onMove,
+  onArchive,
+  onRestore,
+  onDelete,
+  onClear,
+}: {
+  count: number;
+  tasks: string[];
+  archiveView: boolean;
+  working: boolean;
+  onMove: (task: string | null) => void;
+  onArchive: () => void;
+  onRestore: () => void;
+  onDelete: () => void;
+  onClear: () => void;
+}) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  return (
+    <div
+      role="region"
+      aria-label="Bulk actions"
+      className="mt-2 rounded-[var(--radius-control)] border border-border bg-sunken p-2"
+    >
+      <div className="flex items-center justify-between gap-2 text-[12px] text-fg-muted">
+        <span className="font-medium text-fg">{count} selected</span>
+        <button type="button" onClick={onClear} disabled={working} className="underline underline-offset-2">
+          Clear
+        </button>
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+        {!archiveView && (
+          <select
+            aria-label="Move selected recordings to folder"
+            defaultValue=""
+            disabled={working}
+            onChange={(e) => {
+              if (!e.target.value) return;
+              onMove(e.target.value === "__unsorted__" ? null : e.target.value);
+              e.currentTarget.value = "";
+            }}
+            className="h-7 min-w-0 max-w-full rounded-[var(--radius-control)] border border-border bg-raised px-1.5 text-[12px] text-fg focus:border-accent focus:outline-none"
+          >
+            <option value="" disabled>
+              Move to folder…
+            </option>
+            <option value="__unsorted__">Unsorted</option>
+            {tasks.map((task) => (
+              <option key={task} value={task}>
+                {task}
+              </option>
+            ))}
+          </select>
+        )}
+        {archiveView ? (
+          <button
+            type="button"
+            onClick={onRestore}
+            disabled={working}
+            className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-control)] px-1.5 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+          >
+            <RotateCcw size={13} /> Restore
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onArchive}
+            disabled={working}
+            className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-control)] px-1.5 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+          >
+            <Archive size={13} /> Archive
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setConfirmingDelete(true)}
+          disabled={working}
+          className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-control)] px-1.5 text-[12px] text-error hover:bg-hover"
+        >
+          <Trash2 size={13} /> Delete
+        </button>
+      </div>
+      {confirmingDelete && (
+        <div role="alert" className="mt-1.5 text-[11px] leading-snug text-error">
+          Delete {count} recording{count === 1 ? "" : "s"} permanently?
+          <div className="mt-1 flex gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmingDelete(false);
+                onDelete();
+              }}
+              disabled={working}
+              className="rounded px-1.5 py-0.5 font-medium hover:bg-hover"
+            >
+              Delete permanently
+            </button>
+            <button type="button" onClick={() => setConfirmingDelete(false)} className="rounded px-1.5 py-0.5 text-fg-faint hover:bg-hover hover:text-fg">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -302,7 +442,16 @@ export function Sidebar({
   onDeleteTask = () => {},
   recordings,
   selectedId,
+  selectedIds = [],
   onSelectRecording,
+  onToggleRecordingSelection = () => {},
+  onSelectAllRecordings = () => {},
+  onClearSelected = () => {},
+  onMoveSelected = () => {},
+  onArchiveSelected = () => {},
+  onRestoreSelected = () => {},
+  onDeleteSelected = () => {},
+  bulkWorking = false,
   query,
   onSearch,
   searchResults,
@@ -498,6 +647,36 @@ export function Sidebar({
             </section>
 
             <section aria-label="Recordings" className="mt-4">
+              {recordings.length > 0 && (
+                <label className="flex items-center gap-1.5 px-2 pb-1 text-[11px] text-fg-faint">
+                  <input
+                    type="checkbox"
+                    checked={recordings.every((row) => selectedIds.includes(row.id))}
+                    onChange={(e) =>
+                      onSelectAllRecordings(
+                        recordings.map((row) => row.id),
+                        e.target.checked,
+                      )
+                    }
+                    aria-label="Select all visible recordings"
+                    className="h-3.5 w-3.5 accent-[var(--c-accent)]"
+                  />
+                  Select all visible
+                </label>
+              )}
+              {selectedIds.length > 0 && (
+                <BulkActions
+                  count={selectedIds.length}
+                  tasks={tasks}
+                  archiveView={activeView.kind === "archive"}
+                  working={bulkWorking}
+                  onMove={onMoveSelected}
+                  onArchive={onArchiveSelected}
+                  onRestore={onRestoreSelected}
+                  onDelete={onDeleteSelected}
+                  onClear={onClearSelected}
+                />
+              )}
               {recordings.length === 0 ? (
                 <p className="px-2 py-3 text-[12px] leading-relaxed text-fg-faint">
                   Nothing here yet. Hit record and start typing — your notes and the transcript land
@@ -515,7 +694,9 @@ export function Sidebar({
                           <RecordingItem
                             row={row}
                             selected={row.id === selectedId}
+                            selectionChecked={selectedIds.includes(row.id)}
                             onSelect={() => onSelectRecording(row.id)}
+                            onToggleSelection={() => onToggleRecordingSelection(row.id)}
                             modelsMissing={modelsMissing}
                           />
                         </li>
