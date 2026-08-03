@@ -49,6 +49,8 @@ export function useLibrary() {
   const [archivedRecordings, setArchivedRecordings] = useState<RecordingRow[]>([]);
   const [view, setView] = useState<LibraryView>({ kind: "all" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkWorking, setBulkWorking] = useState(false);
   const [detail, setDetail] = useState<RecordingDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [query, setQuery] = useState("");
@@ -222,6 +224,93 @@ export function useLibrary() {
     [refreshRecordings, selectedId]
   );
 
+  const toggleRecordingSelection = useCallback((id: string) => {
+    setSelectedIds((current) =>
+      current.includes(id) ? current.filter((selected) => selected !== id) : [...current, id]
+    );
+  }, []);
+
+  const selectAllRecordings = useCallback((ids: string[], selected: boolean) => {
+    setSelectedIds((current) => {
+      if (!selected) return current.filter((id) => !ids.includes(id));
+      return Array.from(new Set([...current, ...ids]));
+    });
+  }, []);
+
+  const clearSelected = useCallback(() => setSelectedIds([]), []);
+
+  const runBulk = useCallback(
+    async (
+      operation: (id: string) => Promise<void>,
+      action: string,
+      clearDetailForSelected: boolean,
+    ) => {
+      const ids = [...selectedIds];
+      if (ids.length === 0 || bulkWorking) return;
+
+      setBulkWorking(true);
+      let succeeded = 0;
+      const failures: string[] = [];
+      try {
+        for (const id of ids) {
+          try {
+            await operation(id);
+            succeeded += 1;
+          } catch (err) {
+            failures.push(describeError(err));
+          }
+        }
+        await refreshRecordings();
+        setSelectedIds([]);
+        if (clearDetailForSelected && selectedId && ids.includes(selectedId)) {
+          setSelectedId(null);
+          setDetail(null);
+        }
+        if (failures.length > 0) {
+          const first = failures[0];
+          setLoadError(
+            `Completed ${succeeded} of ${ids.length} recordings. ${failures.length} could not be ${action}. ${first}`,
+          );
+        }
+      } finally {
+        setBulkWorking(false);
+      }
+    },
+    [bulkWorking, refreshRecordings, selectedId, selectedIds]
+  );
+
+  const moveSelected = useCallback(
+    async (task: string | null) => {
+      await runBulk(
+        (id) => (task ? api.assignTask(id, task) : api.unassignTask(id)),
+        "moved",
+        false,
+      );
+    },
+    [runBulk]
+  );
+
+  const archiveSelected = useCallback(
+    async () => {
+      await runBulk(api.archiveRecording, "archived", true);
+    },
+    [runBulk]
+  );
+
+  const restoreSelected = useCallback(
+    async () => {
+      await runBulk(api.restoreRecording, "restored", true);
+    },
+    [runBulk]
+  );
+
+  const deleteSelected = useCallback(
+    async () => {
+      await runBulk(api.deleteRecording, "deleted", true);
+    },
+    [runBulk]
+  );
+
   const renameSpeaker = useCallback(
     async (id: string, key: string, name: string) => {
       const trimmed = name.trim();
@@ -358,12 +447,26 @@ export function useLibrary() {
   const source = view.kind === "archive" ? archivedRecordings : recordings;
   const visibleRecordings = useMemo(() => filterByView(source, view), [source, view]);
 
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const visible = new Set(visibleRecordings.map((row) => row.id));
+      const next = current.filter((id) => visible.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleRecordings]);
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [view]);
+
   return {
     tasks,
     recordings: visibleRecordings,
     view,
     setView,
     selectedId,
+    selectedIds,
+    bulkWorking,
     selectRecording,
     clearSelection,
     detail,
@@ -376,6 +479,13 @@ export function useLibrary() {
     archiveRecording,
     restoreRecording,
     deleteRecording,
+    toggleRecordingSelection,
+    selectAllRecordings,
+    clearSelected,
+    moveSelected,
+    archiveSelected,
+    restoreSelected,
+    deleteSelected,
     renameSpeaker,
     saveSummary,
     saveNotes,

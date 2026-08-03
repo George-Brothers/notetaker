@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { Sidebar } from "../Sidebar";
 import type { RecordingRow } from "../../lib/ipc";
 
@@ -97,5 +98,64 @@ describe("Sidebar setup status", () => {
     expect(onDeleteTask).not.toHaveBeenCalled();
     fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Delete folder" }));
     expect(onDeleteTask).toHaveBeenCalledWith("Finance");
+  });
+
+  it("selects multiple recordings and exposes folder, archive, and delete actions", () => {
+    const second: RecordingRow = {
+      ...queued,
+      id: "ready-recording",
+      title: "Budget sync",
+      status: "ready",
+    };
+    const onMoveSelected = vi.fn();
+    const onArchiveSelected = vi.fn();
+    const onDeleteSelected = vi.fn();
+
+    function Harness() {
+      const [selectedIds, setSelectedIds] = useState<string[]>([]);
+      return (
+        <Sidebar
+          tasks={["Finance"]}
+          activeView={{ kind: "all" }}
+          onSelectView={vi.fn()}
+          onCreateTask={vi.fn()}
+          recordings={[queued, second]}
+          selectedId={null}
+          selectedIds={selectedIds}
+          onSelectRecording={vi.fn()}
+          onToggleRecordingSelection={(id) =>
+            setSelectedIds((current) =>
+              current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+            )
+          }
+          onMoveSelected={onMoveSelected}
+          onArchiveSelected={onArchiveSelected}
+          onDeleteSelected={onDeleteSelected}
+          query=""
+          onSearch={vi.fn()}
+          searchResults={null}
+          onOpenPalette={vi.fn()}
+        />
+      );
+    }
+
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Lecture" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Budget sync" }));
+
+    const bulk = screen.getByRole("region", { name: "Bulk actions" });
+    expect(bulk).toHaveTextContent("2 selected");
+    fireEvent.change(screen.getByRole("combobox", { name: "Move selected recordings to folder" }), {
+      target: { value: "Finance" },
+    });
+    expect(onMoveSelected).toHaveBeenCalledWith("Finance");
+
+    fireEvent.click(within(bulk).getByRole("button", { name: "Archive" }));
+    expect(onArchiveSelected).toHaveBeenCalled();
+
+    fireEvent.click(within(bulk).getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("alert").getElementsByTagName("button")[0]);
+    expect(onDeleteSelected).toHaveBeenCalled();
   });
 });
