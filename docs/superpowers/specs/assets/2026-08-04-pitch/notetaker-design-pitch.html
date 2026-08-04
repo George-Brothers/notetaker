@@ -1,0 +1,575 @@
+<title>Notetaker — Overhaul Design Pitch</title>
+<style>
+  /* Committed to the proposed dark material on purpose — this page is set inside
+     the world it pitches. Plate 02 shows both modes side by side. */
+  :root {
+    --ground: #0a0a11;
+    --panel: #12121c;
+    --panel-2: #17172400;
+    --ink: #efeffa;
+    --ink-muted: #9a98b8;
+    --ink-faint: #6a6888;
+    --line: #232336;
+    --violet: #8b72ff;
+    --cyan: #4dd6ff;
+    --red: #ff5c51;
+    --amber: #f5b84d;
+    --mint: #63e6be;
+    color-scheme: dark;
+  }
+  html { background: var(--ground); }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 500px at 70% -10%, rgba(139,114,255,.14), transparent 60%),
+      radial-gradient(900px 420px at 20% -6%, rgba(77,214,255,.10), transparent 55%),
+      var(--ground);
+    color: var(--ink);
+    font-family: system-ui, "Segoe UI", sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 24px 96px; }
+  .eyebrow {
+    font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+    font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .eyebrow b { color: var(--cyan); font-weight: 600; }
+  h1 {
+    font-size: clamp(34px, 5.4vw, 56px); line-height: 1.04; margin: 14px 0 10px;
+    font-weight: 800; letter-spacing: -0.03em; text-wrap: balance;
+  }
+  h1 .lit {
+    background: linear-gradient(92deg, var(--violet), var(--cyan));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { max-width: 62ch; color: var(--ink-muted); font-size: 16.5px; margin: 0; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  .approach { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+  .approach .opt {
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+    font-size: 13px; color: var(--ink-faint); background: rgba(255,255,255,.015);
+  }
+  .approach .opt b { display: block; color: var(--ink-muted); font-weight: 600; margin-bottom: 2px; }
+  .approach .opt.rec {
+    border-color: rgba(139,114,255,.55);
+    background: linear-gradient(180deg, rgba(139,114,255,.10), rgba(77,214,255,.05));
+    color: var(--ink-muted); box-shadow: 0 0 24px rgba(139,114,255,.12);
+  }
+  .approach .opt.rec b { color: var(--ink); }
+  .approach .opt.rec b::after {
+    content: "recommended"; font-family: ui-monospace, monospace; font-size: 10px;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--cyan);
+    margin-left: 8px; vertical-align: 1px;
+  }
+
+  .plate { margin-top: 72px; }
+  .plate-head { display: flex; align-items: baseline; gap: 14px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 22px; }
+  .plate-head .no {
+    font-family: ui-monospace, monospace; font-size: 12px; letter-spacing: .12em;
+    color: var(--cyan);
+  }
+  .plate-head h2 { font-size: 22px; margin: 0; letter-spacing: -0.015em; font-weight: 700; }
+  .plate-head .why { margin-left: auto; font-size: 12.5px; color: var(--ink-faint); text-align: right; }
+  .note { max-width: 68ch; color: var(--ink-muted); font-size: 14.5px; }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- mascots ---------- */
+  .mascots { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 20px; }
+  .mascot-card { border: 1px solid var(--line); border-radius: 14px; padding: 20px 16px 16px; background: var(--panel); text-align: center; }
+  .mascot-card.pick { border-color: rgba(139,114,255,.6); box-shadow: 0 0 34px rgba(139,114,255,.14); }
+  .mascot-card svg { display: block; margin: 0 auto; }
+  .mascot-card h3 { font-size: 14.5px; margin: 14px 0 4px; font-weight: 650; }
+  .mascot-card p { font-size: 12.5px; color: var(--ink-faint); margin: 0; }
+  .mascot-card .tag {
+    display: inline-block; margin-top: 10px; font-family: ui-monospace, monospace;
+    font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--cyan); border: 1px solid rgba(77,214,255,.3); border-radius: 99px; padding: 3px 9px;
+  }
+
+  /* ---------- swatches ---------- */
+  .boards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 20px; }
+  .board { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .board .board-title { padding: 12px 16px; font-size: 13px; font-weight: 650; display: flex; justify-content: space-between; align-items: center; }
+  .board .board-title span { font-family: ui-monospace, monospace; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; opacity: .65; font-weight: 400; }
+  .swatches { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .sw { padding: 14px 10px 10px; min-height: 58px; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; }
+  .sw .n { font-size: 10.5px; font-family: ui-monospace, monospace; opacity: .8; }
+  .sw .v { font-size: 10px; font-family: ui-monospace, monospace; opacity: .55; }
+  .board.dark { background: #0b0b12; color: #ededf7; }
+  .board.light { background: #f7f7fa; color: #17171f; border-color: #2c2c40; }
+  .lane { display: flex; gap: 8px; padding: 12px 16px 16px; align-items: center; }
+  .lane .dot { width: 22px; height: 22px; border-radius: 50%; }
+  .lane .lbl { font-size: 11px; font-family: ui-monospace, monospace; opacity: .6; margin-right: 4px; }
+
+  /* ---------- app mocks ---------- */
+  .mocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 18px; margin-top: 20px; }
+  @media (max-width: 500px) { .mocks { grid-template-columns: 1fr; } }
+  .mock-wrap { min-width: 0; }
+  .mock-wrap .cap { font-size: 12px; color: var(--ink-faint); margin-top: 10px; }
+  .mock-wrap .cap b { color: var(--ink-muted); }
+  .mock {
+    border-radius: 12px; overflow: hidden; border: 1px solid var(--m-line);
+    background: var(--m-app); color: var(--m-fg); font-size: 10.5px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  }
+  .mock.m-dark {
+    --m-app: #0b0b12; --m-raised: #14141f; --m-sunken: #07070c;
+    --m-line: #232338; --m-fg: #ededf7; --m-muted: #8a8aa8; --m-faint: #62627e;
+    --m-accent: #8b72ff; --m-accent-soft: #241f45; --m-cyan: #4dd6ff;
+    --m-red: #ff5c51; --m-red-soft: #3a1815; --m-sel: #232338;
+    --m-glow: 0 0 14px rgba(139,114,255,.45);
+  }
+  .mock.m-light {
+    --m-app: #f7f7fa; --m-raised: #ffffff; --m-sunken: #efeff5;
+    --m-line: #e3e3ec; --m-fg: #17171f; --m-muted: #79778e; --m-faint: #a3a1b8;
+    --m-accent: #6c4ff0; --m-accent-soft: #eeeafe; --m-cyan: #0e7fa8;
+    --m-red: #e0342b; --m-red-soft: #fce9e7; --m-sel: #e7e4fa;
+    --m-glow: 0 3px 12px rgba(108,79,240,.22);
+  }
+  .tbar {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    background: color-mix(in srgb, var(--m-raised) 82%, transparent);
+    border-bottom: 1px solid var(--m-line);
+  }
+  .rec-chip {
+    display: flex; align-items: center; gap: 6px; border-radius: 999px;
+    padding: 4px 10px; background: var(--m-red-soft); color: var(--m-red); font-weight: 650;
+  }
+  .rec-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--m-red); box-shadow: 0 0 10px var(--m-red); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .meter { display: flex; gap: 2px; align-items: flex-end; height: 12px; }
+  .meter i { width: 3px; border-radius: 2px; background: linear-gradient(180deg, var(--m-cyan), var(--m-accent)); box-shadow: var(--m-glow); }
+  .tbar .title { color: var(--m-faint); font-weight: 600; letter-spacing: .02em; }
+  .tbar .sp { flex: 1; }
+  .winbtn { width: 22px; height: 16px; display: grid; place-items: center; color: var(--m-faint); border-radius: 4px; }
+  .winbtn.close:hover { background: var(--m-red); }
+  .mock-body { display: grid; grid-template-columns: 150px 1fr; min-height: 300px; }
+  .m-side { border-right: 1px solid var(--m-line); background: color-mix(in srgb, var(--m-sunken) 60%, var(--m-app)); padding: 8px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .m-search { border: 1px solid var(--m-line); background: var(--m-sunken); color: var(--m-faint); border-radius: 7px; padding: 4px 8px; }
+  .sortrow { display: flex; align-items: center; justify-content: space-between; color: var(--m-faint); padding: 0 2px; }
+  .sortrow .pill { border: 1px solid var(--m-line); border-radius: 6px; padding: 2px 7px; background: var(--m-raised); color: var(--m-muted); font-weight: 600; }
+  .sortrow .pill b { color: var(--m-accent); font-weight: 650; }
+  .dayhdr { color: var(--m-faint); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; padding: 3px 2px 0; }
+  .row { border-radius: 7px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .row .t { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .m { color: var(--m-faint); display: flex; gap: 6px; align-items: center; }
+  .row.sel { background: var(--m-sel); box-shadow: inset 2px 0 0 var(--m-accent); }
+  .chip { border-radius: 999px; padding: 1px 7px; font-size: 9px; font-weight: 650; }
+  .chip.proc { background: var(--m-accent-soft); color: var(--m-accent); }
+  .m-main { padding: 12px 14px; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+  .m-title { font-size: 15px; font-weight: 750; letter-spacing: -0.02em; }
+  .m-meta { display: flex; gap: 6px; color: var(--m-faint); align-items: center; }
+  .m-meta .task { background: var(--m-accent-soft); color: var(--m-accent); border-radius: 999px; padding: 1px 8px; font-weight: 650; }
+  .m-card { border: 1px solid var(--m-line); background: var(--m-raised); border-radius: 9px; padding: 9px 11px; }
+  .m-card .hd { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--m-faint); margin-bottom: 5px; }
+  .m-card .ai { color: var(--m-muted); }
+  .tr-line { display: flex; gap: 7px; margin-top: 4px; }
+  .spk { font-weight: 700; }
+  .m-dark .spk.s1 { color: #4dd6ff; } .m-dark .spk.s2 { color: #b78cff; }
+  .m-light .spk.s1 { color: #0e7fa8; } .m-light .spk.s2 { color: #7c4fd8; }
+  .tr-line .tx { color: var(--m-muted); }
+  .player { margin-top: auto; display: flex; align-items: center; gap: 8px; border: 1px solid var(--m-line); background: color-mix(in srgb, var(--m-raised) 88%, transparent); border-radius: 9px; padding: 6px 10px; }
+  .player .pb { flex: 1; height: 4px; border-radius: 3px; background: var(--m-sunken); position: relative; overflow: visible; }
+  .player .pb i { position: absolute; inset: 0 62% 0 0; border-radius: 3px; background: linear-gradient(90deg, var(--m-accent), var(--m-cyan)); box-shadow: var(--m-glow); }
+  .player .tt { font-family: ui-monospace, monospace; color: var(--m-faint); font-variant-numeric: tabular-nums; }
+
+  /* ---------- settings mock ---------- */
+  .set-mock { margin-top: 20px; border-radius: 12px; border: 1px solid var(--m-line); overflow: hidden; font-size: 11px;
+    background: var(--m-app); color: var(--m-fg); box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+  .set-grid { display: grid; grid-template-columns: 168px 1fr; min-height: 280px; }
+  .set-nav { border-right: 1px solid var(--m-line); background: color-mix(in srgb, var(--m-sunken) 60%, var(--m-app)); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .set-nav .it { padding: 6px 10px; border-radius: 7px; color: var(--m-muted); font-weight: 600; }
+  .set-nav .it.on { background: var(--m-sel); color: var(--m-fg); box-shadow: inset 2px 0 0 var(--m-accent); }
+  .set-pane { padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .set-pane h4 { margin: 0; font-size: 13.5px; letter-spacing: -0.01em; }
+  .set-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--m-line); background: var(--m-raised); border-radius: 9px; padding: 9px 12px; }
+  .set-row .lab b { display: block; font-weight: 650; }
+  .set-row .lab span { color: var(--m-faint); }
+  .keys { display: flex; gap: 4px; }
+  .key { font-family: ui-monospace, monospace; font-size: 10px; border: 1px solid var(--m-line); border-bottom-width: 2px; border-radius: 6px; padding: 3px 7px; background: var(--m-sunken); color: var(--m-muted); }
+  .key.hot { border-color: var(--m-accent); color: var(--m-accent); box-shadow: 0 0 10px rgba(139,114,255,.35); }
+  .sel-ctl { border: 1px solid var(--m-line); border-radius: 7px; background: var(--m-sunken); color: var(--m-muted); padding: 5px 9px; font-weight: 600; }
+  .btn { border: 1px solid var(--m-line); border-radius: 7px; padding: 5px 10px; background: var(--m-raised); color: var(--m-muted); font-weight: 650; }
+  .btn.primary { background: linear-gradient(92deg, var(--m-accent), color-mix(in srgb, var(--m-accent) 55%, var(--m-cyan))); border: none; color: #fff; box-shadow: var(--m-glow); }
+
+  /* ---------- palette before/after ---------- */
+  .pal-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 20px; }
+  .pal { border-radius: 12px; border: 1px solid var(--m-line); background: var(--m-app); color: var(--m-fg); overflow: hidden; font-size: 11px; box-shadow: 0 18px 44px rgba(0,0,0,.4); }
+  .pal .in { padding: 9px 12px; border-bottom: 1px solid var(--m-line); color: var(--m-faint); }
+  .pal .grp { padding: 7px 10px 3px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--m-faint); }
+  .pal .it { display: flex; align-items: center; gap: 8px; padding: 6px 12px; color: var(--m-muted); }
+  .pal .it .k { margin-left: auto; font-family: ui-monospace, monospace; font-size: 9px; color: var(--m-faint); }
+  .pal .it.bad { color: var(--m-red); text-decoration: line-through; text-decoration-thickness: 1px; }
+  .pal .it.bad .why-x { text-decoration: none; margin-left: auto; font-size: 9px; color: var(--m-red); font-family: ui-monospace, monospace; }
+  .pal .it.sel { background: var(--m-sel); color: var(--m-fg); }
+  .pal-cap { font-size: 12px; color: var(--ink-faint); margin-top: 8px; }
+
+  /* ---------- tray ---------- */
+  .tray-demo { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 20px; align-items: start; }
+  .tray-menu { border-radius: 10px; border: 1px solid #2a2a3e; background: #14141f; color: #ededf7; font-size: 11.5px; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.5); max-width: 240px; }
+  .tray-menu .mi { padding: 8px 14px; display: flex; align-items: center; gap: 9px; color: #b9b7d0; }
+  .tray-menu .mi.hot { background: #232338; color: #fff; }
+  .tray-menu .div { height: 1px; background: #232338; margin: 4px 0; }
+  .tray-menu .mi .hint { margin-left: auto; font-family: ui-monospace, monospace; font-size: 9px; color: #62627e; }
+  .taskbar { border-radius: 8px; background: #101016; border: 1px solid #232336; padding: 8px 12px; display: flex; align-items: center; gap: 12px; width: fit-content; }
+  .taskbar .chev { color: #62627e; font-size: 12px; }
+  .tray-ic { width: 20px; height: 20px; display: grid; place-items: center; position: relative; }
+  .tray-ic svg { display: block; }
+  .tray-ic .st { position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%; border: 2px solid #101016; }
+  .tray-ic .st.rec { background: #ff5c51; box-shadow: 0 0 8px #ff5c51; }
+  .tray-states { display: flex; gap: 18px; margin-top: 14px; align-items: center; }
+  .tray-states .lab { font-size: 11px; color: var(--ink-faint); }
+
+  /* ---------- fixes list & verification ---------- */
+  .fixes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 18px; }
+  .fix { border: 1px solid var(--line); border-left: 3px solid var(--violet); border-radius: 10px; background: var(--panel); padding: 12px 14px; font-size: 13px; color: var(--ink-muted); }
+  .fix b { color: var(--ink); display: block; margin-bottom: 3px; font-weight: 650; }
+  .fix.native { border-left-color: var(--cyan); }
+  .quiet { margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; background: rgba(255,255,255,.014); font-size: 13.5px; color: var(--ink-muted); }
+  .quiet b { color: var(--ink); }
+  .quiet ul { margin: 8px 0 0; padding-left: 18px; }
+  .quiet li { margin: 4px 0; }
+  .quiet li::marker { color: var(--cyan); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+  }
+  :focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">notetaker · ui/ux overhaul · design pitch — <b>for approval, nothing built yet</b></p>
+  <h1>The same room, <span class="lit">lit from within.</span></h1>
+  <p class="lede">One identity in two materials. Dark mode is <strong>luminous glass</strong> — near-black with a violet→cyan aurora that only glows on things that are <em>alive</em>: the recording pulse, the level meter, the active selection. Light mode is the same room in daylight — <strong>porcelain paper</strong>, the same accent, glow softened into tinted shadows. A glowing mascot carries the identity from app icon to tray to empty states.</p>
+
+  <div class="approach">
+    <div class="opt rec"><b>Layered overhaul</b>Re-skin every surface on the existing tested components, rebuild the three weak structures (Settings, library sorting, Ctrl+K), add the native layer (tray, global hotkey, custom titlebar, icon). Keeps 80+ passing UI tests alive as a safety net.</div>
+    <div class="opt"><b>Re-skin only</b>New colors on old structure — cheaper, but Settings and the tray ask stay unsolved. Half the complaint survives.</div>
+    <div class="opt"><b>Ground-up rebuild</b>Maximum freedom, but throws away every tested behavior and restarts the bug clock. Weeks, not days.</div>
+  </div>
+
+  <!-- ============ PLATE 01 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="no">PLATE 01</span><h2>The mascot — a little listener</h2><span class="why">app icon · tray icon · empty states</span></div>
+    <p class="note">Same family as your references: a soft creature with an inner glow on an aurora squircle. The mouth <b>is</b> a waveform — it's a notetaker, its face is literally listening. Three takes:</p>
+    <div class="mascots">
+      <div class="mascot-card pick">
+        <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Echo mascot — rounded listener with waveform mouth">
+          <defs>
+            <linearGradient id="bgA" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#8b72ff"/><stop offset="1" stop-color="#4dd6ff"/>
+            </linearGradient>
+            <filter id="glowA" x="-40%" y="-40%" width="180%" height="180%">
+              <feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <rect x="6" y="6" width="108" height="108" rx="26" fill="#0b0b12"/>
+          <rect x="6" y="6" width="108" height="108" rx="26" fill="url(#bgA)" opacity=".16"/>
+          <g filter="url(#glowA)">
+            <path d="M34 78 V54 a26 26 0 0 1 52 0 V78 a6 6 0 0 1 -9 5 l-4 -2.5 a6 6 0 0 0 -6.5 0 l-3 2 a6 6 0 0 1 -7 0 l-3 -2 a6 6 0 0 0 -6.5 0 l-4 2.5 a6 6 0 0 1 -9 -5 Z" fill="url(#bgA)"/>
+          </g>
+          <ellipse cx="51" cy="50" rx="3.2" ry="4.8" fill="#0b0b12"/>
+          <ellipse cx="69" cy="50" rx="3.2" ry="4.8" fill="#0b0b12"/>
+          <circle cx="52" cy="48.4" r="1" fill="#efeffa" opacity=".9"/>
+          <circle cx="70" cy="48.4" r="1" fill="#efeffa" opacity=".9"/>
+          <g stroke="#0b0b12" stroke-width="3.6" stroke-linecap="round">
+            <line x1="51" y1="66" x2="51" y2="70"/><line x1="58" y1="63" x2="58" y2="73"/><line x1="65" y1="65" x2="65" y2="71"/>
+          </g>
+        </svg>
+        <h3>A — “Echo,” the ghost-wave</h3>
+        <p>Ghost silhouette, waveform mouth. Simplifies perfectly to 16&nbsp;px for the tray.</p>
+        <span class="tag">recommended</span>
+      </div>
+      <div class="mascot-card">
+        <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Blob mascot with closed happy eyes">
+          <defs>
+            <radialGradient id="bgB" cx="0.35" cy="0.25" r="1">
+              <stop offset="0" stop-color="#b09dff"/><stop offset=".55" stop-color="#8b72ff"/><stop offset="1" stop-color="#4a3fd8"/>
+            </radialGradient>
+            <filter id="glowB" x="-40%" y="-40%" width="180%" height="180%">
+              <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <rect x="6" y="6" width="108" height="108" rx="26" fill="#0b0b12"/>
+          <g filter="url(#glowB)">
+            <path d="M60 26 c22 0 32 14 32 32 0 20 -8 34 -32 34 -24 0 -32 -14 -32 -34 0 -18 10 -32 32 -32 Z" fill="url(#bgB)"/>
+            <ellipse cx="60" cy="88" rx="26" ry="6" fill="#4dd6ff" opacity=".5"/>
+          </g>
+          <path d="M46 56 q5 -6 10 0" stroke="#0b0b12" stroke-width="3.4" fill="none" stroke-linecap="round"/>
+          <path d="M64 56 q5 -6 10 0" stroke="#0b0b12" stroke-width="3.4" fill="none" stroke-linecap="round"/>
+          <path d="M52 70 q8 7 16 0" stroke="#0b0b12" stroke-width="3.4" fill="none" stroke-linecap="round"/>
+        </svg>
+        <h3>B — The dozing blob</h3>
+        <p>Your pink-blob reference in violet: 3D-feeling, rim-lit, serene. Less legible tiny.</p>
+      </div>
+      <div class="mascot-card">
+        <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Speech bubble with glowing waveform">
+          <defs>
+            <linearGradient id="bgC" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#8b72ff"/><stop offset="1" stop-color="#4dd6ff"/>
+            </linearGradient>
+            <filter id="glowC" x="-40%" y="-40%" width="180%" height="180%">
+              <feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <rect x="6" y="6" width="108" height="108" rx="26" fill="url(#bgC)"/>
+          <path d="M32 42 a12 12 0 0 1 12 -12 h32 a12 12 0 0 1 12 12 v22 a12 12 0 0 1 -12 12 h-20 l-12 12 v-12 h-0 a12 12 0 0 1 -12 -12 Z" fill="#0b0b12"/>
+          <g filter="url(#glowC)" stroke="url(#bgC)" stroke-width="4.4" stroke-linecap="round">
+            <line x1="46" y1="48" x2="46" y2="58"/><line x1="56" y1="42" x2="56" y2="64"/><line x1="66" y1="46" x2="66" y2="60"/><line x1="76" y1="50" x2="76" y2="56"/>
+          </g>
+        </svg>
+        <h3>C — The spoken word</h3>
+        <p>Semi-abstract: a dark bubble holding a lit waveform. Sleekest, least mascot.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLATE 02 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="no">PLATE 02</span><h2>Color — one accent, two materials</h2><span class="why">replaces warm-paper green · every value flows through the existing tokens</span></div>
+    <p class="note">The whole app already reads its colors from one token file — so this entire system lands by <b>changing values, not components</b>. Recording stays red in both modes and is the only other saturated voice. Speaker lanes stay tellable-apart in greyscale.</p>
+    <div class="boards">
+      <div class="board dark">
+        <div class="board-title">Luminous glass <span>dark · the hero</span></div>
+        <div class="swatches">
+          <div class="sw" style="background:#0b0b12"><span class="n">app</span><span class="v">#0B0B12</span></div>
+          <div class="sw" style="background:#14141f"><span class="n">raised</span><span class="v">#14141F</span></div>
+          <div class="sw" style="background:#07070c"><span class="n">sunken</span><span class="v">#07070C</span></div>
+          <div class="sw" style="background:#232338"><span class="n">selected</span><span class="v">#232338</span></div>
+          <div class="sw" style="background:#8b72ff;color:#0b0b12"><span class="n">accent</span><span class="v">#8B72FF</span></div>
+          <div class="sw" style="background:#4dd6ff;color:#0b0b12"><span class="n">accent-2</span><span class="v">#4DD6FF</span></div>
+          <div class="sw" style="background:#ff5c51;color:#0b0b12"><span class="n">recording</span><span class="v">#FF5C51</span></div>
+          <div class="sw" style="background:linear-gradient(92deg,#8b72ff,#4dd6ff);color:#0b0b12"><span class="n">aurora</span><span class="v">grad</span></div>
+        </div>
+        <div class="lane">
+          <span class="lbl">speakers</span>
+          <span class="dot" style="background:#4dd6ff"></span><span class="dot" style="background:#b78cff"></span><span class="dot" style="background:#ffb86b"></span><span class="dot" style="background:#63e6be"></span><span class="dot" style="background:#ff8fb8"></span>
+        </div>
+      </div>
+      <div class="board light">
+        <div class="board-title">Porcelain <span>light · same room, daylight</span></div>
+        <div class="swatches">
+          <div class="sw" style="background:#f7f7fa"><span class="n">app</span><span class="v">#F7F7FA</span></div>
+          <div class="sw" style="background:#ffffff"><span class="n">raised</span><span class="v">#FFFFFF</span></div>
+          <div class="sw" style="background:#efeff5"><span class="n">sunken</span><span class="v">#EFEFF5</span></div>
+          <div class="sw" style="background:#e7e4fa"><span class="n">selected</span><span class="v">#E7E4FA</span></div>
+          <div class="sw" style="background:#6c4ff0;color:#fff"><span class="n">accent</span><span class="v">#6C4FF0</span></div>
+          <div class="sw" style="background:#0e7fa8;color:#fff"><span class="n">accent-2</span><span class="v">#0E7FA8</span></div>
+          <div class="sw" style="background:#e0342b;color:#fff"><span class="n">recording</span><span class="v">#E0342B</span></div>
+          <div class="sw" style="background:linear-gradient(92deg,#6c4ff0,#2aa3d0);color:#fff"><span class="n">aurora</span><span class="v">grad</span></div>
+        </div>
+        <div class="lane">
+          <span class="lbl" style="color:#79778e">speakers</span>
+          <span class="dot" style="background:#0e7fa8"></span><span class="dot" style="background:#7c4fd8"></span><span class="dot" style="background:#b26a1b"></span><span class="dot" style="background:#1e8f68"></span><span class="dot" style="background:#c24a7e"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLATE 03 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="no">PLATE 03</span><h2>The shell — titlebar, library, note</h2><span class="why">custom chrome · sort control · glow only on live things</span></div>
+    <p class="note">The stock Windows titlebar goes away: the app draws its own slim bar — record control on the left, window buttons on the right — so the first pixel is already Notetaker. In the rail: <b>the sort control you asked for</b> (newest · oldest · longest · A–Z, plus a status filter), day headers stay. Type gets a real scale (tight -2% tracking on titles, tabular numerals on every duration).</p>
+    <div class="mocks">
+      <div class="mock-wrap">
+        <div class="mock m-dark" role="img" aria-label="Dark mode mock of the app shell">
+          <div class="tbar">
+            <span class="rec-chip"><span class="rec-dot"></span> 12:34</span>
+            <span class="meter" aria-hidden="true"><i style="height:4px"></i><i style="height:9px"></i><i style="height:12px"></i><i style="height:7px"></i><i style="height:10px"></i></span>
+            <span class="title">Notetaker</span>
+            <span class="sp"></span>
+            <span class="winbtn">–</span><span class="winbtn">▢</span><span class="winbtn close">✕</span>
+          </div>
+          <div class="mock-body">
+            <div class="m-side">
+              <div class="m-search">⌕ Search transcripts…</div>
+              <div class="sortrow"><span class="pill">Sort · <b>Newest</b> ▾</span><span class="pill">Filter ▾</span></div>
+              <div class="dayhdr">Today</div>
+              <div class="row sel"><span class="t">Accounting group sync</span><span class="m">2:15 PM · 46 min</span></div>
+              <div class="row"><span class="t">Idea dump — pricing</span><span class="m">11:02 · 8 min <span class="chip proc">processing</span></span></div>
+              <div class="dayhdr">Yesterday</div>
+              <div class="row"><span class="t">Call with Wei</span><span class="m">4:30 PM · 32 min</span></div>
+            </div>
+            <div class="m-main">
+              <div class="m-title">Accounting group sync</div>
+              <div class="m-meta"><span class="task">Entrepreneurship</span><span>46 min · 2 speakers</span></div>
+              <div class="m-card"><div class="hd">Summary</div><div class="ai">Deadline moved to Friday; Wei owns the deck; George validates the pricing sheet before class…</div></div>
+              <div class="m-card"><div class="hd">Transcript</div>
+                <div class="tr-line"><span class="spk s1">Wei</span><span class="tx">I can take the deck if you handle numbers.</span></div>
+                <div class="tr-line"><span class="spk s2">George</span><span class="tx">Deal — send me the template tonight.</span></div>
+              </div>
+              <div class="player"><span>▶</span><div class="pb"><i></i></div><span class="tt">17:12 / 46:03</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="cap"><b>Luminous glass.</b> Glow lives only on live things: the pulse, the meter, the playhead, the active row's edge.</p>
+      </div>
+      <div class="mock-wrap">
+        <div class="mock m-light" role="img" aria-label="Light mode mock of the app shell">
+          <div class="tbar">
+            <span class="rec-chip"><span class="rec-dot"></span> 12:34</span>
+            <span class="meter" aria-hidden="true"><i style="height:4px"></i><i style="height:9px"></i><i style="height:12px"></i><i style="height:7px"></i><i style="height:10px"></i></span>
+            <span class="title">Notetaker</span>
+            <span class="sp"></span>
+            <span class="winbtn">–</span><span class="winbtn">▢</span><span class="winbtn close">✕</span>
+          </div>
+          <div class="mock-body">
+            <div class="m-side">
+              <div class="m-search">⌕ Search transcripts…</div>
+              <div class="sortrow"><span class="pill">Sort · <b>Newest</b> ▾</span><span class="pill">Filter ▾</span></div>
+              <div class="dayhdr">Today</div>
+              <div class="row sel"><span class="t">Accounting group sync</span><span class="m">2:15 PM · 46 min</span></div>
+              <div class="row"><span class="t">Idea dump — pricing</span><span class="m">11:02 · 8 min <span class="chip proc">processing</span></span></div>
+              <div class="dayhdr">Yesterday</div>
+              <div class="row"><span class="t">Call with Wei</span><span class="m">4:30 PM · 32 min</span></div>
+            </div>
+            <div class="m-main">
+              <div class="m-title">Accounting group sync</div>
+              <div class="m-meta"><span class="task">Entrepreneurship</span><span>46 min · 2 speakers</span></div>
+              <div class="m-card"><div class="hd">Summary</div><div class="ai">Deadline moved to Friday; Wei owns the deck; George validates the pricing sheet before class…</div></div>
+              <div class="m-card"><div class="hd">Transcript</div>
+                <div class="tr-line"><span class="spk s1">Wei</span><span class="tx">I can take the deck if you handle numbers.</span></div>
+                <div class="tr-line"><span class="spk s2">George</span><span class="tx">Deal — send me the template tonight.</span></div>
+              </div>
+              <div class="player"><span>▶</span><div class="pb"><i></i></div><span class="tt">17:12 / 46:03</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="cap"><b>Porcelain.</b> Identical room in daylight — same accent, glow softened to tinted shadows.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLATE 04 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="no">PLATE 04</span><h2>Settings — from one long scroll to a real place</h2><span class="why">closes all four gaps from your real-use session</span></div>
+    <p class="note">Today: eight sections in one scroll, raw text fields for paths and URLs, nothing pre-filled, no mic picker, no hotkeys. Proposed: <b>sectioned navigation</b>, every value pre-filled from the app, a real <b>microphone picker</b>, <b>model status with download state</b>, a <b>Choose-folder picker</b> for storage, and the new <b>Hotkeys</b> section — press the keys, it records them, warns on conflicts.</p>
+    <div class="set-mock m-dark">
+      <div class="set-grid">
+        <div class="set-nav">
+          <div class="it">General</div>
+          <div class="it">Recording</div>
+          <div class="it on">Hotkeys</div>
+          <div class="it">Transcription &amp; AI</div>
+          <div class="it">Storage</div>
+          <div class="it">Updates</div>
+        </div>
+        <div class="set-pane">
+          <h4>Hotkeys</h4>
+          <div class="set-row">
+            <span class="lab"><b>Start / stop recording</b><span>Works anywhere in Windows, even with the window closed</span></span>
+            <span class="keys"><span class="key hot">Ctrl</span><span class="key hot">Alt</span><span class="key hot">N</span></span>
+          </div>
+          <div class="set-row">
+            <span class="lab"><b>Show / hide Notetaker</b><span>Brings the window up from the tray</span></span>
+            <span class="keys"><span class="key">Ctrl</span><span class="key">Alt</span><span class="key">Space</span></span>
+          </div>
+          <div class="set-row">
+            <span class="lab"><b>Microphone</b><span>Recording · also shown in the Recording section</span></span>
+            <span class="sel-ctl">Yeti Stereo Microphone ▾</span>
+          </div>
+          <div class="set-row">
+            <span class="lab"><b>Where recordings live</b><span>C:\Users\georg\Notetaker · 4.2 GB</span></span>
+            <span class="btn">Choose folder…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="pal-cap">Mock shows the Hotkeys section plus two rows borrowed from Recording/Storage to show the control styles — press a shortcut row and it enters a listening state to capture your keys.</p>
+  </section>
+
+  <!-- ============ PLATE 05 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="no">PLATE 05</span><h2>One way to do things</h2><span class="why">your Ctrl+K complaint, resolved</span></div>
+    <p class="note">Ctrl+K stops being a junk drawer. Recording has exactly two homes — the <b>record button</b> and the <b>global hotkey</b> — and the palette becomes pure <b>find &amp; jump</b>: recordings, tasks, and deep links into settings sections. Theme toggle keeps one home (the titlebar). Every row shows its real shortcut, so the palette teaches the keyboard instead of duplicating the mouse.</p>
+    <div class="pal-pair">
+      <div>
+        <div class="pal m-dark">
+          <div class="in">⌕ Type a command or search…</div>
+          <div class="grp">Do</div>
+          <div class="it bad">Record a meeting <span class="why-x">← button exists</span></div>
+          <div class="it bad">Record in person <span class="why-x">← button exists</span></div>
+          <div class="it bad">Switch to dark mode <span class="why-x">← button exists</span></div>
+          <div class="it">Open settings</div>
+          <div class="grp">Recordings</div>
+          <div class="it">Accounting group sync</div>
+        </div>
+        <p class="pal-cap"><b style="color:var(--red)">Before</b> — half the rows repeat buttons that are always on screen.</p>
+      </div>
+      <div>
+        <div class="pal m-dark">
+          <div class="in">⌕ Jump to…</div>
+          <div class="grp">Recordings</div>
+          <div class="it sel">Accounting group sync <span class="k">Today · 46m</span></div>
+          <div class="it">Call with Wei <span class="k">Yesterday · 32m</span></div>
+          <div class="grp">Tasks</div>
+          <div class="it">Entrepreneurship <span class="k">7 recordings</span></div>
+          <div class="grp">Settings</div>
+          <div class="it">Hotkeys <span class="k">settings ›</span></div>
+          <div class="it">Microphone <span class="k">settings ›</span></div>
+        </div>
+        <p class="pal-cap"><b style="color:var(--mint)">After</b> — pure navigation, with settings sections addressable by name.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLATE 06 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="no">PLATE 06</span><h2>Living in the tray</h2><span class="why">the corner from your screenshot</span></div>
+    <p class="note">Closing the window <b>hides, never quits</b> — meeting detection and your hotkey stay alive (a one-time toast explains this the first time). The mascot sits in the tray: dim while idle, <b>red-dotted and glowing while recording</b>, so “am I still recording?” is answered from any app. Right-click for the essentials. “Start Notetaker with Windows” ships as a visible toggle in Settings → General, on by default — a meeting detector that isn't running can't detect meetings. One honest limit: Windows decides whether new tray icons start behind the ⌃ chevron; pinning it to the visible row is one drag, which I'll show you once.</p>
+    <div class="tray-demo">
+      <div>
+        <div class="tray-menu" role="img" aria-label="Tray right-click menu mock">
+          <div class="mi hot"><span style="color:#ff5c51">●</span> Stop recording <span class="hint">12:34</span></div>
+          <div class="mi">Open Notetaker <span class="hint">Ctrl+Alt+Space</span></div>
+          <div class="div"></div>
+          <div class="mi">Settings</div>
+          <div class="mi">Quit Notetaker</div>
+        </div>
+        <p class="pal-cap">Right-click, mid-recording. First item always shows state.</p>
+      </div>
+      <div>
+        <div class="taskbar">
+          <span class="chev">⌃</span>
+          <span class="tray-ic" aria-label="Tray icon, idle">
+            <svg width="18" height="18" viewBox="0 0 120 120"><path d="M34 78 V54 a26 26 0 0 1 52 0 V78 a6 6 0 0 1 -9 5 l-4 -2.5 a6 6 0 0 0 -6.5 0 l-3 2 a6 6 0 0 1 -7 0 l-3 -2 a6 6 0 0 0 -6.5 0 l-4 2.5 a6 6 0 0 1 -9 -5 Z" fill="#b9b7d0"/></svg>
+          </span>
+          <span class="tray-ic" aria-label="Tray icon, recording">
+            <svg width="18" height="18" viewBox="0 0 120 120"><path d="M34 78 V54 a26 26 0 0 1 52 0 V78 a6 6 0 0 1 -9 5 l-4 -2.5 a6 6 0 0 0 -6.5 0 l-3 2 a6 6 0 0 1 -7 0 l-3 -2 a6 6 0 0 0 -6.5 0 l-4 2.5 a6 6 0 0 1 -9 -5 Z" fill="#efeffa"/></svg>
+            <span class="st rec"></span>
+          </span>
+        </div>
+        <div class="tray-states">
+          <span class="lab">← idle&nbsp;&nbsp;·&nbsp;&nbsp;recording →</span>
+        </div>
+        <p class="pal-cap">Echo's silhouette reads at 16 px; the red dot + glow means live.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLATE 07 ============ -->
+  <section class="plate">
+    <div class="plate-head"><span class="no">PLATE 07</span><h2>What this fixes, what it doesn't touch</h2></div>
+    <div class="fixes">
+      <div class="fix"><b>Settings feels vibecoded</b>Sectioned nav, pre-filled values, mic picker, model status, storage picker, hotkeys. (All four gaps from your July 30 session close here.)</div>
+      <div class="fix"><b>No way to sort notes</b>Sort by newest / oldest / longest / A–Z + status filter, remembered per view.</div>
+      <div class="fix"><b>Too many ways to do things</b>Palette = find &amp; jump only. Record = button + hotkey. Theme = titlebar.</div>
+      <div class="fix"><b>Looks default</b>New identity: aurora accent, two materials, custom titlebar, real type scale, motion with intent (150–250 ms, respects reduced-motion).</div>
+      <div class="fix native"><b>Not in my taskbar corner</b>True tray app: close-to-tray, live state icon, quick actions, autostart toggle.</div>
+      <div class="fix native"><b>No hotkeys</b>Global start/stop (Ctrl+Alt+N) and show/hide (Ctrl+Alt+Space), rebindable in Settings → Hotkeys.</div>
+      <div class="fix native"><b>Generic icon</b>Echo, generated into every Windows/macOS size, plus tray-state variants.</div>
+      <div class="fix native"><b>Only lives while open</b>Single-instance + window position remembered + optional start with Windows.</div>
+    </div>
+    <div class="quiet">
+      <b>Untouched:</b> the capture engine, crash recovery, transcription pipeline, storage layout, and search index — nothing that guards your recordings moves. <b>Verified like everything else here:</b>
+      <ul>
+        <li>Every behavior lands with a test; the existing 80+ UI tests keep passing throughout.</li>
+        <li>Every visual claim lands with a screenshot checked against this pitch — in the browser during the build, then installed and photographed on your real Windows machine.</li>
+        <li>Built on the newest branch (the one you're running), not the stale worktree this session started on.</li>
+      </ul>
+    </div>
+  </section>
+</div>
