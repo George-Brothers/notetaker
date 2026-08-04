@@ -99,8 +99,9 @@ tinted shadow**, same token names so components never branch on theme.
   repetition of both blocks) is **kept exactly as structured today** — the
   executor changes values inside the existing four blocks, nothing else.
 - Type scale: 11px caps-labels (`+0.1em` tracking), 12.5px hints, 13.5px
-  secondary, 15px body, 17px section titles, 20px note titles
-  (`-0.02em` tracking, weight 700). Durations and timestamps always
+  secondary, 15px body, 17px section titles, 20–26px note titles
+  (`-0.02em` tracking, weight 650–700; the existing 22/26px note title
+  already satisfies this step). Durations and timestamps always
   `font-variant-numeric: tabular-nums`. Font stays Inter Variable.
 
 ## 3. The shell
@@ -147,7 +148,7 @@ while data exists (load order already fixed upstream).
 | Recording | *microphone picker* (device list + "System default"), auto-record per-app table (moved), keep-WAV checkbox (moved from "Recording files") |
 | Hotkeys | *start/stop recording* recorder row (default `Ctrl+Alt+N`), *show/hide Notetaker* recorder row (default `Ctrl+Alt+Space`) |
 | Transcription & AI | model size tier, speech engine select (moved), *model status list with per-model state and re-download*, Ollama status + pull, LLM base URL + model (grouped under an "Advanced" disclosure, collapsed by default) |
-| Storage | storage root with **Choose folder…** native picker + current path + *disk usage of the folder*, open-logs button (moved) |
+| Storage | storage root with **Choose folder…** native picker + current path, open-logs button (moved) |
 | Updates | version line, check button, download-and-restart (unchanged behavior) |
 
 Hotkey recorder behavior: click row → it enters listening state ("Press the
@@ -178,11 +179,13 @@ silent.
   `tauri-plugin-single-instance`, `tauri-plugin-window-state`,
   `tauri-plugin-dialog` (folder picker). Updater/opener/process stay.
 - **Tray** (Tauri `TrayIcon` API, no extra plugin): left-click = show/focus
-  window (or hide when focused); right-click menu, exact labels top to bottom:
-  state row (**"Start recording"** idle / **"Stop recording"** + elapsed while
-  live), **"Open Notetaker"**, separator, **"Settings"**, **"Quit
-  Notetaker"**. Tooltip: "Notetaker — recording 12:34" pattern while live,
-  "Notetaker" otherwise.
+  the window (hiding stays with the close button and the show/hide hotkey);
+  right-click menu, exact labels top to bottom: state row (**"Start
+  recording"** idle / **"Stop recording"** while live or paused), **"Open
+  Notetaker"**, separator, **"Settings"**, **"Quit Notetaker"**. Tooltip:
+  **"Notetaker — recording"** / **"Notetaker — paused"** while live,
+  **"Notetaker"** otherwise. No elapsed time in the tray — a static menu
+  cannot keep a timer honest; the record bar owns the clock.
 - **Tray state icons:** `src-tauri/icons/tray/idle.png`, `recording.png`,
   `paused.png` (32×32; Echo silhouette; recording adds the red dot). Frontend
   drives state via new app-crate command `set_tray_status(state)` called from
@@ -232,9 +235,10 @@ All remaining components (RecordBar, NoteView, Notepad, PlayerBar,
 TranscriptPanel, AskPanel, ActionItems, FirstRun, SetupNotice, MeetingPrompt,
 StatusChip, ui.tsx primitives) are restyled **through tokens and the type
 scale only** — behavior, props, and test-visible text do not change except
-where this spec says so. The playhead and meter adopt `--grad-aurora` +
-`--glow-accent`. Primary buttons adopt the aurora gradient with
-`--c-accent-fg` text. Empty library state gets Echo (dim, 96px) + the line
+where this spec says so. The level meter adopts `--grad-aurora` +
+`--glow-accent`; the playback slider is a native range input, so its thumb
+carries `--glow-accent` while its track keeps the accent color. Primary
+buttons adopt the aurora gradient with `--c-accent-fg` text. Empty library state gets Echo (dim, 96px) + the line
 **"Nothing here yet — hit record, or press {hotkey}."** where `{hotkey}` is
 the configured `hotkeyToggleRecord` formatted for display (desktop) or the
 line ends after "record" (web build).
@@ -260,6 +264,9 @@ line ends after "record" (web build).
   cross-platform but B2 owns the Mac day). No web/LAN restyle risk: tokens
   flow there automatically; tray/hotkey/titlebar are desktop-gated.
 - No bulk operations, tags, folders, per-view sort memory, or Echo animation.
+- No storage disk-usage readout in Settings → Storage for now — the pitch
+  mock showed a byte count next to the path; the folder picker ships, the
+  byte count is deferred (it needs a new core command and a directory walk).
 - Windows decides whether new tray icons start behind the chevron; pinning is
   a one-time user drag (shown once, not fought).
 - Custom titlebar trades away the Windows 11 snap-layout flyout on hover of
