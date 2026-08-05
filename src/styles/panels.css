@@ -76,7 +76,19 @@
   margin: 0;
   font-size: 15px;
   font-weight: 600;
+}
+
+.settings-panel__header h2 {
   color: var(--c-fg);
+}
+
+/* First-run greeting title in the aurora — the single place gradient text is
+   allowed (spec §1). */
+.first-run__header h2 {
+  background: var(--grad-aurora);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .settings-panel__body {
@@ -455,4 +467,12 @@
   font-size: 0.85rem;
   color: var(--color-foreground);
   cursor: pointer;
+}
+
+/* --- 2026-08-04 overhaul polish ---------------------------------------- */
+
+/* The playhead thumb carries the accent glow — the one continuously-moving
+   thing in playback should be the lit one. */
+input[type="range"]::-webkit-slider-thumb {
+  box-shadow: var(--glow-accent);
 }
