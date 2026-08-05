@@ -40,8 +40,15 @@ import { formatAcceleratorParts } from "./lib/hotkeys";
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
 /** Set once the tray note has been read, so closing the window is silent after. */
 const TRAY_EXPLAINED_KEY = "notetaker.trayExplained";
-/** Set the first time we turn on start-with-Windows, so we only ever do it once. */
+/**
+ * Tracks the one-time start-with-Windows default. Two values, not a flag:
+ * `pending` means we committed to asking the OS, `done` means the OS said yes.
+ * The difference is what lets a refused enable be retried without ever asking
+ * twice on a machine whose storage cannot remember the answer.
+ */
 const AUTOSTART_INIT_KEY = "notetaker.autostartInit";
+const AUTOSTART_PENDING = "pending";
+const AUTOSTART_DONE = "1";
 
 /** What the hotkeys fall back to when settings cannot be read. */
 const DEFAULT_TOGGLE_RECORD = "CommandOrControl+Alt+N";
@@ -252,27 +259,39 @@ function App() {
     onToggleRecord: toggleRecording,
   });
 
-  // Start with Windows, on by default — but written exactly once, ever.
-  // Writing it on every launch would silently undo turning it off in Settings.
+  // Start with Windows, on by default — asked for exactly once, ever.
+  //
+  // Two invariants, and they pull in opposite directions:
+  //
+  //   1. Never ask twice on a store that cannot remember the answer. Asking on
+  //      every launch would re-enable a login item somebody deliberately
+  //      turned off in Settings, and they would have no way to make it stick.
+  //   2. A refused `enable()` must be retried, or a single bad launch leaves
+  //      start-with-Windows off forever with the app believing it did the job.
+  //
+  // Both are satisfied by writing the marker in two stages. The first write is
+  // also the writability probe: a store that refuses stops us *here*, before
+  // the OS is touched at all, which is invariant 1. It is only promoted to
+  // `AUTOSTART_DONE` once the OS has actually accepted, so a refusal leaves it
+  // at `AUTOSTART_PENDING` and the next launch asks again — invariant 2.
   useEffect(() => {
     if (!isDesktop()) return;
     try {
-      if (window.localStorage.getItem(AUTOSTART_INIT_KEY) === "1") return;
+      if (window.localStorage.getItem(AUTOSTART_INIT_KEY) === AUTOSTART_DONE) return;
+      window.localStorage.setItem(AUTOSTART_INIT_KEY, AUTOSTART_PENDING);
     } catch {
       // Storage refused. Doing nothing is the safe half of this: better to
       // never turn it on than to turn it back on at every launch.
       return;
     }
     void (async () => {
-      // Ticked off only once the OS has actually accepted it. Marking it done
-      // first meant a refused `enable()` — which `setAutostart` swallows — was
-      // never retried: the app would have "already done" a thing that in fact
-      // never happened, and start-with-Windows would be off forever.
       if (!(await setAutostart(true))) return;
       try {
-        window.localStorage.setItem(AUTOSTART_INIT_KEY, "1");
+        window.localStorage.setItem(AUTOSTART_INIT_KEY, AUTOSTART_DONE);
       } catch {
-        // Worst case we ask the OS again next launch, which it will accept.
+        // Near-impossible: the probe above already succeeded on this same key.
+        // If it somehow happens the marker stays pending and we ask again next
+        // launch, which is the redundant direction rather than the harmful one.
       }
     })();
   }, []);

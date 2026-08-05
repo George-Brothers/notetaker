@@ -29,17 +29,44 @@ export interface HotkeyIssues {
 }
 
 /**
+ * Every field of `HotkeyIssues`, tied to the type rather than copied from it.
+ *
+ * `Record<keyof HotkeyIssues, true>` cannot be satisfied unless every key is
+ * present, so adding a third issue to the interface fails to compile *here*
+ * instead of being silently dropped by the comparison below — which would
+ * quietly stop the new issue from ever reaching the panel.
+ */
+const ISSUE_FIELDS = Object.keys({
+  toggleRecord: true,
+  showHide: true,
+} satisfies Record<keyof HotkeyIssues, true>) as Array<keyof HotkeyIssues>;
+
+function sameIssues(a: HotkeyIssues, b: HotkeyIssues): boolean {
+  return ISSUE_FIELDS.every((field) => a[field] === b[field]);
+}
+
+/**
  * The shortcut plugin, loaded once and kept.
  *
  * Dynamic, because this is desktop-only and a static import would put it in
- * the served web bundle. Memoised, because *every* call must reach the same
- * module instance: `register` and the `unregisterAll` in the cleanup below
- * are two halves of one piece of OS state, and two instances would mean
- * unregistering shortcuts a different copy of the plugin owns.
+ * the served web bundle.
+ *
+ * The memo is a tidy-up, not a bug fix — ESM already caches a dynamic import by
+ * specifier, so the bare `import()` this replaced was resolving to the same
+ * namespace object every time in a real browser. What it buys is one round trip
+ * instead of one per registration, and determinism under vitest, where a mocked
+ * module can otherwise resolve twice and hand back two different objects.
+ *
+ * A rejection is deliberately *not* kept: caching it would mean the hotkeys
+ * could never recover, where the un-memoised version simply retried on the next
+ * effect run. Clearing the slot preserves that.
  */
 let shortcutsPlugin: Promise<typeof import("@tauri-apps/plugin-global-shortcut")> | null = null;
 function shortcuts() {
-  shortcutsPlugin ??= import("@tauri-apps/plugin-global-shortcut");
+  shortcutsPlugin ??= import("@tauri-apps/plugin-global-shortcut").catch((err) => {
+    shortcutsPlugin = null;
+    throw err;
+  });
   return shortcutsPlugin;
 }
 
@@ -77,7 +104,12 @@ export function useGlobalHotkeys({
     if (!enabled || !isDesktop()) return;
     let cancelled = false;
 
-    (async () => {
+    // `.catch` on the whole thing only so a plugin chunk that fails to load
+    // cannot surface as an unhandled rejection. It leaves both accelerators
+    // unregistered and says nothing, which is a real gap — but the honest
+    // message for it is not one this task has, and inventing "taken by another
+    // app" would be worse than silence.
+    void (async () => {
       const { register, unregisterAll } = await shortcuts();
       await unregisterAll().catch(() => undefined);
       if (cancelled) return;
@@ -122,12 +154,8 @@ export function useGlobalHotkeys({
       // existed: 120,952 registrations inside one second, with nothing in the
       // symptom pointing at the callback. Returning `prev` makes React skip
       // the re-render, which is what ends the cycle.
-      if (!cancelled) {
-        setIssues((prev) =>
-          prev.toggleRecord === next.toggleRecord && prev.showHide === next.showHide ? prev : next,
-        );
-      }
-    })();
+      if (!cancelled) setIssues((prev) => (sameIssues(prev, next) ? prev : next));
+    })().catch(() => undefined);
 
     return () => {
       cancelled = true;

@@ -662,14 +662,51 @@ describe("closing the window, the tray menu, and the OS-wide shell", () => {
     expect(shell.enable).toHaveBeenCalledTimes(1);
   });
 
-  it("does not tick start-with-Windows off as done when the OS refuses it", async () => {
+  it("asks again next launch when the OS refuses start-with-Windows", async () => {
     shell.enable.mockRejectedValueOnce(new Error("no permission"));
     await mount();
 
     await waitFor(() => expect(shell.enable).toHaveBeenCalledTimes(1));
-    // Unmarked, so the next launch asks again. Marking it done here would
-    // leave autostart off forever with the app believing it had set it.
-    expect(window.localStorage.getItem("notetaker.autostartInit")).toBeNull();
+    // Not promoted to done. Marking it done on a refusal would leave autostart
+    // off forever with the app believing it had set it.
+    expect(window.localStorage.getItem("notetaker.autostartInit")).not.toBe("1");
+
+    cleanup();
+    await mount();
+    await waitFor(() => expect(shell.enable).toHaveBeenCalledTimes(2));
+  });
+
+  /**
+   * The other half of that trade, and the one that bites hardest.
+   *
+   * The marker is what stops the app asking twice. If the store cannot keep it,
+   * asking anyway would re-enable a login item somebody deliberately turned off
+   * in Settings — on every single launch, with no way to make it stick. So the
+   * first write doubles as a writability probe and has to happen *before* the
+   * OS is touched at all.
+   */
+  it("never touches the OS when the store cannot remember the decision", async () => {
+    const realSetItem = Storage.prototype.setItem;
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key: string, value: string) {
+        // Only this key, so nothing unrelated (the theme, the first-run card)
+        // starts failing and turns this into a test about something else.
+        if (key === "notetaker.autostartInit") throw new Error("QuotaExceededError");
+        realSetItem.call(this, key, value);
+      });
+
+    try {
+      await mount();
+      // Bounded, and generous: the effect fires on mount, so anything it was
+      // going to do has happened long before this resolves.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(shell.enable).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem("notetaker.autostartInit")).toBeNull();
+    } finally {
+      setItem.mockRestore();
+    }
   });
 
   it("drops its subscriptions when the shell goes away", async () => {

@@ -9,6 +9,7 @@ import type { InputDevice } from "../lib/desktop";
 import { isDesktop } from "../lib/transport";
 import { formatBytes } from "../lib/format";
 import type { useTheme, ThemePreference } from "../hooks/useTheme";
+import type { HotkeyIssues } from "../hooks/useGlobalHotkeys";
 import { Button, Notice, Switch } from "./ui";
 import { HotkeyField } from "./HotkeyField";
 import { cn } from "../lib/cn";
@@ -42,7 +43,10 @@ export interface SettingsProps {
   theme: ReturnType<typeof useTheme>;
   section: SettingsSection;
   onSelectSection: (s: SettingsSection) => void;
-  hotkeyIssues?: { toggleRecord: string | null; showHide: string | null };
+  // The hook's own type, imported rather than restated: a structural copy would
+  // go on compiling after a third issue is added, and the panel would simply
+  // never show it.
+  hotkeyIssues?: HotkeyIssues;
   /**
    * Called once a write has actually landed. This is how a rebind reaches the
    * OS while the panel is still open — App refetches on it, which re-registers

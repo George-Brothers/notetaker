@@ -288,7 +288,11 @@ describe("Settings screen", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Check for updates" }));
 
     await waitFor(() => expect(checkForUpdate).toHaveBeenCalledOnce());
-    expect(within(dialog).getByText("You’re up to date.")).toBeInTheDocument();
+    // `findByText`, not `getByText`: the waitFor above resolves the moment the
+    // *call* happens, which is before the message it sets has rendered. That
+    // gap is real — it went red once in a loaded full-suite run — and the
+    // assertion is otherwise identical.
+    expect(await within(dialog).findByText("You’re up to date.")).toBeInTheDocument();
   });
 
   it("downloads a found update and restarts when requested", async () => {
