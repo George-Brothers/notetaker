@@ -25,7 +25,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { RecordingRow, SearchHit } from "../lib/ipc";
-import type { LibraryView } from "../hooks/useLibrary";
+import type { FilterKey, LibraryView, SortKey } from "../hooks/useLibrary";
 import { dayLabel, roughDuration, timeOfDay } from "../lib/format";
 import { cn } from "../lib/cn";
 import { Kbd, modKey } from "./ui";
@@ -43,6 +43,10 @@ export interface SidebarProps {
   onSearch: (q: string) => void;
   searchResults: SearchHit[] | null;
   onOpenPalette: () => void;
+  sort: SortKey;
+  onSetSort: (s: SortKey) => void;
+  filter: FilterKey;
+  onSetFilter: (f: FilterKey) => void;
   /** True while a queued recording cannot process because speech models are absent. */
   modelsMissing?: boolean;
   /** Layout only — the shell decides whether the rail is showing. */
@@ -115,7 +119,7 @@ function RecordingItem({
       aria-current={selected ? "true" : undefined}
       className={cn(
         "flex w-full flex-col gap-0.5 rounded-[var(--radius-control)] px-2 py-1.5 text-left transition-colors",
-        selected ? "bg-selected" : "hover:bg-hover",
+        selected ? "bg-selected shadow-[inset_2px_0_0_var(--c-accent)]" : "hover:bg-hover",
       )}
     >
       <span className="flex items-center gap-1.5">
@@ -165,6 +169,10 @@ export function Sidebar({
   onSearch,
   searchResults,
   onOpenPalette,
+  sort,
+  onSetSort,
+  filter,
+  onSetFilter,
   modelsMissing = false,
   className,
 }: SidebarProps) {
@@ -224,6 +232,34 @@ export function Sidebar({
           <span>Jump to anything</span>
           <Kbd>{modKey()} K</Kbd>
         </button>
+        <div className="flex items-center gap-1.5">
+          <label htmlFor="library-sort" className="sr-only">Sort recordings</label>
+          <select
+            id="library-sort"
+            aria-label="Sort recordings"
+            value={sort}
+            onChange={(e) => onSetSort(e.target.value as SortKey)}
+            className="h-6 flex-1 cursor-pointer rounded-[var(--radius-control)] border border-border bg-raised px-1.5 text-[11px] font-medium text-fg-muted focus:border-accent focus:outline-none"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="longest">Longest first</option>
+            <option value="alpha">A to Z</option>
+          </select>
+          <label htmlFor="library-filter" className="sr-only">Show only</label>
+          <select
+            id="library-filter"
+            aria-label="Show only"
+            value={filter}
+            onChange={(e) => onSetFilter(e.target.value as FilterKey)}
+            className="h-6 flex-1 cursor-pointer rounded-[var(--radius-control)] border border-border bg-raised px-1.5 text-[11px] font-medium text-fg-muted focus:border-accent focus:outline-none"
+          >
+            <option value="all">Everything</option>
+            <option value="processing">Still processing</option>
+            <option value="error">Had a problem</option>
+            <option value="notes">Has my notes</option>
+          </select>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
@@ -364,7 +400,7 @@ export function Sidebar({
                   Nothing here yet. Hit record and start typing — your notes and the transcript land
                   here together.
                 </p>
-              ) : (
+              ) : sort === "newest" || sort === "oldest" ? (
                 groups.map((group) => (
                   <div key={group.label} className="mb-3">
                     <h2 className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-fg-faint">
@@ -384,6 +420,19 @@ export function Sidebar({
                     </ul>
                   </div>
                 ))
+              ) : (
+                <ul className="flex flex-col gap-0.5">
+                  {recordings.map((row) => (
+                    <li key={row.id}>
+                      <RecordingItem
+                        row={row}
+                        selected={row.id === selectedId}
+                        onSelect={() => onSelectRecording(row.id)}
+                        modelsMissing={modelsMissing}
+                      />
+                    </li>
+                  ))}
+                </ul>
               )}
             </section>
           </>

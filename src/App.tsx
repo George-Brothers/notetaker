@@ -196,6 +196,10 @@ function App() {
             onSearch={lib.search}
             searchResults={lib.searchResults}
             onOpenPalette={() => setPaletteOpen(true)}
+            sort={lib.sort}
+            onSetSort={lib.setSort}
+            filter={lib.filter}
+            onSetFilter={lib.setFilter}
             modelsMissing={modelsMissing}
           />
 

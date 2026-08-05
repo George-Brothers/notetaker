@@ -16,13 +16,8 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function sortByCreatedDesc(rows: RecordingRow[]): RecordingRow[] {
-  // `created` is RFC3339, so lexicographic order tracks chronological order.
-  return [...rows].sort((a, b) => b.created.localeCompare(a.created));
-}
-
 function filterByView(rows: RecordingRow[], view: LibraryView): RecordingRow[] {
-  const sorted = sortByCreatedDesc(rows);
+  const sorted = rows;
   switch (view.kind) {
     case "all":
       return sorted;
@@ -39,6 +34,55 @@ function filterByView(rows: RecordingRow[], view: LibraryView): RecordingRow[] {
   }
 }
 
+export type SortKey = "newest" | "oldest" | "longest" | "alpha";
+export type FilterKey = "all" | "processing" | "error" | "notes";
+
+const SORT_STORAGE_KEY = "notetaker.librarySort";
+const FILTER_STORAGE_KEY = "notetaker.libraryFilter";
+
+const SORT_KEYS: readonly SortKey[] = ["newest", "oldest", "longest", "alpha"];
+const FILTER_KEYS: readonly FilterKey[] = ["all", "processing", "error", "notes"];
+
+function readStored<T extends string>(key: string, valid: readonly T[], fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return valid.includes(raw as T) ? (raw as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Pure so the ordering rules are unit-testable. Exported for tests. */
+export function applySort(rows: RecordingRow[], sort: SortKey): RecordingRow[] {
+  const copy = [...rows];
+  switch (sort) {
+    case "newest":
+      return copy.sort((a, b) => b.created.localeCompare(a.created));
+    case "oldest":
+      return copy.sort((a, b) => a.created.localeCompare(b.created));
+    case "longest":
+      return copy.sort((a, b) => b.durationS - a.durationS);
+    case "alpha":
+      return copy.sort((a, b) =>
+        a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
+      );
+  }
+}
+
+/** Pure so the visibility rules are unit-testable. Exported for tests. */
+export function applyFilter(rows: RecordingRow[], filter: FilterKey): RecordingRow[] {
+  switch (filter) {
+    case "all":
+      return rows;
+    case "processing":
+      return rows.filter((r) => r.status === "queued" || r.status === "processing");
+    case "error":
+      return rows.filter((r) => r.status === "failed");
+    case "notes":
+      return rows.filter((r) => r.hasNotes);
+  }
+}
+
 /**
  * Owns every call into `api` plus the fetched/derived state for the
  * library window. Components that consume this hook stay presentational.
@@ -48,6 +92,20 @@ export function useLibrary() {
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
   const [archivedRecordings, setArchivedRecordings] = useState<RecordingRow[]>([]);
   const [view, setView] = useState<LibraryView>({ kind: "all" });
+  const [sort, setSortState] = useState<SortKey>(() =>
+    readStored(SORT_STORAGE_KEY, SORT_KEYS, "newest"),
+  );
+  const [filter, setFilterState] = useState<FilterKey>(() =>
+    readStored(FILTER_STORAGE_KEY, FILTER_KEYS, "all"),
+  );
+  const setSort = useCallback((s: SortKey) => {
+    setSortState(s);
+    try { window.localStorage.setItem(SORT_STORAGE_KEY, s); } catch { /* best effort */ }
+  }, []);
+  const setFilter = useCallback((f: FilterKey) => {
+    setFilterState(f);
+    try { window.localStorage.setItem(FILTER_STORAGE_KEY, f); } catch { /* best effort */ }
+  }, []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RecordingDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -320,13 +378,20 @@ export function useLibrary() {
   );
 
   const source = view.kind === "archive" ? archivedRecordings : recordings;
-  const visibleRecordings = useMemo(() => filterByView(source, view), [source, view]);
+  const visibleRecordings = useMemo(
+    () => applySort(applyFilter(filterByView(source, view), filter), sort),
+    [source, view, filter, sort],
+  );
 
   return {
     tasks,
     recordings: visibleRecordings,
     view,
     setView,
+    sort,
+    setSort,
+    filter,
+    setFilter,
     selectedId,
     selectRecording,
     clearSelection,
