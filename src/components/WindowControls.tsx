@@ -48,11 +48,23 @@ export function WindowControls() {
     if (!isDesktop()) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    /**
+     * Monotonic, so a reply that arrives out of order cannot win.
+     *
+     * `onResized` fires once per resize message — dozens of times during a
+     * single drag of the window's edge — and each one starts its own
+     * independent read. Nothing sequences those reads, so an earlier one that
+     * happens to resolve last would strand the icon on an answer that was
+     * already out of date when it arrived, until some later resize corrected
+     * it. Each read carries its ticket number and only the newest may write.
+     */
+    let latest = 0;
 
     async function sync() {
+      const seq = ++latest;
       try {
         const now = await getCurrentWindow().isMaximized();
-        if (!cancelled) setMaximized(now);
+        if (!cancelled && seq === latest) setMaximized(now);
       } catch {
         // Leave the icon where it is. Guessing would be worse than being one
         // state behind, and there is nowhere sensible to report this to.
@@ -60,7 +72,6 @@ export function WindowControls() {
     }
 
     void (async () => {
-      await sync();
       try {
         const stop = await getCurrentWindow().onResized(() => void sync());
         // Unmounted while the subscription was still in flight: drop it now
@@ -70,6 +81,10 @@ export function WindowControls() {
       } catch {
         // No subscription means the icon can go stale; the buttons still work.
       }
+      // Read *after* subscribing, not before: a maximise landing in the gap
+      // between the two would otherwise be missed by the listener that did not
+      // exist yet and then overwritten by this read's stale answer.
+      await sync();
     })();
 
     return () => {

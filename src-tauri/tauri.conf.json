@@ -15,7 +15,7 @@
         "title": "Notetaker",
         "width": 1180,
         "height": 800,
-        "minWidth": 380,
+        "minWidth": 500,
         "minHeight": 480,
         "decorations": false
       }

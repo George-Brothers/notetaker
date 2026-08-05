@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WindowControls } from "../WindowControls";
+import tauriConf from "../../../src-tauri/tauri.conf.json";
 
 /**
  * The window, faked.
@@ -150,6 +151,39 @@ describe("WindowControls", () => {
     expect(await screen.findByRole("button", { name: "Maximize" })).toBeInTheDocument();
   });
 
+  /**
+   * Dragging a window edge emits a resize per frame, and each one starts its
+   * own read. They can come back in any order, and the icon must end up
+   * showing the newest answer rather than the last one to arrive.
+   */
+  it("ignores an out-of-order read rather than stranding on a stale answer", async () => {
+    pretendDesktop();
+    const pending: Array<(value: boolean) => void> = [];
+    win.isMaximized.mockImplementation(
+      () => new Promise<boolean>((resolve) => pending.push(resolve)),
+    );
+
+    render(<WindowControls />);
+    // The mount read, which only starts once the subscription is up.
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await act(async () => pending[0](false));
+    expect(screen.getByRole("button", { name: "Maximize" })).toBeInTheDocument();
+
+    // Two resizes, back to back, each with a read of its own in flight.
+    win.resized[0]();
+    win.resized[0]();
+    expect(pending).toHaveLength(3);
+
+    // The newer read lands first and says the window is now maximized.
+    await act(async () => pending[2](true));
+    expect(screen.getByRole("button", { name: "Restore" })).toBeInTheDocument();
+
+    // The older read lands late with the state as it was before. Applying it
+    // would leave "Maximize" on a maximized window until the next resize.
+    await act(async () => pending[1](false));
+    expect(screen.getByRole("button", { name: "Restore" })).toBeInTheDocument();
+  });
+
   it("stops listening when it goes away", async () => {
     pretendDesktop();
     const { unmount } = render(<WindowControls />);
@@ -186,5 +220,42 @@ describe("WindowControls", () => {
 
     expect(screen.getByRole("button", { name: "Maximize" })).toBeInTheDocument();
     await waitFor(() => expect(win.onResized).toHaveBeenCalled());
+  });
+});
+
+/**
+ * A window must never be narrower than its own titlebar.
+ *
+ * With `decorations: false` there is no operating-system Close button behind
+ * these three. Once the header overflows, the shell's `overflow-hidden` clips
+ * it with no scrollbar and Close is the first thing to go — so a window
+ * narrower than its titlebar is a window that cannot be closed with the mouse.
+ */
+describe("the window's minimum width", () => {
+  /**
+   * Measured in headless Chromium against the header's real classes: while
+   * recording, its min-content width is **488px**. Neither flex item shrinks
+   * — both are `min-width: auto` — so below that the row overflows to the
+   * right and is clipped. At the old `minWidth: 380` none of Close's 44px was
+   * visible; it was whole again only at about 490.
+   *
+   * The floor is that measurement plus 12px of headroom, because 488 is one
+   * point estimate: it moves with font metrics and display scaling, and the
+   * consequence of being 2px short is a window you cannot close.
+   *
+   * Asserted as a number rather than measured here because jsdom implements no
+   * layout — every `getBoundingClientRect` in this suite returns zeros, so
+   * min-content width cannot be computed in this environment at all. Re-measure
+   * in a real browser if the header ever gains another control.
+   */
+  const TITLEBAR_FLOOR_PX = 500;
+
+  it("leaves room for the whole titlebar, window controls included", () => {
+    expect(tauriConf.app.windows[0].minWidth).toBeGreaterThanOrEqual(TITLEBAR_FLOOR_PX);
+  });
+
+  /** The floor only means anything while the app draws its own titlebar. */
+  it("is only load-bearing because the window is undecorated", () => {
+    expect(tauriConf.app.windows[0].decorations).toBe(false);
   });
 });
