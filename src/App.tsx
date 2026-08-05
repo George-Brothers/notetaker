@@ -69,9 +69,10 @@ function App() {
     setModelsMissing((setup?.missing.length ?? 0) > 0);
   }, []);
 
-  // Every path that opens Settings today lands on General — a specific
-  // section is only ever requested by the command palette's deep links
-  // (Task 6), which will pass one through here instead of clearing it.
+  // Every path that opens Settings through this helper lands on General. The
+  // one exception is the command palette's deep links, which call
+  // setSettingsSection directly with a specific section instead of going
+  // through here.
   const openSettingsPanel = useCallback(() => {
     setSettingsSection(undefined);
     setSettingsOpen(true);
@@ -242,17 +243,12 @@ function App() {
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           recordings={lib.recordings}
+          tasks={lib.tasks}
           onSelectRecording={lib.selectRecording}
-          capture={capture.status}
-          themeIsDark={theme.resolved === "dark"}
-          canAsk={lib.selectedId !== null}
-          actions={{
-            startMeeting: () => capture.start("meeting", ""),
-            startInPerson: () => capture.start("in_person", ""),
-            stop: () => void stopAndOpen(),
-            openSettings: openSettingsPanel,
-            toggleTheme: theme.toggle,
-            openAsk: () => setAskOpen(true),
+          onSelectTask={(name) => lib.setView({ kind: "task", name })}
+          onOpenSettings={(section) => {
+            setSettingsSection(section);
+            setSettingsOpen(true);
           }}
         />
 

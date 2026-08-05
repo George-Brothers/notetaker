@@ -1,59 +1,54 @@
 /**
- * Cmd+K — the fastest way to anything.
+ * Cmd+K — find & jump.
  *
- * Two kinds of row: recordings, and things to do. Both are matched by `cmdk`'s
- * own scorer over the visible text, so there is no separate search index to
- * keep in step with the sidebar's.
+ * Three kinds of row: recordings, tasks, and settings sections. All are
+ * matched by `cmdk`'s own scorer over the visible text, so there is no
+ * separate search index to keep in step with the sidebar's.
  *
  * Deliberately shows only what is already loaded rather than calling `search`.
  * A palette is a navigation aid and has to answer within a keystroke; full-text
  * search is what the sidebar's search field is for, and it says so at the
  * bottom of the list.
+ *
+ * This is a pure find-and-jump surface — it cannot start or stop a recording,
+ * switch the theme, or open Ask. Recording is reachable exactly two ways: the
+ * record control and the global hotkey. Adding a third way back here is the
+ * regression this file exists to prevent.
  */
 
 import { useEffect, useMemo } from "react";
 import { Command } from "cmdk";
-import {
-  Circle,
-  FileText,
-  Mic,
-  Moon,
-  Settings as SettingsIcon,
-  Square,
-  Sun,
-  Sparkles,
-} from "lucide-react";
+import { FileText, FolderOpen, Settings as SettingsIcon } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import type { CaptureStatus, RecordingRow } from "../lib/ipc";
+import type { RecordingRow } from "../lib/ipc";
+import type { SettingsSection } from "./Settings";
 import { dayLabel, roughDuration } from "../lib/format";
 
-export interface PaletteActions {
-  startMeeting: () => void;
-  startInPerson: () => void;
-  stop: () => void;
-  openSettings: () => void;
-  toggleTheme: () => void;
-  openAsk: () => void;
-}
+const PALETTE_SECTIONS: Array<{ id: SettingsSection; label: string }> = [
+  { id: "general", label: "General" },
+  { id: "recording", label: "Recording" },
+  { id: "hotkeys", label: "Hotkeys" },
+  { id: "ai", label: "Transcription & AI" },
+  { id: "storage", label: "Storage" },
+  { id: "updates", label: "Updates" },
+];
 
 export function CommandPalette({
   open,
   onOpenChange,
   recordings,
+  tasks,
   onSelectRecording,
-  capture,
-  actions,
-  themeIsDark,
-  canAsk,
+  onSelectTask,
+  onOpenSettings,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   recordings: RecordingRow[];
+  tasks: string[];
   onSelectRecording: (id: string) => void;
-  capture: CaptureStatus;
-  actions: PaletteActions;
-  themeIsDark: boolean;
-  canAsk: boolean;
+  onSelectTask: (name: string) => void;
+  onOpenSettings: (section?: SettingsSection) => void;
 }) {
   // Cmd+K / Ctrl+K from anywhere, including while a field has focus — the
   // whole point is that you never have to reach for the mouse first.
@@ -69,7 +64,6 @@ export function CommandPalette({
   }, [open, onOpenChange]);
 
   const now = useMemo(() => new Date(), []);
-  const recording = capture.state === "recording" || capture.state === "paused";
 
   function run(fn: () => void) {
     onOpenChange(false);
@@ -88,48 +82,13 @@ export function CommandPalette({
           <Command loop className="flex flex-col">
             <Command.Input
               autoFocus
-              placeholder="Search recordings, or type a command…"
+              placeholder="Jump to…"
               className="h-12 w-full border-b border-border bg-transparent px-4 text-[15px] text-fg placeholder:text-fg-faint focus:outline-none"
             />
             <Command.List className="max-h-[min(24rem,55vh)] overflow-y-auto p-1.5">
               <Command.Empty className="px-3 py-6 text-center text-[13px] text-fg-muted">
                 Nothing matches. Full-text search across transcripts lives in the sidebar.
               </Command.Empty>
-
-              <Command.Group
-                heading="Do"
-                className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-fg-faint"
-              >
-                {!recording && (
-                  <>
-                    <Row icon={<Circle size={14} />} onSelect={() => run(actions.startMeeting)}>
-                      Record a meeting — both sides of the call
-                    </Row>
-                    <Row icon={<Mic size={14} />} onSelect={() => run(actions.startInPerson)}>
-                      Record in person — microphone only
-                    </Row>
-                  </>
-                )}
-                {recording && (
-                  <Row icon={<Square size={14} />} onSelect={() => run(actions.stop)}>
-                    Stop recording
-                  </Row>
-                )}
-                {canAsk && (
-                  <Row icon={<Sparkles size={14} />} onSelect={() => run(actions.openAsk)}>
-                    Ask about this recording
-                  </Row>
-                )}
-                <Row
-                  icon={themeIsDark ? <Sun size={14} /> : <Moon size={14} />}
-                  onSelect={() => run(actions.toggleTheme)}
-                >
-                  Switch to {themeIsDark ? "light" : "dark"} mode
-                </Row>
-                <Row icon={<SettingsIcon size={14} />} onSelect={() => run(actions.openSettings)}>
-                  Open settings
-                </Row>
-              </Command.Group>
 
               {recordings.length > 0 && (
                 <Command.Group
@@ -149,6 +108,34 @@ export function CommandPalette({
                   ))}
                 </Command.Group>
               )}
+
+              <Command.Group
+                heading="Tasks"
+                className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-fg-faint"
+              >
+                {tasks.map((task) => (
+                  <Row key={task} icon={<FolderOpen size={14} />} onSelect={() => run(() => onSelectTask(task))}>
+                    {task}
+                  </Row>
+                ))}
+              </Command.Group>
+
+              <Command.Group
+                heading="Settings"
+                className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-fg-faint"
+              >
+                {PALETTE_SECTIONS.map((s) => (
+                  <Row
+                    key={s.id}
+                    icon={<SettingsIcon size={14} />}
+                    value={`settings ${s.label}`}
+                    onSelect={() => run(() => onOpenSettings(s.id))}
+                    hint="settings ›"
+                  >
+                    {s.label}
+                  </Row>
+                ))}
+              </Command.Group>
             </Command.List>
           </Command>
         </DialogPrimitive.Content>
