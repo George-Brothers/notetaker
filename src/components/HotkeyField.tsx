@@ -9,6 +9,11 @@ import { acceleratorFromEvent, formatAcceleratorParts } from "../lib/hotkeys";
 import { Kbd } from "./ui";
 import { cn } from "../lib/cn";
 
+// Design spec §5 "Hotkey recorder behavior" — the one approved string for
+// the listening state. Held once so the visible label and the button's
+// accessible name (below) can never drift apart.
+const LISTENING_LABEL = "Press the keys…";
+
 export function HotkeyField({
   label,
   hint,
@@ -40,7 +45,11 @@ export function HotkeyField({
   }
 
   return (
-    <div className="flex items-center justify-between gap-4 rounded-[var(--radius-control)] border border-border bg-raised px-3 py-2.5">
+    <div
+      role="group"
+      aria-label={label}
+      className="flex items-center justify-between gap-4 rounded-[var(--radius-control)] border border-border bg-raised px-3 py-2.5"
+    >
       <span className="min-w-0">
         <span className="block text-[13.5px] font-medium text-fg">{label}</span>
         <span className="block text-[12.5px] text-fg-muted">{hint}</span>
@@ -52,7 +61,7 @@ export function HotkeyField({
       </span>
       <button
         type="button"
-        aria-label={`Change shortcut: ${label}`}
+        aria-label={listening ? LISTENING_LABEL : `Change shortcut: ${label}`}
         onClick={() => setListening(true)}
         onKeyDown={onKeyDown}
         onBlur={() => setListening(false)}
@@ -62,7 +71,7 @@ export function HotkeyField({
         )}
       >
         {listening ? (
-          <span className="text-[12.5px] text-accent">Press the keys…</span>
+          <span className="text-[12.5px] text-accent">{LISTENING_LABEL}</span>
         ) : (
           formatAcceleratorParts(value).map((part) => <Kbd key={part}>{part}</Kbd>)
         )}

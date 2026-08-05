@@ -521,21 +521,18 @@ describe("Settings screen", () => {
   it("renders both hotkey rows with their current accelerator, formatted into Kbd parts", async () => {
     const dialog = await openSettings({ initialSection: "hotkeys" });
 
-    // HotkeyField's row is a plain bordered div (no ".settings-field" class
-    // — that was the old read-only row's marker), so scope from the label
-    // text's nearest ancestor <div>, which is the row itself.
-    const toggleRow = within(dialog)
-      .getByText("Start / stop recording")
-      .closest("div") as HTMLElement;
+    // Each row is an ARIA group labeled with its own row label (HotkeyField
+    // renders role="group" aria-label={label} on the row) — a stable,
+    // semantic hook. Scoping via .closest("div") would silently match a
+    // different ancestor the moment the markup grows another wrapper.
+    const toggleRow = within(dialog).getByRole("group", { name: "Start / stop recording" });
     expect(within(toggleRow).getByText("Works anywhere, even with the window closed")).toBeInTheDocument();
     expect(
       within(toggleRow).getByRole("button", { name: "Change shortcut: Start / stop recording" })
     ).toBeInTheDocument();
     expect(within(toggleRow).getByText("N")).toBeInTheDocument();
 
-    const showHideRow = within(dialog)
-      .getByText("Show / hide Notetaker")
-      .closest("div") as HTMLElement;
+    const showHideRow = within(dialog).getByRole("group", { name: "Show / hide Notetaker" });
     expect(within(showHideRow).getByText("Brings the window up from the tray")).toBeInTheDocument();
     expect(
       within(showHideRow).getByRole("button", { name: "Change shortcut: Show / hide Notetaker" })
@@ -549,6 +546,21 @@ describe("Settings screen", () => {
     expect(within(dialog).getAllByText("Ctrl")).toHaveLength(2);
     expect(within(dialog).getAllByText("Alt")).toHaveLength(2);
     expect(within(dialog).queryByText("CommandOrControl")).not.toBeInTheDocument();
+  });
+
+  it("the recorder button's accessible name announces listening state, for screen readers", async () => {
+    const dialog = await openSettings({ initialSection: "hotkeys" });
+    const btn = within(dialog).getByRole("button", { name: "Change shortcut: Start / stop recording" });
+    expect(btn).toHaveAccessibleName("Change shortcut: Start / stop recording");
+
+    fireEvent.click(btn);
+
+    // A sighted user sees "Press the keys…" render inside the button; a
+    // screen-reader user gets nothing unless the accessible name changes
+    // too, since aria-label otherwise wins over visible content for the
+    // accessible name computation. Same approved string either way (design
+    // spec §5's "Hotkey recorder behavior").
+    expect(btn).toHaveAccessibleName("Press the keys…");
   });
 
   it("records a new start/stop hotkey from a chord", async () => {
