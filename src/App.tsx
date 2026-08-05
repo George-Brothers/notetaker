@@ -70,9 +70,23 @@ function App() {
 
   // Loaded for the sidebar's empty-state hotkey hint, and for whatever else
   // ends up wanting a native setting later. Refetched when Settings closes so
-  // a rebind made in there shows up here without a full reload.
+  // a rebind made in there shows up here without a full reload. Guarded
+  // against the stale-response race: this effect re-fires on mount, on open,
+  // and on close, so a slow earlier request could otherwise resolve after a
+  // newer one and clobber fresh state with stale state.
   useEffect(() => {
-    api.getSettings().then(setAppSettings).catch(() => setAppSettings(null));
+    let ignore = false;
+    api
+      .getSettings()
+      .then((settings) => {
+        if (!ignore) setAppSettings(settings);
+      })
+      .catch(() => {
+        if (!ignore) setAppSettings(null);
+      });
+    return () => {
+      ignore = true;
+    };
   }, [settingsOpen]);
 
   const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
