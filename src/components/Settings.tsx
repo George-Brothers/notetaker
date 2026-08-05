@@ -43,6 +43,12 @@ export interface SettingsProps {
   section: SettingsSection;
   onSelectSection: (s: SettingsSection) => void;
   hotkeyIssues?: { toggleRecord: string | null; showHide: string | null };
+  /**
+   * Called once a write has actually landed. This is how a rebind reaches the
+   * OS while the panel is still open — App refetches on it, which re-registers
+   * the accelerator and puts any conflict back on the field you just used.
+   */
+  onSaved?: () => void;
 }
 
 const PULL_POLL_MS = 700;
@@ -118,7 +124,14 @@ function PullBar({ entry, fallbackName }: { entry: PullProgress | undefined; fal
   );
 }
 
-export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssues }: SettingsProps) {
+export function Settings({
+  onClose,
+  theme,
+  section,
+  onSelectSection,
+  hotkeyIssues,
+  onSaved,
+}: SettingsProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [detectedTier, setDetectedTier] = useState<string | null>(null);
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
@@ -222,17 +235,23 @@ export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssue
     };
   }, []);
 
-  const updateSettings = useCallback(async (next: SettingsData) => {
-    // Optimistic: the control shows the new value immediately, which is
-    // also what "reflects the round trip" means for a fire-and-forget
-    // command with no return payload to reconcile against.
-    setSettings(next);
-    try {
-      await api.setSettings(next);
-    } catch (err) {
-      setLoadError(describeError(err));
-    }
-  }, []);
+  const updateSettings = useCallback(
+    async (next: SettingsData) => {
+      // Optimistic: the control shows the new value immediately, which is
+      // also what "reflects the round trip" means for a fire-and-forget
+      // command with no return payload to reconcile against.
+      setSettings(next);
+      try {
+        await api.setSettings(next);
+        // Only after it landed. Telling App a write succeeded when it did not
+        // would have it refetch and register the old accelerator as the new one.
+        onSaved?.();
+      } catch (err) {
+        setLoadError(describeError(err));
+      }
+    },
+    [onSaved],
+  );
 
   const refreshPullProgress = useCallback(async () => {
     try {

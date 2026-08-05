@@ -106,13 +106,24 @@ export async function getAutostart(): Promise<boolean | null> {
   }
 }
 
-export async function setAutostart(on: boolean): Promise<void> {
-  if (!isDesktop()) return;
+/**
+ * Turns the login item on or off.
+ *
+ * Answers whether the write actually landed — `false` both off the desktop and
+ * when the plugin refused. The switch in Settings ignores that (its shown state
+ * is corrected by `getAutostart` on the next open), but the first-run default
+ * has to know: it ticks itself off in `localStorage` and never runs again, so
+ * marking a refused write as done would leave autostart off permanently.
+ */
+export async function setAutostart(on: boolean): Promise<boolean> {
+  if (!isDesktop()) return false;
   try {
     const { enable, disable } = await import("@tauri-apps/plugin-autostart");
     if (on) await enable();
     else await disable();
+    return true;
   } catch {
     // Shown state re-reads on next open; a failed write is visible then.
+    return false;
   }
 }

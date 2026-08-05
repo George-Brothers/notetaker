@@ -220,10 +220,11 @@ beforeEach(() => {
   setupApi();
   vi.mocked(checkForUpdate).mockResolvedValue({ kind: "unavailable" });
   vi.mocked(installUpdate).mockResolvedValue(undefined);
-  // What the real ones answer in a browser: no folder chooser, no login item.
+  // What the real ones answer in a browser: no folder chooser, no login item,
+  // and `false` from the writer because nothing was written.
   vi.mocked(pickFolder).mockResolvedValue(null);
   vi.mocked(getAutostart).mockResolvedValue(null);
-  vi.mocked(setAutostart).mockResolvedValue(undefined);
+  vi.mocked(setAutostart).mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -670,6 +671,7 @@ describe("the desktop-only controls", () => {
   beforeEach(() => {
     (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
     vi.mocked(getAutostart).mockResolvedValue(false);
+    vi.mocked(setAutostart).mockResolvedValue(true);
   });
 
   afterEach(() => {

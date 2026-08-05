@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { act, render, screen, within, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { api } from "../../lib/ipc";
@@ -39,6 +39,11 @@ const shell = vi.hoisted(() => {
     }),
     exit: vi.fn(async () => {}),
     hide: vi.fn(async () => {}),
+    register: vi.fn(async (_shortcut: string, _handler: unknown) => {}),
+    unregisterAll: vi.fn(async () => {}),
+    isEnabled: vi.fn(async () => false),
+    enable: vi.fn(async () => {}),
+    disable: vi.fn(async () => {}),
   };
 });
 
@@ -49,16 +54,17 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/plugin-process", () => ({ exit: shell.exit }));
 // The OS-wide hotkeys: App registers them the moment settings settle. Stubbed
 // rather than left real so these tests never depend on a global-shortcut
-// round trip they have nothing to say about.
+// round trip they have nothing to say about — and so "which accelerator is
+// live right now" is something a test can actually read.
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
-  register: vi.fn(async () => {}),
-  unregisterAll: vi.fn(async () => {}),
+  register: shell.register,
+  unregisterAll: shell.unregisterAll,
 }));
 // Same for the login item, which App writes once on a fresh install.
 vi.mock("@tauri-apps/plugin-autostart", () => ({
-  isEnabled: vi.fn(async () => false),
-  enable: vi.fn(async () => {}),
-  disable: vi.fn(async () => {}),
+  isEnabled: shell.isEnabled,
+  enable: shell.enable,
+  disable: shell.disable,
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => undefined),
@@ -445,7 +451,8 @@ describe("meeting-detected prompt", () => {
 });
 
 /**
- * The desktop shell's half of closing, and the tray menu.
+ * The desktop shell's half of closing, the tray menu, the OS-wide hotkeys, and
+ * the login item.
  *
  * None of this exists in a browser: the effect that registers these listeners
  * returns immediately when `isDesktop()` is false, which is why every other
@@ -453,7 +460,7 @@ describe("meeting-detected prompt", () => {
  * `window` — the same trick `transport.test.ts` uses — and removed again
  * afterwards so desktop mode never leaks into a neighbouring test.
  */
-describe("closing the window, and the tray menu", () => {
+describe("closing the window, the tray menu, and the OS-wide shell", () => {
   beforeEach(() => {
     shell.handlers.clear();
     window.localStorage.clear();
@@ -603,6 +610,66 @@ describe("closing the window, and the tray menu", () => {
 
     await waitFor(() => expect(shell.exit).toHaveBeenCalledWith(0));
     expect(screen.queryByText("Recording in progress")).not.toBeInTheDocument();
+  });
+
+  /**
+   * A rebind has to reach the OS *now*, not when the panel is dismissed.
+   *
+   * `appSettings` used to refetch only when `settingsOpen` flipped, so between
+   * pressing the new chord and closing Settings the OLD accelerator was still
+   * the live OS shortcut and the new one did nothing. And because
+   * `hotkeys.issues` is filled in by the registration, a combination already
+   * taken by another app said so only on the *next* open of Settings — silent
+   * at exactly the moment the mistake was made.
+   */
+  it("re-registers a rebound hotkey without waiting for Settings to close", async () => {
+    // Persist for real, so App's refetch can see the new value. Without this
+    // every later getSettings would answer with the accelerator from before.
+    vi.mocked(api.setSettings).mockImplementation(async (next) => {
+      vi.mocked(api.getSettings).mockResolvedValue(next);
+    });
+    await mount();
+    await waitFor(() =>
+      expect(shell.register.mock.calls.map((c) => c[0])).toContain("CommandOrControl+Alt+N")
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Hotkeys" }));
+    const field = await within(dialog).findByRole("button", {
+      name: "Change shortcut: Start / stop recording",
+    });
+    fireEvent.click(field);
+    fireEvent.keyDown(field, { key: "k", code: "KeyK", ctrlKey: true, altKey: true });
+
+    await waitFor(() =>
+      expect(shell.register.mock.calls.map((c) => c[0])).toContain("CommandOrControl+Alt+K")
+    );
+    // The panel is still open. That is the whole point.
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("turns start-with-Windows on once, and never asks again", async () => {
+    await mount();
+
+    await waitFor(() => expect(shell.enable).toHaveBeenCalledTimes(1));
+    expect(window.localStorage.getItem("notetaker.autostartInit")).toBe("1");
+
+    cleanup();
+    await mount();
+    // Still once: the marker is what stops a second launch from quietly
+    // undoing someone who turned it off in Settings.
+    expect(shell.enable).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not tick start-with-Windows off as done when the OS refuses it", async () => {
+    shell.enable.mockRejectedValueOnce(new Error("no permission"));
+    await mount();
+
+    await waitFor(() => expect(shell.enable).toHaveBeenCalledTimes(1));
+    // Unmarked, so the next launch asks again. Marking it done here would
+    // leave autostart off forever with the app believing it had set it.
+    expect(window.localStorage.getItem("notetaker.autostartInit")).toBeNull();
   });
 
   it("drops its subscriptions when the shell goes away", async () => {

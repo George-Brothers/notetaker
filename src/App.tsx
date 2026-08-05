@@ -112,6 +112,8 @@ function App() {
   // Whether that fetch has *finished*, which is not the same as whether it
   // produced anything — see the effect below.
   const [settingsSettled, setSettingsSettled] = useState(false);
+  // Bumped by Settings on every successful write. See the refetch below.
+  const [settingsVersion, setSettingsVersion] = useState(0);
   const [showTrayNote, setShowTrayNote] = useState(false);
   const [showQuitGuard, setShowQuitGuard] = useState(false);
 
@@ -126,12 +128,16 @@ function App() {
     void setTrayStatus(capture.status.state);
   }, [capture.status.state]);
 
-  // Loaded for the sidebar's empty-state hotkey hint, and for whatever else
-  // ends up wanting a native setting later. Refetched when Settings closes so
-  // a rebind made in there shows up here without a full reload. Guarded
-  // against the stale-response race: this effect re-fires on mount, on open,
-  // and on close, so a slow earlier request could otherwise resolve after a
-  // newer one and clobber fresh state with stale state.
+  // Loaded for the sidebar's empty-state hotkey hint, and to decide which
+  // accelerators are registered OS-wide. Refetched on `settingsVersion`, which
+  // Settings bumps the moment a write lands — *not* only when the panel closes.
+  // A rebind has to take effect while you are still looking at the field:
+  // otherwise the old accelerator stays live, the new one does nothing, and if
+  // the new one is already taken by another app that message does not appear
+  // until Settings is opened a second time. Guarded against the stale-response
+  // race, because this effect fires on mount, on open, on close, and on every
+  // save, so a slow earlier request could otherwise resolve after a newer one
+  // and clobber fresh state with stale state.
   //
   // `settingsSettled` flips on *both* outcomes on purpose. The hotkeys hang off
   // it, and gating them on `appSettings !== null` instead would mean that a
@@ -150,15 +156,21 @@ function App() {
         }
       })
       .catch(() => {
-        if (!ignore) {
-          setAppSettings(null);
-          setSettingsSettled(true);
-        }
+        // Deliberately keeps the last good value. Nulling it here would fall
+        // through to the default accelerators below, so one flaky read would
+        // silently stop the combination the user chose from working and start
+        // one they never asked for — with nothing said. A first-load failure
+        // still gets the defaults, because `appSettings` starts null anyway.
+        if (!ignore) setSettingsSettled(true);
       });
     return () => {
       ignore = true;
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, settingsVersion]);
+
+  // Stable, because Settings takes it as a prop and threads it through a
+  // `useCallback`; a new function each render would churn that callback.
+  const noteSettingsSaved = useCallback(() => setSettingsVersion((v) => v + 1), []);
 
   const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
     setModelsMissing((setup?.missing.length ?? 0) > 0);
@@ -246,13 +258,23 @@ function App() {
     if (!isDesktop()) return;
     try {
       if (window.localStorage.getItem(AUTOSTART_INIT_KEY) === "1") return;
-      window.localStorage.setItem(AUTOSTART_INIT_KEY, "1");
     } catch {
       // Storage refused. Doing nothing is the safe half of this: better to
       // never turn it on than to turn it back on at every launch.
       return;
     }
-    void setAutostart(true);
+    void (async () => {
+      // Ticked off only once the OS has actually accepted it. Marking it done
+      // first meant a refused `enable()` — which `setAutostart` swallows — was
+      // never retried: the app would have "already done" a thing that in fact
+      // never happened, and start-with-Windows would be off forever.
+      if (!(await setAutostart(true))) return;
+      try {
+        window.localStorage.setItem(AUTOSTART_INIT_KEY, "1");
+      } catch {
+        // Worst case we ask the OS again next launch, which it will accept.
+      }
+    })();
   }, []);
 
   // What the native shell asks the webview to decide: whether closing the
@@ -471,6 +493,7 @@ function App() {
             section={settingsSection}
             onSelectSection={setSettingsSection}
             hotkeyIssues={hotkeys.issues}
+            onSaved={noteSettingsSaved}
           />
         )}
 

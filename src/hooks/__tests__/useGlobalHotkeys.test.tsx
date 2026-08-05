@@ -7,6 +7,16 @@ vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: (...a: unknown[]) => register(...a),
   unregisterAll: (...a: unknown[]) => unregisterAll(...a),
 }));
+
+/** The one window, as the show/hide shortcut sees it. */
+const win = {
+  isVisible: vi.fn(),
+  hide: vi.fn(),
+  show: vi.fn(),
+  unminimize: vi.fn(),
+  setFocus: vi.fn(),
+};
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => win }));
 vi.mock("../../lib/transport", async (orig) => ({
   ...(await orig()),
   isDesktop: () => true,
@@ -27,6 +37,7 @@ describe("useGlobalHotkeys", () => {
   beforeEach(() => {
     register.mockReset().mockResolvedValue(undefined);
     unregisterAll.mockReset().mockResolvedValue(undefined);
+    for (const fn of Object.values(win)) fn.mockReset().mockResolvedValue(undefined);
   });
 
   // This project runs vitest without `globals`, so React Testing Library's
@@ -106,5 +117,64 @@ describe("useGlobalHotkeys", () => {
     expect(onToggleRecord).not.toHaveBeenCalled();
     handler({ state: "Pressed" });
     expect(onToggleRecord).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The show/hide half, which is the reason the shortcut exists at all: the
+   * window is usually in the tray when it is pressed. `show()` on its own is
+   * not enough — a minimized window counts as shown to the OS — so the raise
+   * path has to unminimize and focus as well, and the hide path must not.
+   */
+  describe("the show/hide shortcut", () => {
+    /**
+     * Registers, then hands back the handler the second `register` got.
+     *
+     * `onToggleRecord` is hoisted out of the render callback deliberately: it
+     * is one of the effect's deps, so an inline `vi.fn()` would be a new
+     * function on every render, and the re-render that `setIssues` causes
+     * would re-register forever. (It does — 120,000 registrations a second,
+     * measured.) App passes a `useCallback`; a test must not be laxer.
+     */
+    async function showHideHandler() {
+      const onToggleRecord = vi.fn();
+      renderHook(() => useGlobalHotkeys({ enabled: true, ...DEFAULTS, onToggleRecord }));
+      await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+      return register.mock.calls[1][1] as (e: { state: string }) => void;
+    }
+
+    it("hides the window when it is showing", async () => {
+      win.isVisible.mockResolvedValue(true);
+      const handler = await showHideHandler();
+
+      handler({ state: "Pressed" });
+
+      await waitFor(() => expect(win.hide).toHaveBeenCalledTimes(1));
+      expect(win.show).not.toHaveBeenCalled();
+      expect(win.setFocus).not.toHaveBeenCalled();
+    });
+
+    it("raises, unminimizes and focuses the window when it is hidden", async () => {
+      win.isVisible.mockResolvedValue(false);
+      const handler = await showHideHandler();
+
+      handler({ state: "Pressed" });
+
+      await waitFor(() => expect(win.setFocus).toHaveBeenCalledTimes(1));
+      expect(win.show).toHaveBeenCalledTimes(1);
+      expect(win.unminimize).toHaveBeenCalledTimes(1);
+      expect(win.hide).not.toHaveBeenCalled();
+    });
+
+    it("does nothing on the release half of the press", async () => {
+      win.isVisible.mockResolvedValue(true);
+      const handler = await showHideHandler();
+
+      handler({ state: "Released" });
+
+      await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+      expect(win.isVisible).not.toHaveBeenCalled();
+      expect(win.hide).not.toHaveBeenCalled();
+      expect(win.show).not.toHaveBeenCalled();
+    });
   });
 });

@@ -40,10 +40,12 @@ describe("the shell-only commands off the desktop", () => {
    * `isDesktop()` check has to come first or a browser downloads a chunk it can
    * never use. `null` from the two readers is the honest answer — "there is
    * nothing here to ask" — and is what keeps the Settings rows hidden.
+   * `setAutostart` says the same thing in its own vocabulary: `false` means
+   * the write did not happen, so nothing may record it as having happened.
    */
   it("the plugin-backed ones answer null rather than reaching for a plugin", async () => {
     await expect(pickFolder()).resolves.toBeNull();
     await expect(getAutostart()).resolves.toBeNull();
-    await expect(setAutostart(true)).resolves.toBeUndefined();
+    await expect(setAutostart(true)).resolves.toBe(false);
   });
 });

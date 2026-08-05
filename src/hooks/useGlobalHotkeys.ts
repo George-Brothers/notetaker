@@ -3,6 +3,12 @@
  * capture flow and the settings; the window being hidden does not stop its JS.
  * Failures are surfaced, never silent — a hotkey that quietly does nothing is
  * indistinguishable from a broken app.
+ *
+ * `onToggleRecord` **must be identity-stable** (App passes a `useCallback`). It
+ * is one of the registration effect's dependencies, so a fresh function each
+ * render, combined with the re-render this hook's own `setIssues` causes, is an
+ * unregister/re-register loop against the OS rather than a re-render nobody
+ * notices.
  */
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -20,6 +26,21 @@ const UNSAFE_COPY = "That combination needs Ctrl or Alt — pick a different one
 export interface HotkeyIssues {
   toggleRecord: string | null;
   showHide: string | null;
+}
+
+/**
+ * The shortcut plugin, loaded once and kept.
+ *
+ * Dynamic, because this is desktop-only and a static import would put it in
+ * the served web bundle. Memoised, because *every* call must reach the same
+ * module instance: `register` and the `unregisterAll` in the cleanup below
+ * are two halves of one piece of OS state, and two instances would mean
+ * unregistering shortcuts a different copy of the plugin owns.
+ */
+let shortcutsPlugin: Promise<typeof import("@tauri-apps/plugin-global-shortcut")> | null = null;
+function shortcuts() {
+  shortcutsPlugin ??= import("@tauri-apps/plugin-global-shortcut");
+  return shortcutsPlugin;
 }
 
 /**
@@ -57,7 +78,7 @@ export function useGlobalHotkeys({
     let cancelled = false;
 
     (async () => {
-      const { register, unregisterAll } = await import("@tauri-apps/plugin-global-shortcut");
+      const { register, unregisterAll } = await shortcuts();
       await unregisterAll().catch(() => undefined);
       if (cancelled) return;
 
@@ -98,7 +119,7 @@ export function useGlobalHotkeys({
 
     return () => {
       cancelled = true;
-      void import("@tauri-apps/plugin-global-shortcut")
+      void shortcuts()
         .then((m) => m.unregisterAll())
         .catch(() => undefined);
     };
