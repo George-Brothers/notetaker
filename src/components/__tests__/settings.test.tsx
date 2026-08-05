@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, within, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { act, render, screen, within, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { Settings as SettingsComponent } from "../../components/Settings";
@@ -145,10 +145,21 @@ const SECTION_HEADINGS: Record<SettingsSection, string> = {
 async function openSettings(props: Partial<SettingsProps> = {}) {
   render(<SettingsHost {...props} />);
   const dialog = await screen.findByRole("dialog", { name: "Settings" });
-  // Wait for the async settings load to finish, and for the requested
-  // section (General by default) to be the one actually showing, before
-  // handing the dialog back to the test.
+  // Wait for the requested section (General by default) to be the one
+  // actually showing before handing the dialog back to the test. For every
+  // section except "updates" this already implies settings finished
+  // loading, since those panes are gated behind `!settings`.
   await within(dialog).findByRole("heading", { name: SECTION_HEADINGS[props.initialSection ?? "general"] });
+  // "updates" renders independent of that gate by design (checking for an
+  // app update shouldn't depend on Settings data loading first), so its
+  // heading can appear before getSettings/detectedTier/ollamaStatus/
+  // setupStatus/listInputDevices have resolved. Flush them here, inside
+  // `act`, so every call site gets fully-settled state back — otherwise
+  // those four background updates land after the test (or `cleanup()`) has
+  // already moved on, which is what an "act" warning is warning about.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
   return dialog;
 }
 
@@ -170,6 +181,24 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+});
+
+describe("App integration", () => {
+  // Every other test in this file renders <Settings> directly (see
+  // SettingsHost above) so the new tests can address a specific section.
+  // That change removed the only coverage of App's own wiring — the header
+  // gear actually opening the dialog, App's setSettingsOpen(false) actually
+  // closing it — so this one test keeps that path real.
+  it("opens from the header's gear icon and closes for real", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Settings" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument()
+    );
+  });
 });
 
 describe("Settings screen", () => {
@@ -325,6 +354,20 @@ describe("Settings screen", () => {
     await waitFor(() => expect(api.setSettings).toHaveBeenCalledWith({ ...BASE_SETTINGS, keepWav: true }));
   });
 
+  it("the theme select calls setPreference and never writes a persisted setting", async () => {
+    const dialog = await openSettings();
+    const select = within(dialog).getByLabelText("Theme");
+    expect(select).toHaveValue("");
+
+    fireEvent.change(select, { target: { value: "dark" } });
+
+    await waitFor(() => expect(select).toHaveValue("dark"));
+    // Theme lives in useTheme's own localStorage mechanism, never in the
+    // Settings struct (design spec §6) — selecting one must not also fire
+    // off a settings write.
+    expect(api.setSettings).not.toHaveBeenCalled();
+  });
+
   it("ticking Chinese persists it, which is what decides the extra download", async () => {
     const dialog = await openSettings();
 
@@ -359,6 +402,26 @@ describe("Settings screen", () => {
 
     await waitFor(() =>
       expect(api.setSettings).toHaveBeenCalledWith({ ...BASE_SETTINGS, speechEngine: "whisper" })
+    );
+  });
+
+  it("the microphone select shows a saved device even before the device list loads, and clearing it maps back to null", async () => {
+    // No mock for listInputDevices here, so it resolves [] (as it always
+    // does under jsdom, with no __TAURI_INTERNALS__) — the saved device id
+    // has no matching <option> from the list itself. Without a fallback
+    // <option> for it, the <select> would silently show "System default"
+    // instead of the value that's actually saved.
+    setupApi({ settings: { ...BASE_SETTINGS, inputDevice: "built-in-mic" } });
+    const dialog = await openSettings({ initialSection: "recording" });
+    const select = within(dialog).getByLabelText("Microphone");
+    expect(select).toHaveValue("built-in-mic");
+
+    fireEvent.change(select, { target: { value: "" } });
+
+    await waitFor(() =>
+      // "" on the wire must become null, not the empty string, per the
+      // Settings contract's inputDevice: string | null.
+      expect(api.setSettings).toHaveBeenCalledWith({ ...BASE_SETTINGS, inputDevice: null })
     );
   });
 
@@ -436,6 +499,44 @@ describe("Settings screen", () => {
     expect(
       within(dialog).queryByRole("progressbar", { name: "qwen2.5:7b download progress" })
     ).not.toBeInTheDocument();
+  });
+
+  it("the Download button downloads missing models and refreshes setup status", async () => {
+    const dialog = await openSettings({ initialSection: "ai" });
+    expect(within(dialog).getByText("Speech model (fast) (190 MB)")).toBeInTheDocument();
+
+    vi.mocked(api.setupStatus).mockResolvedValue({
+      ...SETUP_WITHOUT_FOUND_MODELS,
+      missing: [],
+      downloadBytes: 0,
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Download" }));
+
+    await waitFor(() => expect(api.downloadModels).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(within(dialog).queryByText("Speech model (fast) (190 MB)")).not.toBeInTheDocument()
+    );
+  });
+
+  it("renders both hotkey rows with their current accelerator, split into Kbd parts", async () => {
+    const dialog = await openSettings({ initialSection: "hotkeys" });
+
+    const toggleRow = within(dialog)
+      .getByText("Start / stop recording")
+      .closest(".settings-field") as HTMLElement;
+    expect(within(toggleRow).getByText("Works anywhere, even with the window closed")).toBeInTheDocument();
+    expect(within(toggleRow).getByText("N")).toBeInTheDocument();
+
+    const showHideRow = within(dialog)
+      .getByText("Show / hide Notetaker")
+      .closest(".settings-field") as HTMLElement;
+    expect(within(showHideRow).getByText("Brings the window up from the tray")).toBeInTheDocument();
+    expect(within(showHideRow).getByText("Space")).toBeInTheDocument();
+
+    // Both rows share the CommandOrControl+Alt prefix — assert it renders
+    // twice rather than querying it once and hitting a multi-match error.
+    expect(within(dialog).getAllByText("CommandOrControl")).toHaveLength(2);
+    expect(within(dialog).getAllByText("Alt")).toHaveLength(2);
   });
 
   it("can be closed with the close button", async () => {

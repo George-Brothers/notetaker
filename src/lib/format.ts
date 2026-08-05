@@ -107,3 +107,15 @@ export function speakerColor(index: number): string {
   const lane = ((index % 5) + 5) % 5;
   return `var(--c-spk-${lane + 1})`;
 }
+
+/**
+ * Bytes as a person would say them: "213 MB", "1.6 GB".
+ *
+ * Used by the first-run/setup notice and by Settings' model-status list — one
+ * copy so the two never drift apart on the same number.
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  if (bytes >= 1_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
+}

@@ -15,14 +15,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Download } from "lucide-react";
 import { api, type SetupStatus } from "../lib/ipc";
+import { formatBytes } from "../lib/format";
 import { Button, Notice } from "./ui";
-
-/** Bytes as a person would say them: "213 MB", "1.6 GB". */
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
-}
 
 /**
  * What to say, given the state. Split out from the component so the wording —

@@ -117,24 +117,6 @@
   background: color-mix(in srgb, var(--c-sunken) 60%, var(--c-app));
 }
 
-.settings-section {
-  border-bottom: 1px solid var(--c-border);
-  padding: 1rem 0;
-}
-
-.settings-section:last-child {
-  border-bottom: 0;
-}
-
-.settings-section > h3 {
-  margin: 0 0 0.75rem;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--c-fg-faint);
-}
-
 .settings-field {
   display: flex;
   flex-direction: column;

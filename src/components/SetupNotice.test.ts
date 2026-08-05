@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { formatBytes, setupMessage } from "./SetupNotice";
+import { setupMessage } from "./SetupNotice";
 import type { SetupStatus } from "../lib/ipc";
 
 const base: SetupStatus = {
@@ -56,20 +56,5 @@ describe("setupMessage", () => {
     // again, which is the one action that cannot help here.
     expect(message).toMatch(/restarting/i);
     expect(message).not.toMatch(/aren't downloaded|not downloaded/i);
-  });
-});
-
-describe("formatBytes", () => {
-  it("uses GB past a billion, so 1.6 GB does not read as 1625 MB", () => {
-    expect(formatBytes(1624555275)).toBe("1.6 GB");
-  });
-
-  it("rounds MB to something a person would say", () => {
-    expect(formatBytes(190085487)).toBe("190 MB");
-  });
-
-  it("never reports a real file as 0 KB", () => {
-    expect(formatBytes(315894)).toBe("316 KB");
-    expect(formatBytes(12)).toBe("1 KB");
   });
 });

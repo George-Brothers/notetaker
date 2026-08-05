@@ -6,6 +6,7 @@ import { checkForUpdate, installUpdate } from "../lib/updater";
 import type { PendingUpdate, UpdateProgress } from "../lib/updater";
 import { listInputDevices } from "../lib/desktop";
 import type { InputDevice } from "../lib/desktop";
+import { formatBytes } from "../lib/format";
 import type { useTheme, ThemePreference } from "../hooks/useTheme";
 import { Button, Kbd, Notice, Switch } from "./ui";
 import { cn } from "../lib/cn";
@@ -82,19 +83,6 @@ function ollamaStatusKind(status: OllamaStatus | null): "recorded" | "processing
   if (!status || !status.installed) return "recorded";
   if (!status.modelReady) return "processing";
   return "ready";
-}
-
-/**
- * Bytes as a person would say them: "213 MB", "1.6 GB".
- * Copied from `SetupNotice.tsx` (the file that actually owns this today —
- * not `FirstRun.tsx`, which only ever prints the two hardcoded sizes) rather
- * than imported, matching how this file already keeps its own small copy of
- * `describeError` instead of sharing one.
- */
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
 }
 
 function PullBar({ entry, fallbackName }: { entry: PullProgress | undefined; fallbackName: string }) {
@@ -437,8 +425,8 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
             {loadError && <Notice className="mb-3">{loadError}</Notice>}
 
             {section === "updates" ? (
-              <section aria-labelledby="settings-section-heading">
-                <h3 id="settings-section-heading" className="mb-3 text-[15px] font-semibold text-fg">
+              <section aria-labelledby="settings-heading-updates">
+                <h3 id="settings-heading-updates" className="mb-3 text-[15px] font-semibold text-fg">
                   Updates
                 </h3>
                 <p className="settings-hint">
@@ -500,8 +488,8 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
             ) : (
               <>
                 {section === "general" && (
-                  <section aria-labelledby="settings-section-heading">
-                    <h3 id="settings-section-heading" className="mb-3 text-[15px] font-semibold text-fg">
+                  <section aria-labelledby="settings-heading-general">
+                    <h3 id="settings-heading-general" className="mb-3 text-[15px] font-semibold text-fg">
                       General
                     </h3>
 
@@ -563,8 +551,8 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
                 )}
 
                 {section === "recording" && (
-                  <section aria-labelledby="settings-section-heading">
-                    <h3 id="settings-section-heading" className="mb-3 text-[15px] font-semibold text-fg">
+                  <section aria-labelledby="settings-heading-recording">
+                    <h3 id="settings-heading-recording" className="mb-3 text-[15px] font-semibold text-fg">
                       Recording
                     </h3>
 
@@ -581,6 +569,15 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
                         }
                       >
                         <option value="">System default</option>
+                        {settings.inputDevice &&
+                          !inputDevices.some((device) => device.id === settings.inputDevice) && (
+                            // The saved device isn't in the current list (unplugged,
+                            // or this is an older shell without the Task 8 native
+                            // enumeration yet). Without this, the <select> falls back
+                            // to "System default" — showing the wrong value rather
+                            // than the one actually saved.
+                            <option value={settings.inputDevice}>{settings.inputDevice}</option>
+                          )}
                         {inputDevices.map((device) => (
                           <option key={device.id} value={device.id}>
                             {device.label}
@@ -677,8 +674,8 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
                 )}
 
                 {section === "hotkeys" && (
-                  <section aria-labelledby="settings-section-heading">
-                    <h3 id="settings-section-heading" className="mb-3 text-[15px] font-semibold text-fg">
+                  <section aria-labelledby="settings-heading-hotkeys">
+                    <h3 id="settings-heading-hotkeys" className="mb-3 text-[15px] font-semibold text-fg">
                       Hotkeys
                     </h3>
 
@@ -705,8 +702,8 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
                 )}
 
                 {section === "ai" && (
-                  <section aria-labelledby="settings-section-heading">
-                    <h3 id="settings-section-heading" className="mb-3 text-[15px] font-semibold text-fg">
+                  <section aria-labelledby="settings-heading-ai">
+                    <h3 id="settings-heading-ai" className="mb-3 text-[15px] font-semibold text-fg">
                       Transcription & AI
                     </h3>
 
@@ -830,8 +827,8 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
                 )}
 
                 {section === "storage" && (
-                  <section aria-labelledby="settings-section-heading">
-                    <h3 id="settings-section-heading" className="mb-3 text-[15px] font-semibold text-fg">
+                  <section aria-labelledby="settings-heading-storage">
+                    <h3 id="settings-heading-storage" className="mb-3 text-[15px] font-semibold text-fg">
                       Storage
                     </h3>
                     <div className="settings-field">
