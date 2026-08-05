@@ -8,7 +8,8 @@ import { listInputDevices } from "../lib/desktop";
 import type { InputDevice } from "../lib/desktop";
 import { formatBytes } from "../lib/format";
 import type { useTheme, ThemePreference } from "../hooks/useTheme";
-import { Button, Kbd, Notice, Switch } from "./ui";
+import { Button, Notice, Switch } from "./ui";
+import { HotkeyField } from "./HotkeyField";
 import { cn } from "../lib/cn";
 import type {
   AutoRecordPolicy,
@@ -39,6 +40,7 @@ export interface SettingsProps {
   onClose: () => void;
   theme: ReturnType<typeof useTheme>;
   initialSection?: SettingsSection;
+  hotkeyIssues?: { toggleRecord: string | null; showHide: string | null };
 }
 
 const PULL_POLL_MS = 700;
@@ -114,7 +116,7 @@ function PullBar({ entry, fallbackName }: { entry: PullProgress | undefined; fal
   );
 }
 
-export function Settings({ onClose, theme, initialSection }: SettingsProps) {
+export function Settings({ onClose, theme, initialSection, hotkeyIssues }: SettingsProps) {
   const [section, setSection] = useState<SettingsSection>(initialSection ?? "general");
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [detectedTier, setDetectedTier] = useState<string | null>(null);
@@ -679,24 +681,21 @@ export function Settings({ onClose, theme, initialSection }: SettingsProps) {
                       Hotkeys
                     </h3>
 
-                    <div className="settings-field">
-                      <span className="settings-field__label-text">Start / stop recording</span>
-                      <p className="settings-hint">Works anywhere, even with the window closed</p>
-                      <div className="flex items-center gap-1.5">
-                        {settings.hotkeyToggleRecord.split("+").map((part, i) => (
-                          <Kbd key={i}>{part}</Kbd>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="settings-field">
-                      <span className="settings-field__label-text">Show / hide Notetaker</span>
-                      <p className="settings-hint">Brings the window up from the tray</p>
-                      <div className="flex items-center gap-1.5">
-                        {settings.hotkeyShowHide.split("+").map((part, i) => (
-                          <Kbd key={i}>{part}</Kbd>
-                        ))}
-                      </div>
+                    <div className="flex flex-col gap-2">
+                      <HotkeyField
+                        label="Start / stop recording"
+                        hint="Works anywhere, even with the window closed"
+                        value={settings.hotkeyToggleRecord}
+                        issue={hotkeyIssues?.toggleRecord ?? null}
+                        onChange={(a) => updateSettings({ ...settings, hotkeyToggleRecord: a })}
+                      />
+                      <HotkeyField
+                        label="Show / hide Notetaker"
+                        hint="Brings the window up from the tray"
+                        value={settings.hotkeyShowHide}
+                        issue={hotkeyIssues?.showHide ?? null}
+                        onChange={(a) => updateSettings({ ...settings, hotkeyShowHide: a })}
+                      />
                     </div>
                   </section>
                 )}

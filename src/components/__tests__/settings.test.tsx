@@ -518,25 +518,47 @@ describe("Settings screen", () => {
     );
   });
 
-  it("renders both hotkey rows with their current accelerator, split into Kbd parts", async () => {
+  it("renders both hotkey rows with their current accelerator, formatted into Kbd parts", async () => {
     const dialog = await openSettings({ initialSection: "hotkeys" });
 
+    // HotkeyField's row is a plain bordered div (no ".settings-field" class
+    // — that was the old read-only row's marker), so scope from the label
+    // text's nearest ancestor <div>, which is the row itself.
     const toggleRow = within(dialog)
       .getByText("Start / stop recording")
-      .closest(".settings-field") as HTMLElement;
+      .closest("div") as HTMLElement;
     expect(within(toggleRow).getByText("Works anywhere, even with the window closed")).toBeInTheDocument();
+    expect(
+      within(toggleRow).getByRole("button", { name: "Change shortcut: Start / stop recording" })
+    ).toBeInTheDocument();
     expect(within(toggleRow).getByText("N")).toBeInTheDocument();
 
     const showHideRow = within(dialog)
       .getByText("Show / hide Notetaker")
-      .closest(".settings-field") as HTMLElement;
+      .closest("div") as HTMLElement;
     expect(within(showHideRow).getByText("Brings the window up from the tray")).toBeInTheDocument();
+    expect(
+      within(showHideRow).getByRole("button", { name: "Change shortcut: Show / hide Notetaker" })
+    ).toBeInTheDocument();
     expect(within(showHideRow).getByText("Space")).toBeInTheDocument();
 
-    // Both rows share the CommandOrControl+Alt prefix — assert it renders
+    // Both rows share the CommandOrControl+Alt prefix, formatted for display
+    // via formatAcceleratorParts — under jsdom's non-Mac navigator that's
+    // "Ctrl", not the raw stored "CommandOrControl". Assert it renders
     // twice rather than querying it once and hitting a multi-match error.
-    expect(within(dialog).getAllByText("CommandOrControl")).toHaveLength(2);
+    expect(within(dialog).getAllByText("Ctrl")).toHaveLength(2);
     expect(within(dialog).getAllByText("Alt")).toHaveLength(2);
+    expect(within(dialog).queryByText("CommandOrControl")).not.toBeInTheDocument();
+  });
+
+  it("records a new start/stop hotkey from a chord", async () => {
+    const dialog = await openSettings({ initialSection: "hotkeys" });
+    const btn = within(dialog).getByRole("button", { name: "Change shortcut: Start / stop recording" });
+    fireEvent.click(btn);
+    fireEvent.keyDown(btn, { key: "r", code: "KeyR", ctrlKey: true, altKey: true });
+    await waitFor(() =>
+      expect(lastSetSettings()).toMatchObject({ hotkeyToggleRecord: "CommandOrControl+Alt+R" }),
+    );
   });
 
   it("can be closed with the close button", async () => {
