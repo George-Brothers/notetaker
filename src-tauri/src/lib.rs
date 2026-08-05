@@ -444,6 +444,13 @@ pub fn run() {
             list_input_devices,
         ])
         .on_window_event(|window, event| {
+            // Only the main window. This handler fires for every window there
+            // is, and a second one — the titlebar work adds candidates — would
+            // otherwise have its close cancelled by a listener that only ever
+            // knew how to hide this one, leaving it impossible to close at all.
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // The frontend owns the decision (setting + first-time note).
                 api.prevent_close();

@@ -25,7 +25,13 @@ import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { Button, Dialog, IconButton, Notice, TooltipProvider } from "./components/ui";
-import { api, type CaptureStatus, type Settings as SettingsData, type SetupStatus } from "./lib/ipc";
+import {
+  api,
+  type CaptureState,
+  type CaptureStatus,
+  type Settings as SettingsData,
+  type SetupStatus,
+} from "./lib/ipc";
 import { isDesktop } from "./lib/transport";
 import { setTrayStatus } from "./lib/desktop";
 import { formatAcceleratorParts } from "./lib/hotkeys";
@@ -35,15 +41,29 @@ const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
 const TRAY_EXPLAINED_KEY = "notetaker.trayExplained";
 
 /**
+ * True while a take is on the line.
+ *
+ * One definition, used by every path that can end the process, because the
+ * cost of two copies disagreeing is a destroyed recording. `finishing` is
+ * deliberately *not* live: capture has already stopped and the encoder owns
+ * the file, so there is nothing left for a stop-and-save to do.
+ */
+export function isCapturing(state: CaptureState): boolean {
+  return state === "recording" || state === "paused";
+}
+
+/**
  * Quits the whole app, tray and all.
  *
  * The plugin is imported here rather than at the top of the file for the same
  * reason `updater.ts` does it: it is desktop-only, and a static import pulls it
  * into the served web bundle — which rollup also reports as a warning, because
- * `updater.ts` already asked for it dynamically. Every caller below is reached
- * only from the desktop close listener, so this never runs in a browser.
+ * `updater.ts` already asked for it dynamically. The `isDesktop()` check is
+ * belt and braces: every caller is already behind one, but a function that can
+ * end the process should not rely on its callers for that.
  */
 async function quitApp(): Promise<void> {
+  if (!isDesktop()) return;
   const { exit } = await import("@tauri-apps/plugin-process");
   await exit(0);
 }
@@ -178,11 +198,8 @@ function App() {
     if (!isDesktop()) return;
     const unlistens = [
       listen("close-requested", async () => {
-        const live =
-          captureRef.current.status.state === "recording" ||
-          captureRef.current.status.state === "paused";
         if (!closeToTrayRef.current) {
-          if (live) {
+          if (isCapturing(captureRef.current.status.state)) {
             // Never let quit eat a take: stop-and-save is offered first.
             setShowQuitGuard(true);
             return;
@@ -192,7 +209,7 @@ function App() {
         }
         let explained = false;
         try {
-          explained = localStorage.getItem(TRAY_EXPLAINED_KEY) === "1";
+          explained = window.localStorage.getItem(TRAY_EXPLAINED_KEY) === "1";
         } catch {
           // Storage can refuse; explaining twice beats crashing on close.
         }
@@ -204,7 +221,7 @@ function App() {
       }),
       listen("tray-toggle-recording", () => {
         const c = captureRef.current;
-        if (c.status.state === "recording" || c.status.state === "paused") {
+        if (isCapturing(c.status.state)) {
           void stopAndOpenRef.current();
         } else if (c.status.state === "idle") {
           c.start("meeting", "");
@@ -212,8 +229,11 @@ function App() {
       }),
       listen("tray-open-settings", () => setSettingsOpen(true)),
     ];
+    // A `listen` that never resolves its subscription must not surface as an
+    // unhandled rejection — the window still has to close either way.
+    unlistens.forEach((p) => p.catch(() => {}));
     return () => {
-      unlistens.forEach((p) => p.then((u) => u()));
+      unlistens.forEach((p) => p.then((u) => u()).catch(() => {}));
     };
     // Mounts once: every live value it needs is read through a ref above.
     // Depending on `capture` here would tear the listeners down and rebuild
@@ -395,6 +415,16 @@ function App() {
             <Button
               variant="secondary"
               onClick={async () => {
+                // This note is the *first* close of a fresh install, and it is
+                // shown before anything has looked at the recording. Quitting
+                // straight from here would end a live take with nothing saved,
+                // so the guard has to be asked here too, not only on the path
+                // that skips this dialog.
+                if (isCapturing(captureRef.current.status.state)) {
+                  setShowTrayNote(false);
+                  setShowQuitGuard(true);
+                  return;
+                }
                 await quitApp();
               }}
             >
@@ -404,7 +434,7 @@ function App() {
               variant="primary"
               onClick={async () => {
                 try {
-                  localStorage.setItem(TRAY_EXPLAINED_KEY, "1");
+                  window.localStorage.setItem(TRAY_EXPLAINED_KEY, "1");
                 } catch {
                   // Best effort only — worst case the note appears again.
                 }

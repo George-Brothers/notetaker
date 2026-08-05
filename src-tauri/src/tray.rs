@@ -7,7 +7,7 @@
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Runtime,
 };
 
@@ -50,9 +50,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             // Left-click only: right-click opens the menu and must not also
-            // pop the window.
+            // pop the window. Release only, too — Windows sends `Click` for
+            // both the press and the release, so matching on the button alone
+            // shows the window twice per click and four times on a double.
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
                 ..
             } = event
             {
@@ -70,6 +73,15 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
                 show_main(app);
                 let _ = app.emit("tray-open-settings", ());
             }
+            // KNOWN GAP, for task 9: this quits without asking the webview,
+            // so it ends a live recording where the window's own close button
+            // would have offered stop-and-save first. macOS Cmd+Q does the
+            // same. The take is not lost — `Runtime::launch` runs
+            // `recover_orphans` on the next start — but it lands as a crash
+            // recovery rather than a clean stop, which is a worse outcome than
+            // the one the close path gives. Fixing it means routing this
+            // through the frontend like the toggle above, which belongs with
+            // the rest of the native event plumbing rather than here.
             "tray-quit" => app.exit(0),
             _ => {}
         })

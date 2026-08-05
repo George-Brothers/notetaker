@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
 import { api } from "../../lib/ipc";
 import { applyIpcDefaults } from "../../test/ipcMock";
-import type { CaptureStatus, MeetingEvent } from "../../lib/ipc";
+import type { CaptureStatus, MeetingEvent, Settings as SettingsData } from "../../lib/ipc";
 
 vi.mock("../../lib/ipc", async (importOriginal) => {
   // Keys derived from the real contract, so adding a command to ipc.ts can
@@ -15,6 +15,45 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     api: Object.fromEntries(Object.keys(actual.api).map((k) => [k, vi.fn()])),
   };
 });
+
+/**
+ * The native shell, faked.
+ *
+ * `listen` keeps the handler it was given so a test can play the part of the
+ * Rust side and fire `close-requested` or `tray-toggle-recording` itself. The
+ * three destructive calls — quit, hide, unsubscribe — are recorded rather than
+ * performed, because "did the app try to quit?" is the whole question in most
+ * of these tests.
+ *
+ * `vi.hoisted` because `vi.mock` factories run before the imports above.
+ */
+const shell = vi.hoisted(() => {
+  const handlers = new Map<string, (event: unknown) => unknown>();
+  const unlisten = vi.fn();
+  return {
+    handlers,
+    unlisten,
+    listen: vi.fn(async (name: string, handler: (event: unknown) => unknown) => {
+      handlers.set(name, handler);
+      return unlisten;
+    }),
+    exit: vi.fn(async () => {}),
+    hide: vi.fn(async () => {}),
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: shell.listen }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ hide: shell.hide }),
+}));
+vi.mock("@tauri-apps/plugin-process", () => ({ exit: shell.exit }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async () => undefined),
+  convertFileSrc: (path: string) => path,
+  // The auto-updater asks this first. False keeps a 30-second timer from ever
+  // becoming this file's problem.
+  isTauri: () => false,
+}));
 
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
@@ -67,6 +106,24 @@ const ZOOM_STARTED_ALWAYS: MeetingEvent = {
   appName: "Zoom",
   kind: "started",
   autoStart: true,
+};
+
+const BASE_SETTINGS: SettingsData = {
+  storageRoot: "/Users/george/Notetaker",
+  llmBaseUrl: "http://localhost:11434",
+  llmModel: "qwen2.5:7b",
+  tierOverride: null,
+  processWhenIdle: true,
+  autoRecord: {},
+  minIdleSecs: 300,
+  requireAc: true,
+  keepWav: false,
+  languages: ["en"],
+  speechEngine: "auto",
+  inputDevice: null,
+  hotkeyToggleRecord: "CommandOrControl+Alt+N",
+  hotkeyShowHide: "CommandOrControl+Alt+Space",
+  closeToTray: true,
 };
 
 function setupApi() {
@@ -371,5 +428,151 @@ describe("meeting-detected prompt", () => {
 
     expect(api.startCapture).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The desktop shell's half of closing, and the tray menu.
+ *
+ * None of this exists in a browser: the effect that registers these listeners
+ * returns immediately when `isDesktop()` is false, which is why every other
+ * test in this file never sees them. Here `__TAURI_INTERNALS__` is stubbed onto
+ * `window` — the same trick `transport.test.ts` uses — and removed again
+ * afterwards so desktop mode never leaks into a neighbouring test.
+ */
+describe("closing the window, and the tray menu", () => {
+  beforeEach(() => {
+    shell.handlers.clear();
+    window.localStorage.clear();
+    // The first-run card is a modal of its own; dismissing it up front keeps
+    // it from sitting on top of the dialogs under test.
+    window.localStorage.setItem("notetaker.firstRunDismissed", "1");
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+  });
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    window.localStorage.clear();
+  });
+
+  /** Renders, then waits until the listeners are up and the settings landed. */
+  async function mount(settings: Partial<SettingsData> = {}) {
+    vi.mocked(api.getSettings).mockResolvedValue({ ...BASE_SETTINGS, ...settings });
+    const view = render(<App />);
+    // The sidebar prints the record hotkey only once getSettings has resolved
+    // *and* we are on the desktop — precisely the state `closeToTrayRef` reads
+    // from, so this is the honest signal that the listeners can be fired.
+    await screen.findByText(/hit record, or press/i);
+    await waitFor(() => expect(shell.handlers.size).toBe(3));
+    return view;
+  }
+
+  /** Plays the part of the Rust side emitting one of its events. */
+  async function emit(name: string) {
+    const handler = shell.handlers.get(name);
+    if (!handler) throw new Error(`nothing is listening for "${name}"`);
+    await act(async () => {
+      await handler({ event: name, id: 1, payload: null });
+    });
+  }
+
+  it("offers to save first when quitting would end a live recording", async () => {
+    vi.mocked(api.captureStatus).mockResolvedValue(RECORDING_STATUS);
+    await mount({ closeToTray: false });
+
+    await emit("close-requested");
+
+    expect(await screen.findByText("Recording in progress")).toBeInTheDocument();
+    expect(shell.exit).not.toHaveBeenCalled();
+  });
+
+  it("quits on close when close-to-tray is off and nothing is recording", async () => {
+    await mount({ closeToTray: false });
+
+    await emit("close-requested");
+
+    await waitFor(() => expect(shell.exit).toHaveBeenCalledWith(0));
+  });
+
+  it("explains the tray the first time rather than appearing to vanish", async () => {
+    await mount({ closeToTray: true });
+
+    await emit("close-requested");
+
+    expect(await screen.findByText("Still running")).toBeInTheDocument();
+    expect(shell.hide).not.toHaveBeenCalled();
+    expect(shell.exit).not.toHaveBeenCalled();
+  });
+
+  it("hides without a word once that note has been read", async () => {
+    window.localStorage.setItem("notetaker.trayExplained", "1");
+    await mount({ closeToTray: true });
+
+    await emit("close-requested");
+
+    await waitFor(() => expect(shell.hide).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("Still running")).not.toBeInTheDocument();
+    expect(shell.exit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The hole this test exists for. On the first close of a fresh install the
+   * tray note is shown *before* anything has looked at the recording, so its
+   * "Quit instead" button is a second, later route to quitting — and it used
+   * to take it unconditionally, ending a live take that nothing had saved.
+   */
+  it("will not let the tray note's Quit instead end a live recording", async () => {
+    vi.mocked(api.captureStatus).mockResolvedValue(RECORDING_STATUS);
+    await mount({ closeToTray: true });
+
+    await emit("close-requested");
+    expect(await screen.findByText("Still running")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Quit instead" }));
+
+    expect(await screen.findByText("Recording in progress")).toBeInTheDocument();
+    expect(shell.exit).not.toHaveBeenCalled();
+  });
+
+  it("the tray's toggle starts a meeting recording when idle", async () => {
+    vi.mocked(api.startCapture).mockResolvedValue(RECORDING_STATUS);
+    await mount();
+
+    await emit("tray-toggle-recording");
+
+    await waitFor(() =>
+      expect(api.startCapture).toHaveBeenCalledWith("meeting", expect.any(String))
+    );
+  });
+
+  it("the tray's toggle stops a running recording", async () => {
+    vi.mocked(api.captureStatus).mockResolvedValue(RECORDING_STATUS);
+    await mount();
+
+    await emit("tray-toggle-recording");
+
+    await waitFor(() => expect(api.stopCapture).toHaveBeenCalledTimes(1));
+    expect(api.startCapture).not.toHaveBeenCalled();
+  });
+
+  it("the tray's toggle does nothing while a recording is still saving", async () => {
+    // `finishing` is neither startable nor stoppable: pressing it would either
+    // lose the take that is landing or start a second one on top of it.
+    vi.mocked(api.captureStatus).mockResolvedValue(FINISHING_STATUS);
+    await mount();
+
+    await emit("tray-toggle-recording");
+
+    expect(api.startCapture).not.toHaveBeenCalled();
+    expect(api.stopCapture).not.toHaveBeenCalled();
+  });
+
+  it("drops its subscriptions when the shell goes away", async () => {
+    const { unmount } = await mount();
+    const before = shell.unlisten.mock.calls.length;
+
+    unmount();
+
+    await waitFor(() => expect(shell.unlisten.mock.calls.length).toBe(before + 3));
   });
 });
