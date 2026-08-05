@@ -2,7 +2,11 @@
 # Screenshots the real UI (built frontend + notetaker-serve backend) in both
 # themes. Usage: scripts/shoot-ui.sh <outdir>   → <outdir>/{light,dark}.png
 set -euo pipefail
-OUT="${1:?usage: shoot-ui.sh <outdir>}"; mkdir -p "$OUT"
+# Resolved to an absolute path before anything cds away: the screenshots are
+# taken from src-tauri/, so a relative outdir would land somewhere else than
+# the one mkdir created — and Chrome exits 0 when it cannot write the file, so
+# the failure was silent and line 29 claimed success anyway.
+OUT="${1:?usage: shoot-ui.sh <outdir>}"; mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHROME=$(ls -d ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome | head -1)
 
