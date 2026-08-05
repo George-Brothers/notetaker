@@ -18,6 +18,7 @@ import { NoteView } from "./components/NoteView";
 import { RecordBar } from "./components/RecordBar";
 import { MeetingPrompt } from "./components/MeetingPrompt";
 import { Settings } from "./components/Settings";
+import type { SettingsSection } from "./components/Settings";
 import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
@@ -53,6 +54,7 @@ function App() {
   const capture = useCapture();
   const theme = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [processBlocked, setProcessBlocked] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
@@ -65,6 +67,14 @@ function App() {
 
   const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
     setModelsMissing((setup?.missing.length ?? 0) > 0);
+  }, []);
+
+  // Every path that opens Settings today lands on General — a specific
+  // section is only ever requested by the command palette's deep links
+  // (Task 6), which will pass one through here instead of clearing it.
+  const openSettingsPanel = useCallback(() => {
+    setSettingsSection(undefined);
+    setSettingsOpen(true);
   }, []);
 
   function dismissFirstRun() {
@@ -139,7 +149,7 @@ function App() {
             >
               {theme.resolved === "dark" ? <Sun size={15} /> : <Moon size={15} />}
             </IconButton>
-            <IconButton label="Settings" onClick={() => setSettingsOpen(true)}>
+            <IconButton label="Settings" onClick={openSettingsPanel}>
               <SettingsIcon size={15} />
             </IconButton>
           </div>
@@ -148,7 +158,7 @@ function App() {
         {capture.captureError && (
           <Notice className="mx-3 mt-2 shrink-0">{capture.captureError}</Notice>
         )}
-        <SetupNotice onOpenSettings={() => setSettingsOpen(true)} onStatus={observeSetupStatus} />
+        <SetupNotice onOpenSettings={openSettingsPanel} onStatus={observeSetupStatus} />
         {processBlocked && (
           <Notice className="mx-3 mt-2 shrink-0">
             {processBlocked}{" "}
@@ -240,7 +250,7 @@ function App() {
             startMeeting: () => capture.start("meeting", ""),
             startInPerson: () => capture.start("in_person", ""),
             stop: () => void stopAndOpen(),
-            openSettings: () => setSettingsOpen(true),
+            openSettings: openSettingsPanel,
             toggleTheme: theme.toggle,
             openAsk: () => setAskOpen(true),
           }}
@@ -256,7 +266,13 @@ function App() {
           />
         )}
 
-        {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+        {settingsOpen && (
+          <Settings
+            onClose={() => setSettingsOpen(false)}
+            theme={theme}
+            initialSection={settingsSection}
+          />
+        )}
 
         {!firstRunDismissed && <FirstRun onDismiss={dismissFirstRun} />}
       </div>

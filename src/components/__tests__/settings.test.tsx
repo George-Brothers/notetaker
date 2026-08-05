@@ -1,7 +1,11 @@
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, within, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import App from "../../App";
+import { Settings as SettingsComponent } from "../../components/Settings";
+import type { SettingsProps, SettingsSection } from "../../components/Settings";
+import { useTheme } from "../../hooks/useTheme";
 import { api } from "../../lib/ipc";
 import { applyIpcDefaults } from "../../test/ipcMock";
 import type { CaptureStatus, FoundModel, OllamaStatus, PullProgress, Settings, SetupStatus } from "../../lib/ipc";
@@ -111,13 +115,47 @@ function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus; found
   vi.mocked(api.logPath).mockResolvedValue("/Users/george/Library/Notetaker/logs/notetaker.log");
 }
 
-async function openSettings() {
-  render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+/**
+ * Renders `<Settings>` directly rather than through `<App>`.
+ *
+ * The old helper opened Settings via the header's gear button and never had
+ * to address a specific section — every control lived on one long scroll.
+ * Now `initialSection` has to reach the component itself, and nothing in
+ * `<App>` exposes that from the outside until the command palette's deep
+ * links land in Task 6. `onClose` still does a real unmount (not a `vi.fn()`
+ * stub) so "can be closed with the close button" keeps testing real close
+ * behavior rather than a mock that was merely called.
+ */
+function SettingsHost(props: Partial<SettingsProps>) {
+  const theme = useTheme();
+  const [open, setOpen] = useState(true);
+  if (!open) return null;
+  return <SettingsComponent onClose={() => setOpen(false)} theme={theme} {...props} />;
+}
+
+const SECTION_HEADINGS: Record<SettingsSection, string> = {
+  general: "General",
+  recording: "Recording",
+  hotkeys: "Hotkeys",
+  ai: "Transcription & AI",
+  storage: "Storage",
+  updates: "Updates",
+};
+
+async function openSettings(props: Partial<SettingsProps> = {}) {
+  render(<SettingsHost {...props} />);
   const dialog = await screen.findByRole("dialog", { name: "Settings" });
-  // Wait for the async settings load to finish before interacting.
-  await within(dialog).findByLabelText("Where recordings are saved");
+  // Wait for the async settings load to finish, and for the requested
+  // section (General by default) to be the one actually showing, before
+  // handing the dialog back to the test.
+  await within(dialog).findByRole("heading", { name: SECTION_HEADINGS[props.initialSection ?? "general"] });
   return dialog;
+}
+
+/** The most recent settings object written through `api.setSettings`. */
+function lastSetSettings(): unknown {
+  const calls = vi.mocked(api.setSettings).mock.calls;
+  return calls[calls.length - 1]?.[0];
 }
 
 beforeEach(() => {
@@ -137,7 +175,7 @@ afterEach(() => {
 describe("Settings screen", () => {
   it("checks for a desktop update only when asked", async () => {
     vi.mocked(checkForUpdate).mockResolvedValue({ kind: "current" });
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "updates" });
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Check for updates" }));
 
@@ -152,7 +190,7 @@ describe("Settings screen", () => {
       downloadAndInstall: vi.fn(),
     };
     vi.mocked(checkForUpdate).mockResolvedValue({ kind: "available", update });
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "updates" });
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Check for updates" }));
     expect(await within(dialog).findByText("Version 0.1.2 is ready.")).toBeInTheDocument();
@@ -162,19 +200,20 @@ describe("Settings screen", () => {
   });
 
   it("loads and displays the current settings when opened", async () => {
-    const dialog = await openSettings();
-    // Called at least once by Settings itself (the first-run card, mounted
-    // in the background, also reads settings to know which model to pull).
+    const dialog = await openSettings({ initialSection: "storage" });
+    // Called at least once by Settings itself.
     expect(api.getSettings).toHaveBeenCalled();
     expect(within(dialog).getByLabelText("Where recordings are saved")).toHaveValue(
       "/Users/george/Notetaker"
     );
-    expect(within(dialog).getByLabelText("AI service address")).toHaveValue("http://localhost:11434");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Transcription & AI" }));
+    expect(await within(dialog).findByLabelText("AI service address")).toHaveValue("http://localhost:11434");
     expect(within(dialog).getByLabelText("Summary AI model")).toHaveValue("qwen2.5:7b");
   });
 
   it("reveals the log file's folder when asked", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "storage" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Open the log folder" }));
     await waitFor(() =>
       expect(revealItemInDir).toHaveBeenCalledWith(
@@ -184,7 +223,7 @@ describe("Settings screen", () => {
   });
 
   it("persists the storage location when the field is edited and blurred", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "storage" });
     const input = within(dialog).getByLabelText("Where recordings are saved");
     fireEvent.change(input, { target: { value: "/Users/george/Elsewhere" } });
     fireEvent.blur(input);
@@ -195,7 +234,7 @@ describe("Settings screen", () => {
   });
 
   it("persists the AI service address when edited and blurred", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
     const input = within(dialog).getByLabelText("AI service address");
     fireEvent.change(input, { target: { value: "http://localhost:9999" } });
     fireEvent.blur(input);
@@ -206,7 +245,7 @@ describe("Settings screen", () => {
   });
 
   it("persists the summary AI model name when edited and blurred", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
     const input = within(dialog).getByLabelText("Summary AI model");
     fireEvent.change(input, { target: { value: "llama3:8b" } });
     fireEvent.blur(input);
@@ -217,12 +256,12 @@ describe("Settings screen", () => {
   });
 
   it("shows the detected hardware tier", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
     expect(await within(dialog).findByText(/Detected: medium/)).toBeInTheDocument();
   });
 
   it("overriding the model size persists tierOverride, and returning to automatic clears it", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
     const select = await within(dialog).findByLabelText(/Detected: medium/);
 
     fireEvent.change(select, { target: { value: "large" } });
@@ -240,7 +279,7 @@ describe("Settings screen", () => {
   });
 
   it("toggling 'wait until not in use' persists processWhenIdle", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "recording" });
     const checkbox = within(dialog).getByLabelText("Wait until I'm not using the computer");
     expect(checkbox).toBeChecked();
 
@@ -253,7 +292,7 @@ describe("Settings screen", () => {
   });
 
   it("the minutes input writes minIdleSecs in seconds", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "recording" });
     const input = within(dialog).getByLabelText("Minutes of inactivity before starting");
     expect(input).toHaveValue(5);
 
@@ -265,7 +304,7 @@ describe("Settings screen", () => {
   });
 
   it("toggling 'only process while plugged in' sends requireAc: false", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "recording" });
     const checkbox = within(dialog).getByLabelText("Only process while plugged in");
     expect(checkbox).toBeChecked();
 
@@ -277,7 +316,7 @@ describe("Settings screen", () => {
   });
 
   it("toggling 'keep the original recording file too' persists keepWav", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "recording" });
     const checkbox = within(dialog).getByLabelText("Keep the original recording file too");
     expect(checkbox).not.toBeChecked();
 
@@ -312,7 +351,7 @@ describe("Settings screen", () => {
   });
 
   it("forcing a single speech model persists the override", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
 
     fireEvent.change(within(dialog).getByLabelText("Speech model"), {
       target: { value: "whisper" },
@@ -324,7 +363,7 @@ describe("Settings screen", () => {
   });
 
   it("the auto-record three-way writes autoRecord: { zoom: 'always' }", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "recording" });
     const zoomGroup = within(dialog).getByRole("group", { name: "Zoom" });
     fireEvent.click(within(zoomGroup).getByRole("radio", { name: "Always" }));
 
@@ -334,14 +373,14 @@ describe("Settings screen", () => {
   });
 
   it("notes Google Meet cannot be auto-detected instead of offering a dead control", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "recording" });
     expect(within(dialog).getByText(/Google Meet isn't in this list/)).toBeInTheDocument();
     expect(within(dialog).queryByRole("group", { name: "Google Meet" })).not.toBeInTheDocument();
   });
 
   it("shows Ollama's install hint as guidance when it isn't installed", async () => {
     setupApi({ ollama: OLLAMA_NOT_INSTALLED });
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
 
     expect(await within(dialog).findByText(OLLAMA_NOT_INSTALLED.installHint as string)).toBeInTheDocument();
     expect(within(dialog).getByText("Not installed")).toBeInTheDocument();
@@ -350,7 +389,7 @@ describe("Settings screen", () => {
 
   it("tells someone whose Ollama is stopped to open it, not to download it", async () => {
     setupApi({ ollama: OLLAMA_STOPPED });
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
 
     expect(await within(dialog).findByText(OLLAMA_STOPPED.installHint as string)).toBeInTheDocument();
     expect(within(dialog).getByText("Installed, not running")).toBeInTheDocument();
@@ -359,13 +398,13 @@ describe("Settings screen", () => {
 
   it("shows Ollama as ready when running with the configured model present", async () => {
     setupApi({ ollama: OLLAMA_READY });
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
 
     expect(await within(dialog).findByText("Ready")).toBeInTheDocument();
   });
 
   it("clicking Pull calls pullModel with the configured model and renders live progress", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
     let resolveProgress: (v: PullProgress[]) => void = () => {};
     vi.mocked(api.pullProgress).mockImplementation(
       () =>
@@ -386,7 +425,7 @@ describe("Settings screen", () => {
   });
 
   it("surfaces a failed pull's error text instead of leaving a stuck progress bar", async () => {
-    const dialog = await openSettings();
+    const dialog = await openSettings({ initialSection: "ai" });
     vi.mocked(api.pullProgress).mockResolvedValue([
       { kind: "ollama", name: "qwen2.5:7b", percent: 10, error: "Connection refused", done: true },
     ]);
@@ -403,6 +442,38 @@ describe("Settings screen", () => {
     const dialog = await openSettings();
     fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+  });
+});
+
+describe("sectioned navigation", () => {
+  it("shows six sections and opens General by default", async () => {
+    const dialog = await openSettings();
+    const nav = within(dialog).getByRole("navigation", { name: "Settings sections" });
+    for (const label of ["General", "Recording", "Hotkeys", "Transcription & AI", "Storage", "Updates"]) {
+      expect(within(nav).getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    expect(within(dialog).getByRole("heading", { name: "General" })).toBeInTheDocument();
+  });
+
+  it("clicking a section shows that section's controls", async () => {
+    const dialog = await openSettings();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Storage" }));
+    expect(await within(dialog).findByLabelText("Where recordings are saved")).toBeInTheDocument();
+  });
+
+  it("initialSection opens the asked-for section", async () => {
+    const dialog = await openSettings({ initialSection: "updates" });
+    expect(within(dialog).getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+  });
+
+  it("close-to-tray switch reflects and writes the setting", async () => {
+    const dialog = await openSettings();
+    const sw = within(dialog).getByRole("switch", { name: "Close button hides to tray" });
+    expect(sw).toHaveAttribute("data-state", "checked");
+    fireEvent.click(sw);
+    await waitFor(() =>
+      expect(lastSetSettings()).toMatchObject({ closeToTray: false }),
+    );
   });
 });
 

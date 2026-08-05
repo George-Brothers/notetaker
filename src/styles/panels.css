@@ -108,6 +108,15 @@
 
 /* --- sections and fields ------------------------------------------------ */
 
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--c-border);
+  background: color-mix(in srgb, var(--c-sunken) 60%, var(--c-app));
+}
+
 .settings-section {
   border-bottom: 1px solid var(--c-border);
   padding: 1rem 0;

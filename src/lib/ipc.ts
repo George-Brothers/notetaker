@@ -5,6 +5,11 @@
  * the Rust side; every function matches a `#[tauri::command]`. Changing a name
  * here without changing it there breaks silently at runtime, so this file is
  * the single place both sides agree on.
+ *
+ * Desktop-shell-only commands (ones with no meaning for the LAN/web build,
+ * like enumerating input devices) are deliberately NOT in the `api` object
+ * below — putting them here would let a served browser tab call them. Those
+ * live in `./desktop.ts` instead, each guarded by its own `isDesktop()` check.
  */
 // Tauri IPC on the desktop, HTTP when this UI is served to a browser. Same
 // command names and the same camelCase arguments either way, so nothing below
