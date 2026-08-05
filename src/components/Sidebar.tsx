@@ -157,6 +157,37 @@ function RecordingItem({
   );
 }
 
+/**
+ * The `<li>` rows shared by both the grouped-by-day and flat-list renderings,
+ * so a future change to row markup cannot land in one and not the other.
+ */
+function RecordingListItems({
+  rows,
+  selectedId,
+  onSelectRecording,
+  modelsMissing,
+}: {
+  rows: RecordingRow[];
+  selectedId: string | null;
+  onSelectRecording: (id: string) => void;
+  modelsMissing: boolean;
+}) {
+  return (
+    <>
+      {rows.map((row) => (
+        <li key={row.id}>
+          <RecordingItem
+            row={row}
+            selected={row.id === selectedId}
+            onSelect={() => onSelectRecording(row.id)}
+            modelsMissing={modelsMissing}
+          />
+        </li>
+      ))}
+    </>
+  );
+}
+
 export function Sidebar({
   tasks,
   activeView,
@@ -407,31 +438,23 @@ export function Sidebar({
                       {group.label}
                     </h2>
                     <ul className="flex flex-col gap-0.5">
-                      {group.rows.map((row) => (
-                        <li key={row.id}>
-                          <RecordingItem
-                            row={row}
-                            selected={row.id === selectedId}
-                            onSelect={() => onSelectRecording(row.id)}
-                            modelsMissing={modelsMissing}
-                          />
-                        </li>
-                      ))}
+                      <RecordingListItems
+                        rows={group.rows}
+                        selectedId={selectedId}
+                        onSelectRecording={onSelectRecording}
+                        modelsMissing={modelsMissing}
+                      />
                     </ul>
                   </div>
                 ))
               ) : (
                 <ul className="flex flex-col gap-0.5">
-                  {recordings.map((row) => (
-                    <li key={row.id}>
-                      <RecordingItem
-                        row={row}
-                        selected={row.id === selectedId}
-                        onSelect={() => onSelectRecording(row.id)}
-                        modelsMissing={modelsMissing}
-                      />
-                    </li>
-                  ))}
+                  <RecordingListItems
+                    rows={recordings}
+                    selectedId={selectedId}
+                    onSelectRecording={onSelectRecording}
+                    modelsMissing={modelsMissing}
+                  />
                 </ul>
               )}
             </section>
