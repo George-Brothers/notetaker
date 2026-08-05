@@ -9,6 +9,17 @@ and summarization later, organized by tasks. No cloud, ever.
 is next, and what is waiting on Mr. Brothers.
 
 ## State
+- **UI overhaul "lit from within" (2026-08-04): COMPLETE on branch
+  `claude/app-ui-ux-overhaul-96e4c6`.** Aurora token system (dark "luminous
+  glass" / light "porcelain"), Echo icon + tray with recording state,
+  close-to-tray, global hotkeys (`CommandOrControl+Alt+N` /
+  `CommandOrControl+Alt+Space` — Ctrl on Windows, Cmd on macOS — rebindable
+  in Settings → Hotkeys), six-section Settings with mic picker and folder
+  picker, library sort/filter, find-and-jump palette, custom titlebar
+  (frameless, 500px minimum width). Spec:
+  `docs/superpowers/specs/2026-08-04-ui-overhaul-design.md`. Before/after
+  renders in `docs/superpowers/specs/assets/2026-08-04-pitch/`. Still owed
+  from real hardware: the Windows interactive pass below.
 - **Plan A (portable core): COMPLETE** (2026-07-23) — storage, index, queue,
   pipeline, models, UI library view.
 - **Plan B1 (everything not platform-locked): COMPLETE** (2026-07-27). Capture
@@ -189,6 +200,11 @@ error in `windows/power.rs` *is* caught.
   a checkbox line in `summary.md`, so the list cannot drift from the markdown
   the user can edit by hand.
 - The app runs on Mac *and* PC, so **no user-facing string may say "your Mac"**.
+- **The window is frameless (`decorations: false`) with a 500px minimum
+  width**, pinned by a regression test (`windowControls.test.tsx`) rather
+  than left to feel right: while recording, the custom titlebar's
+  min-content width is 488px, and with no OS-drawn Close button behind it, a
+  window narrower than that clips the mouse's only way to close the app.
 - Speech = **Whisper and SenseVoice, routed per segment** by the language
   SenseVoice detects; diarization = sherpa-onnx; summaries = Ollama+Qwen.
   **First run asks which languages the user speaks and downloads accordingly** —
@@ -521,3 +537,24 @@ Two capture bugs found in his files, not yet chased:
    `large-v3-turbo`. Blocked behind ScreenCaptureKit either way.
 6. **Signing.** The installer is unsigned, so SmartScreen warns on first launch.
    Fine for one user; a wall for anyone else. Needs a certificate, i.e. money.
+7. **Windows truth pass for the UI overhaul** — nothing about the frameless
+   window, the tray, or the global hotkeys has been verified on real
+   hardware yet; CI compiles and bundles the app but never opens a window.
+   Install the CI build, then check: tray icon states (idle/recording/
+   paused) at 100% and 150% DPI, tray menu labels and Quit, close-to-tray +
+   first-time "Still running" note, both global hotkeys with the window
+   closed, titlebar drag / double-click / edge-snap, autostart after a
+   reboot, mic picker lists real devices, `PrintWindow` screenshots of dark
+   + light against the pitch.
+8. **Light-mode contrast on the first-run gradient title.** The "Getting
+   started" heading (15px/600, gradient `background-clip: text`) measures
+   4.41:1 at its cyan end — just under the 4.5:1 WCAG AA minimum for that
+   size and weight. Dark mode is fine.
+9. **The playhead thumb's glow is WebKit-only.**
+   `input[type="range"]::-webkit-slider-thumb` carries the accent glow in
+   `panels.css`; there is no `::-moz-range-thumb` rule, so Firefox users of
+   the served web UI see a playhead with no glow.
+10. **No `forced-colors` fallback on gradient text.** The same first-run
+    title uses `color: transparent` + `background-clip: text` with nothing
+    behind it for Windows High Contrast Mode — it could render invisible
+    there.
