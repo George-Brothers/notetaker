@@ -73,16 +73,18 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
                 show_main(app);
                 let _ = app.emit("tray-open-settings", ());
             }
-            // KNOWN GAP, for task 9: this quits without asking the webview,
-            // so it ends a live recording where the window's own close button
-            // would have offered stop-and-save first. macOS Cmd+Q does the
-            // same. The take is not lost — `Runtime::launch` runs
-            // `recover_orphans` on the next start — but it lands as a crash
-            // recovery rather than a clean stop, which is a worse outcome than
-            // the one the close path gives. Fixing it means routing this
-            // through the frontend like the toggle above, which belongs with
-            // the rest of the native event plumbing rather than here.
-            "tray-quit" => app.exit(0),
+            // Quit asks the webview rather than exiting here. `app.exit(0)`
+            // skips destructors, so quitting mid-recording dropped the last
+            // unflushed buffer and left the take to be picked up as a crash
+            // recovery on the next launch instead of a clean stop-and-save.
+            // The frontend owns that decision — it is the same one the close
+            // button already makes — so this shows the window (the guard
+            // dialog has to be visible to be answered) and hands it over.
+            // The webview calls `plugin:process|exit` when it is done.
+            "tray-quit" => {
+                show_main(app);
+                let _ = app.emit("tray-quit-requested", ());
+            }
             _ => {}
         })
         .build(app)

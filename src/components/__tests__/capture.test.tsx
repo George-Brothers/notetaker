@@ -47,6 +47,19 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ hide: shell.hide }),
 }));
 vi.mock("@tauri-apps/plugin-process", () => ({ exit: shell.exit }));
+// The OS-wide hotkeys: App registers them the moment settings settle. Stubbed
+// rather than left real so these tests never depend on a global-shortcut
+// round trip they have nothing to say about.
+vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
+  register: vi.fn(async () => {}),
+  unregisterAll: vi.fn(async () => {}),
+}));
+// Same for the login item, which App writes once on a fresh install.
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  isEnabled: vi.fn(async () => false),
+  enable: vi.fn(async () => {}),
+  disable: vi.fn(async () => {}),
+}));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => undefined),
   convertFileSrc: (path: string) => path,
@@ -463,7 +476,7 @@ describe("closing the window, and the tray menu", () => {
     // *and* we are on the desktop — precisely the state `closeToTrayRef` reads
     // from, so this is the honest signal that the listeners can be fired.
     await screen.findByText(/hit record, or press/i);
-    await waitFor(() => expect(shell.handlers.size).toBe(3));
+    await waitFor(() => expect(shell.handlers.size).toBe(4));
     return view;
   }
 
@@ -567,12 +580,37 @@ describe("closing the window, and the tray menu", () => {
     expect(api.stopCapture).not.toHaveBeenCalled();
   });
 
+  /**
+   * The tray's Quit used to be `app.exit(0)` in the Rust menu handler, which
+   * bypasses the webview entirely: it ended a live take mid-buffer and left it
+   * to be recovered as a crash on the next launch. It now emits and asks, so
+   * these two prove both halves of the answer.
+   */
+  it("the tray's Quit offers to save first when a recording is live", async () => {
+    vi.mocked(api.captureStatus).mockResolvedValue(RECORDING_STATUS);
+    await mount();
+
+    await emit("tray-quit-requested");
+
+    expect(await screen.findByText("Recording in progress")).toBeInTheDocument();
+    expect(shell.exit).not.toHaveBeenCalled();
+  });
+
+  it("the tray's Quit exits straight away when nothing is recording", async () => {
+    await mount();
+
+    await emit("tray-quit-requested");
+
+    await waitFor(() => expect(shell.exit).toHaveBeenCalledWith(0));
+    expect(screen.queryByText("Recording in progress")).not.toBeInTheDocument();
+  });
+
   it("drops its subscriptions when the shell goes away", async () => {
     const { unmount } = await mount();
     const before = shell.unlisten.mock.calls.length;
 
     unmount();
 
-    await waitFor(() => expect(shell.unlisten.mock.calls.length).toBe(before + 3));
+    await waitFor(() => expect(shell.unlisten.mock.calls.length).toBe(before + 4));
   });
 });

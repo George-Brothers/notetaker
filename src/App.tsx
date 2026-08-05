@@ -14,6 +14,7 @@ import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
 import { useAutoUpdate } from "./hooks/useAutoUpdate";
+import { useGlobalHotkeys } from "./hooks/useGlobalHotkeys";
 import { useTheme } from "./hooks/useTheme";
 import { Sidebar } from "./components/Sidebar";
 import { NoteView } from "./components/NoteView";
@@ -33,12 +34,18 @@ import {
   type SetupStatus,
 } from "./lib/ipc";
 import { isDesktop } from "./lib/transport";
-import { setTrayStatus } from "./lib/desktop";
+import { setAutostart, setTrayStatus } from "./lib/desktop";
 import { formatAcceleratorParts } from "./lib/hotkeys";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
 /** Set once the tray note has been read, so closing the window is silent after. */
 const TRAY_EXPLAINED_KEY = "notetaker.trayExplained";
+/** Set the first time we turn on start-with-Windows, so we only ever do it once. */
+const AUTOSTART_INIT_KEY = "notetaker.autostartInit";
+
+/** What the hotkeys fall back to when settings cannot be read. */
+const DEFAULT_TOGGLE_RECORD = "CommandOrControl+Alt+N";
+const DEFAULT_SHOW_HIDE = "CommandOrControl+Alt+Space";
 
 /**
  * True while a take is on the line.
@@ -102,6 +109,9 @@ function App() {
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
   const [modelsMissing, setModelsMissing] = useState(false);
   const [appSettings, setAppSettings] = useState<SettingsData | null>(null);
+  // Whether that fetch has *finished*, which is not the same as whether it
+  // produced anything — see the effect below.
+  const [settingsSettled, setSettingsSettled] = useState(false);
   const [showTrayNote, setShowTrayNote] = useState(false);
   const [showQuitGuard, setShowQuitGuard] = useState(false);
 
@@ -122,15 +132,28 @@ function App() {
   // against the stale-response race: this effect re-fires on mount, on open,
   // and on close, so a slow earlier request could otherwise resolve after a
   // newer one and clobber fresh state with stale state.
+  //
+  // `settingsSettled` flips on *both* outcomes on purpose. The hotkeys hang off
+  // it, and gating them on `appSettings !== null` instead would mean that a
+  // getSettings failure leaves them permanently unregistered *and* silent —
+  // exactly the "quietly does nothing" failure the hook exists to prevent. A
+  // failed read costs the custom bindings, not the hotkeys: the defaults below
+  // register anyway, and any conflict still reaches Settings.
   useEffect(() => {
     let ignore = false;
     api
       .getSettings()
       .then((settings) => {
-        if (!ignore) setAppSettings(settings);
+        if (!ignore) {
+          setAppSettings(settings);
+          setSettingsSettled(true);
+        }
       })
       .catch(() => {
-        if (!ignore) setAppSettings(null);
+        if (!ignore) {
+          setAppSettings(null);
+          setSettingsSettled(true);
+        }
       });
     return () => {
       ignore = true;
@@ -192,6 +215,46 @@ function App() {
   const closeToTrayRef = useRef(true);
   closeToTrayRef.current = appSettings?.closeToTray ?? true;
 
+  /**
+   * Start or stop, whichever the current state calls for.
+   *
+   * One function for the tray's toggle and the OS-wide record hotkey, because
+   * they are the same decision. Identity-stable — every live value arrives
+   * through a ref — because `useGlobalHotkeys` depends on it, and a new
+   * function on every one-second status poll would unregister and re-register
+   * the OS shortcut once a second.
+   */
+  const toggleRecording = useCallback(() => {
+    const c = captureRef.current;
+    if (isCapturing(c.status.state)) {
+      void stopAndOpenRef.current();
+    } else if (c.status.state === "idle") {
+      c.start("meeting", "");
+    } // finishing: ignore — the recording is still landing.
+  }, []);
+
+  const hotkeys = useGlobalHotkeys({
+    enabled: settingsSettled,
+    toggleRecord: appSettings?.hotkeyToggleRecord ?? DEFAULT_TOGGLE_RECORD,
+    showHide: appSettings?.hotkeyShowHide ?? DEFAULT_SHOW_HIDE,
+    onToggleRecord: toggleRecording,
+  });
+
+  // Start with Windows, on by default — but written exactly once, ever.
+  // Writing it on every launch would silently undo turning it off in Settings.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    try {
+      if (window.localStorage.getItem(AUTOSTART_INIT_KEY) === "1") return;
+      window.localStorage.setItem(AUTOSTART_INIT_KEY, "1");
+    } catch {
+      // Storage refused. Doing nothing is the safe half of this: better to
+      // never turn it on than to turn it back on at every launch.
+      return;
+    }
+    void setAutostart(true);
+  }, []);
+
   // What the native shell asks the webview to decide: whether closing the
   // window means hide or quit, and what the tray's one toggle should do.
   useEffect(() => {
@@ -219,15 +282,20 @@ function App() {
         }
         await getCurrentWindow().hide();
       }),
-      listen("tray-toggle-recording", () => {
-        const c = captureRef.current;
-        if (isCapturing(c.status.state)) {
-          void stopAndOpenRef.current();
-        } else if (c.status.state === "idle") {
-          c.start("meeting", "");
-        } // finishing: ignore — the recording is still landing.
-      }),
+      listen("tray-toggle-recording", () => toggleRecording()),
       listen("tray-open-settings", () => setSettingsOpen(true)),
+      // The tray's Quit asks rather than exits. It used to call `app.exit(0)`
+      // straight from the menu handler, which skips destructors — so quitting
+      // mid-recording lost the last unflushed buffer and left the take to be
+      // picked up as a crash recovery on the next launch. Same guard as the
+      // close button now, and the same one dialog.
+      listen("tray-quit-requested", async () => {
+        if (isCapturing(captureRef.current.status.state)) {
+          setShowQuitGuard(true);
+          return;
+        }
+        await quitApp();
+      }),
     ];
     // A `listen` that never resolves its subscription must not surface as an
     // unhandled rejection — the window still has to close either way.
@@ -235,10 +303,10 @@ function App() {
     return () => {
       unlistens.forEach((p) => p.then((u) => u()).catch(() => {}));
     };
-    // Mounts once: every live value it needs is read through a ref above.
-    // Depending on `capture` here would tear the listeners down and rebuild
-    // them on every one-second status poll.
-  }, []);
+    // Mounts once: `toggleRecording` is identity-stable and every other live
+    // value is read through a ref above. Depending on `capture` here would
+    // tear the listeners down and rebuild them on every one-second poll.
+  }, [toggleRecording]);
 
   // "Process now" queues the recording and wakes the scheduler. When there is
   // no scheduler — because the speech models were never downloaded — that call
@@ -402,6 +470,7 @@ function App() {
             theme={theme}
             section={settingsSection}
             onSelectSection={setSettingsSection}
+            hotkeyIssues={hotkeys.issues}
           />
         )}
 

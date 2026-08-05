@@ -362,6 +362,17 @@ fn open_runtime(app_dir: &Path) -> anyhow::Result<Runtime> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // First, deliberately. Plugins initialise in the order they are added
+        // (tauri-plugin-single-instance's own README says so), so a second
+        // launch has to hit this one before anything else has a chance to open
+        // a log file, claim the tray, or start a runtime it will never use.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -372,13 +383,6 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.unminimize();
-                let _ = win.set_focus();
-            }
-        }))
         .setup(|app| {
             let app_dir = app.path().app_data_dir()?;
             logging::install(&app_dir);

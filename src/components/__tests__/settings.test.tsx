@@ -11,9 +11,20 @@ import { applyIpcDefaults } from "../../test/ipcMock";
 import type { CaptureStatus, FoundModel, OllamaStatus, PullProgress, Settings, SetupStatus } from "../../lib/ipc";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { checkForUpdate, installUpdate } from "../../lib/updater";
+import { getAutostart, pickFolder, setAutostart } from "../../lib/desktop";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
 vi.mock("../../lib/updater", () => ({ checkForUpdate: vi.fn(), installUpdate: vi.fn() }));
+
+// Only the three plugin-backed shell services are faked. `listInputDevices`
+// and `trayStateFor` stay real, because the microphone list is part of what
+// the Recording section renders and it already answers safely off the desktop.
+vi.mock("../../lib/desktop", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/desktop")>()),
+  pickFolder: vi.fn(),
+  getAutostart: vi.fn(),
+  setAutostart: vi.fn(),
+}));
 
 vi.mock("../../lib/ipc", async (importOriginal) => {
   // Keys derived from the real contract, so adding a command to ipc.ts can
@@ -209,6 +220,10 @@ beforeEach(() => {
   setupApi();
   vi.mocked(checkForUpdate).mockResolvedValue({ kind: "unavailable" });
   vi.mocked(installUpdate).mockResolvedValue(undefined);
+  // What the real ones answer in a browser: no folder chooser, no login item.
+  vi.mocked(pickFolder).mockResolvedValue(null);
+  vi.mocked(getAutostart).mockResolvedValue(null);
+  vi.mocked(setAutostart).mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -640,6 +655,91 @@ describe("Settings screen", () => {
     const dialog = await openSettings();
     fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+  });
+});
+
+/**
+ * The two controls that only exist inside the desktop shell: the login item and
+ * the folder chooser. Neither has anything to act on in the served UI — a phone
+ * on the LAN has no Startup Apps list and no filesystem to browse — so both are
+ * gated on `isDesktop()`, which reads `__TAURI_INTERNALS__` off `window`. It is
+ * stubbed here the way `transport.test.ts` and `capture.test.tsx` do, and
+ * removed afterwards so desktop mode never leaks into a neighbouring test.
+ */
+describe("the desktop-only controls", () => {
+  beforeEach(() => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    vi.mocked(getAutostart).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+  });
+
+  it("turns start-with-Windows on from General", async () => {
+    const dialog = await openSettings();
+
+    const toggle = await within(dialog).findByRole("switch", {
+      name: "Start Notetaker with Windows",
+    });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(setAutostart).toHaveBeenCalledWith(true));
+    expect(toggle).toBeChecked();
+  });
+
+  /**
+   * The chosen folder has to land in *both* places. The text box is a draft
+   * seeded when settings loaded, so leaving it behind would not merely look
+   * stale — the next blur commits the draft, writing the old path back over
+   * the folder just chosen.
+   */
+  it("a chosen folder becomes the storage root, in the field as well as the setting", async () => {
+    vi.mocked(pickFolder).mockResolvedValue("/Users/george/Recordings");
+    const dialog = await openSettings({ initialSection: "storage" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Choose folder…" }));
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith({
+        ...BASE_SETTINGS,
+        storageRoot: "/Users/george/Recordings",
+      })
+    );
+    const input = within(dialog).getByLabelText("Where recordings are saved");
+    expect(input).toHaveValue("/Users/george/Recordings");
+
+    fireEvent.blur(input);
+    expect(vi.mocked(api.setSettings).mock.calls).toHaveLength(1);
+  });
+
+  it("changes nothing when the folder chooser is cancelled", async () => {
+    vi.mocked(pickFolder).mockResolvedValue(null);
+    const dialog = await openSettings({ initialSection: "storage" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Choose folder…" }));
+
+    await waitFor(() => expect(pickFolder).toHaveBeenCalled());
+    expect(api.setSettings).not.toHaveBeenCalled();
+    expect(within(dialog).getByLabelText("Where recordings are saved")).toHaveValue(
+      "/Users/george/Notetaker"
+    );
+  });
+
+  it("offers neither of them in the served UI", async () => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    vi.mocked(getAutostart).mockResolvedValue(null);
+    const dialog = await openSettings();
+
+    expect(
+      within(dialog).queryByRole("switch", { name: "Start Notetaker with Windows" })
+    ).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Storage" }));
+    await within(dialog).findByRole("heading", { name: "Storage" });
+    expect(
+      within(dialog).queryByRole("button", { name: "Choose folder…" })
+    ).not.toBeInTheDocument();
   });
 });
 

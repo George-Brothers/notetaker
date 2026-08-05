@@ -62,3 +62,57 @@ export async function setTrayStatus(state: CaptureState): Promise<void> {
     // An older shell has no tray; the app must not care.
   }
 }
+
+// --- the three plugin-backed shell services --------------------------------
+//
+// All three import their plugin dynamically rather than at the top of this
+// file. `desktop.ts` is imported by the served web bundle too — `trayStateFor`
+// is pure and `isDesktop()` returns false for the rest — and a static import
+// would pull three desktop-only plugins into a bundle that can never call
+// them. Every one of them still checks `isDesktop()` first, so the browser
+// path returns before the import is even reached.
+
+/**
+ * A real folder chooser for the storage root.
+ *
+ * `null` covers both "not on the desktop" and "the person cancelled", which is
+ * the same instruction to the caller either way: change nothing.
+ */
+export async function pickFolder(): Promise<string | null> {
+  if (!isDesktop()) return null;
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true, multiple: false });
+    return typeof picked === "string" ? picked : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the OS is set to launch Notetaker at login.
+ *
+ * `null` means "there is nothing to ask" — a browser, or a shell built before
+ * the autostart plugin existed — and is what tells Settings to leave the row
+ * out entirely rather than show a switch that cannot answer for itself.
+ */
+export async function getAutostart(): Promise<boolean | null> {
+  if (!isDesktop()) return null;
+  try {
+    const { isEnabled } = await import("@tauri-apps/plugin-autostart");
+    return await isEnabled();
+  } catch {
+    return null;
+  }
+}
+
+export async function setAutostart(on: boolean): Promise<void> {
+  if (!isDesktop()) return;
+  try {
+    const { enable, disable } = await import("@tauri-apps/plugin-autostart");
+    if (on) await enable();
+    else await disable();
+  } catch {
+    // Shown state re-reads on next open; a failed write is visible then.
+  }
+}

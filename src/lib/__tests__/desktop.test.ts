@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { listInputDevices, setTrayStatus, trayStateFor } from "../desktop";
+import {
+  getAutostart,
+  listInputDevices,
+  pickFolder,
+  setAutostart,
+  setTrayStatus,
+  trayStateFor,
+} from "../desktop";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -25,5 +32,18 @@ describe("the shell-only commands off the desktop", () => {
     await expect(setTrayStatus("recording")).resolves.toBeUndefined();
     await expect(listInputDevices()).resolves.toEqual([]);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Same contract for the three plugin-backed ones, which have a second reason
+   * to hold it: their plugins are loaded by `await import(...)`, and the
+   * `isDesktop()` check has to come first or a browser downloads a chunk it can
+   * never use. `null` from the two readers is the honest answer — "there is
+   * nothing here to ask" — and is what keeps the Settings rows hidden.
+   */
+  it("the plugin-backed ones answer null rather than reaching for a plugin", async () => {
+    await expect(pickFolder()).resolves.toBeNull();
+    await expect(getAutostart()).resolves.toBeNull();
+    await expect(setAutostart(true)).resolves.toBeUndefined();
   });
 });

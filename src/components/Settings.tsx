@@ -4,8 +4,9 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, LANGUAGE_CHOICES } from "../lib/ipc";
 import { checkForUpdate, installUpdate } from "../lib/updater";
 import type { PendingUpdate, UpdateProgress } from "../lib/updater";
-import { listInputDevices } from "../lib/desktop";
+import { getAutostart, listInputDevices, pickFolder, setAutostart } from "../lib/desktop";
 import type { InputDevice } from "../lib/desktop";
+import { isDesktop } from "../lib/transport";
 import { formatBytes } from "../lib/format";
 import type { useTheme, ThemePreference } from "../hooks/useTheme";
 import { Button, Notice, Switch } from "./ui";
@@ -123,6 +124,10 @@ export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssue
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [inputDevices, setInputDevices] = useState<InputDevice[]>([]);
+  // `null` until the OS has answered, and permanently null off the desktop —
+  // which is what keeps the row out of the served UI, where there is no login
+  // item to set. See `getAutostart`.
+  const [autostart, setAutostartState] = useState<boolean | null>(null);
   const [progress, setProgress] = useState<PullProgress[]>([]);
   const [pulling, setPulling] = useState(false);
   const [downloadingModels, setDownloadingModels] = useState(false);
@@ -198,6 +203,19 @@ export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssue
     let cancelled = false;
     listInputDevices().then((devices) => {
       if (!cancelled) setInputDevices(devices);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Read on every open rather than kept anywhere: the login item belongs to the
+  // OS, and someone can turn it off in Windows' own Startup Apps list without
+  // this app ever hearing about it. Asking is the only way to be right.
+  useEffect(() => {
+    let cancelled = false;
+    getAutostart().then((on) => {
+      if (!cancelled) setAutostartState(on);
     });
     return () => {
       cancelled = true;
@@ -311,6 +329,17 @@ export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssue
       setUpdateMessage(`Couldn’t install the update: ${describeError(err)}`);
       setInstallingUpdate(false);
     }
+  }
+
+  async function chooseStorageFolder() {
+    const dir = await pickFolder();
+    if (!dir || !settings) return;
+    // The text box is a draft seeded when settings loaded, so it has to move
+    // too. Otherwise it keeps showing the old path — and the next time it
+    // loses focus, `commitStorage` writes that old path straight back over
+    // the folder just chosen.
+    setStorageDraft(dir);
+    updateSettings({ ...settings, storageRoot: dir });
   }
 
   function commitStorage() {
@@ -520,6 +549,24 @@ export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssue
                       />
                       <span className="settings-field__label-text">Close button hides to tray</span>
                     </div>
+
+                    {isDesktop() && autostart !== null && (
+                      <div className="settings-field settings-field--checkbox">
+                        <Switch
+                          checked={autostart}
+                          onCheckedChange={(v) => {
+                            // Shown state moves first: the OS write is a round
+                            // trip, and a switch that lags behind the finger
+                            // reads as a broken switch. `getAutostart` on the
+                            // next open is what corrects a write that failed.
+                            setAutostartState(v);
+                            void setAutostart(v);
+                          }}
+                          label="Start Notetaker with Windows"
+                        />
+                        <span className="settings-field__label-text">Start Notetaker with Windows</span>
+                      </div>
+                    )}
 
                     <p className="settings-hint">
                       Which languages you expect to hear. Chinese, Cantonese, Japanese and Korean use a
@@ -835,13 +882,25 @@ export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssue
                       <p className="settings-hint">
                         The folder on this computer where your recordings, transcripts, and summaries live.
                       </p>
-                      <input
-                        id="settings-storage-root"
-                        type="text"
-                        value={storageDraft}
-                        onChange={(e) => setStorageDraft(e.target.value)}
-                        onBlur={commitStorage}
-                      />
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="settings-storage-root"
+                          type="text"
+                          value={storageDraft}
+                          onChange={(e) => setStorageDraft(e.target.value)}
+                          onBlur={commitStorage}
+                        />
+                        {isDesktop() && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="shrink-0"
+                            onClick={() => void chooseStorageFolder()}
+                          >
+                            Choose folder…
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     <div className="settings-field">
                       <button type="button" onClick={() => void openLogFolder()}>
