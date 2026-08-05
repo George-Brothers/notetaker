@@ -158,6 +158,21 @@ pub struct Settings {
     /// force one model for everything.
     #[serde(default)]
     pub speech_engine: SpeechEngine,
+
+    // --- 2026-08-04 UI overhaul. All defaulted so any older settings file
+    // parses unchanged; see docs/superpowers/specs/2026-08-04-ui-overhaul-design.md §7.
+    /// Which input device records. `None` means the system default.
+    #[serde(default)]
+    pub input_device: Option<String>,
+    /// Global accelerator that starts/stops recording, Tauri notation.
+    #[serde(default = "default_hotkey_toggle_record")]
+    pub hotkey_toggle_record: String,
+    /// Global accelerator that shows/hides the window, Tauri notation.
+    #[serde(default = "default_hotkey_show_hide")]
+    pub hotkey_show_hide: String,
+    /// Closing the window hides to the tray instead of quitting.
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
 }
 
 /// Which speech model transcribes a recording.
@@ -239,6 +254,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_hotkey_toggle_record() -> String {
+    "CommandOrControl+Alt+N".to_string()
+}
+
+fn default_hotkey_show_hide() -> String {
+    "CommandOrControl+Alt+Space".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -253,6 +276,10 @@ impl Default for Settings {
             min_idle_secs: default_min_idle_secs(),
             require_ac: default_true(),
             keep_wav: false,
+            input_device: None,
+            hotkey_toggle_record: default_hotkey_toggle_record(),
+            hotkey_show_hide: default_hotkey_show_hide(),
+            close_to_tray: true,
         }
     }
 }
@@ -1019,6 +1046,10 @@ mod tests {
             keep_wav: true,
             languages: vec!["en".to_string(), "zh".to_string()],
             speech_engine: SpeechEngine::SenseVoice,
+            input_device: None,
+            hotkey_toggle_record: "CommandOrControl+Alt+N".to_string(),
+            hotkey_show_hide: "CommandOrControl+Alt+Space".to_string(),
+            close_to_tray: false,
         };
         set_settings(&path, &settings).unwrap();
 
@@ -1251,5 +1282,38 @@ mod tests {
 
         // The corrupt WAV is not listed; the FLAC is.
         assert_eq!(audio_tracks(&rec.dir), vec!["system".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod overhaul_settings_tests {
+    use super::*;
+
+    /// A settings file written before the overhaul must parse, landing on the
+    /// documented defaults instead of resetting the user's config.
+    #[test]
+    fn pre_overhaul_settings_json_gets_defaults() {
+        let old = r#"{
+            "storageRoot": "/tmp/x",
+            "llmBaseUrl": "http://localhost:11434",
+            "llmModel": "qwen3:8b",
+            "tierOverride": null,
+            "processWhenIdle": true
+        }"#;
+        let s: Settings = serde_json::from_str(old).expect("old settings must parse");
+        assert_eq!(s.input_device, None);
+        assert_eq!(s.hotkey_toggle_record, "CommandOrControl+Alt+N");
+        assert_eq!(s.hotkey_show_hide, "CommandOrControl+Alt+Space");
+        assert!(s.close_to_tray);
+    }
+
+    /// Round-trip: the new fields serialize camelCase, matching ipc.ts.
+    #[test]
+    fn new_fields_serialize_camel_case() {
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains("\"inputDevice\":null"));
+        assert!(json.contains("\"hotkeyToggleRecord\":\"CommandOrControl+Alt+N\""));
+        assert!(json.contains("\"hotkeyShowHide\":\"CommandOrControl+Alt+Space\""));
+        assert!(json.contains("\"closeToTray\":true"));
     }
 }

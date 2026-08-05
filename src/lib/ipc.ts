@@ -153,6 +153,14 @@ export interface Settings {
    * and sends it to the better model; the other two force one.
    */
   speechEngine: SpeechEngine;
+  /** Which input device records. null means the system default. */
+  inputDevice: string | null;
+  /** Global start/stop-recording accelerator, Tauri notation. */
+  hotkeyToggleRecord: string;
+  /** Global show/hide-window accelerator, Tauri notation. */
+  hotkeyShowHide: string;
+  /** Closing the window hides to the tray instead of quitting. */
+  closeToTray: boolean;
 }
 
 export type SpeechEngine = "auto" | "whisper" | "senseVoice";

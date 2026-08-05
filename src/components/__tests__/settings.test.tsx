@@ -43,6 +43,10 @@ const BASE_SETTINGS: Settings = {
   keepWav: false,
   languages: ["en"],
   speechEngine: "auto",
+  inputDevice: null,
+  hotkeyToggleRecord: "CommandOrControl+Alt+N",
+  hotkeyShowHide: "CommandOrControl+Alt+Space",
+  closeToTray: true,
 };
 
 const OLLAMA_NOT_INSTALLED: OllamaStatus = {
