@@ -27,6 +27,12 @@
      the record control, which is deliberately the odd one out. */
   --radius-card: 0.75rem;
   --radius-control: 0.5rem;
+
+  /* Motion: one speed system. `--ease-swift` is the app's only easing. */
+  --t-fast: 120ms;
+  --t-med: 200ms;
+  --t-slow: 280ms;
+  --ease-swift: cubic-bezier(0.2, 0, 0, 1);
 }
 
 @layer base {
@@ -35,100 +41,112 @@
        `app` is the window, `raised` is a card on it, `sunken` is a well
        (search field, code block). Named by role rather than by shade so the
        dark theme can invert the *order* without renaming anything. */
-    --c-app: #faf8f3;
+    --c-app: #f7f7fa;
     --c-raised: #ffffff;
-    --c-sunken: #f2efe7;
-    --c-hover: #eeeae0;
-    --c-selected: #e6efe9;
+    --c-sunken: #efeff5;
+    --c-hover: #e9e9f1;
+    --c-selected: #e7e4fa;
 
-    --c-border: #e4dfd3;
-    --c-border-strong: #d2ccbc;
+    --c-border: #e3e3ec;
+    --c-border-strong: #cfcfdd;
 
     /* --- text -----------------------------------------------------------
        `fg` is the user's own words and primary UI text. `fg-ai` is the one
        that carries meaning: AI-written text renders in it, which is how the
        enhanced note shows at a glance what you wrote and what the model
        added. It must be legibly *softer* than fg, never merely smaller. */
-    --c-fg: #1c1b17;
-    --c-fg-ai: #6b665c;
-    --c-fg-muted: #8a857a;
-    --c-fg-faint: #a8a294;
+    --c-fg: #17171f;
+    --c-fg-ai: #5d5b75;
+    --c-fg-muted: #79778e;
+    --c-fg-faint: #a3a1b8;
 
     /* --- accent ---------------------------------------------------------- */
-    --c-accent: #2f6f4e;
-    --c-accent-hover: #275e42;
+    --c-accent: #6c4ff0;
+    --c-accent-hover: #5b3fe0;
     --c-accent-fg: #ffffff;
-    --c-accent-soft: #e2eee8;
+    --c-accent-soft: #eeeafe;
+    --c-accent-2: #0e7fa8;
+    --c-accent-2-soft: #e3f4fb;
 
     /* --- status ---------------------------------------------------------
        Recording red is the only truly saturated colour in the app. It should
        be the first thing your eye finds, because "am I still recording" is
        the one question the UI must never make you hunt for. */
-    --c-recording: #cc3b33;
-    --c-recording-soft: #fbeae8;
-    --c-warn: #9a6b16;
+    --c-recording: #e0342b;
+    --c-recording-soft: #fce9e7;
+    --c-warn: #b07514;
     --c-warn-soft: #fbf1dd;
-    --c-error: #b3271f;
+    --c-error: #c92f26;
     --c-error-soft: #fbe9e7;
-    --c-ok: #2f6f4e;
-    --c-ok-soft: #e2eee8;
+    --c-ok: #1f9d6c;
+    --c-ok-soft: #e3f5ee;
 
     /* --- speaker lanes ---------------------------------------------------
        Assigned by first appearance in the transcript, so they stay put
        between visits. Chosen to stay distinguishable for the common forms of
        colour blindness — they differ in lightness as well as hue, so they are
        still telling apart in greyscale. */
-    --c-spk-1: #2f6f4e;
-    --c-spk-2: #6d4fa8;
-    --c-spk-3: #a15c1e;
-    --c-spk-4: #1f6d86;
-    --c-spk-5: #9a3b6d;
+    --c-spk-1: #0e7fa8;
+    --c-spk-2: #7c4fd8;
+    --c-spk-3: #b26a1b;
+    --c-spk-4: #1e8f68;
+    --c-spk-5: #c24a7e;
 
-    --shadow-card: 0 1px 2px rgb(28 27 23 / 0.04),
-      0 4px 12px rgb(28 27 23 / 0.04);
-    --shadow-pop: 0 4px 12px rgb(28 27 23 / 0.08),
-      0 16px 40px rgb(28 27 23 / 0.12);
+    --grad-aurora: linear-gradient(92deg, var(--c-accent), var(--c-accent-2));
+    --glow-accent: 0 3px 14px rgb(108 79 240 / 0.2);
+    --glow-recording: 0 2px 12px rgb(224 52 43 / 0.25);
+
+    --shadow-card: 0 1px 2px rgb(23 23 31 / 0.05),
+      0 4px 14px rgb(108 79 240 / 0.06);
+    --shadow-pop: 0 6px 18px rgb(23 23 31 / 0.1),
+      0 20px 48px rgb(108 79 240 / 0.14);
   }
 
   /* The OS setting, which is the default. */
   @media (prefers-color-scheme: dark) {
     :root {
-      --c-app: #16150f;
-      --c-raised: #1e1d17;
-      --c-sunken: #121109;
-      --c-hover: #292820;
-      --c-selected: #23302a;
+      --c-app: #0b0b12;
+      --c-raised: #14141f;
+      --c-sunken: #07070c;
+      --c-hover: #1c1c2b;
+      --c-selected: #232338;
 
-      --c-border: #302e26;
-      --c-border-strong: #45423a;
+      --c-border: #232336;
+      --c-border-strong: #34344e;
 
-      --c-fg: #efece3;
-      --c-fg-ai: #a19b8e;
-      --c-fg-muted: #8b8579;
-      --c-fg-faint: #6d6961;
+      --c-fg: #ededf7;
+      --c-fg-ai: #a9a9c5;
+      --c-fg-muted: #8a8aa8;
+      --c-fg-faint: #62627e;
 
-      --c-accent: #5fb888;
-      --c-accent-hover: #74c99a;
-      --c-accent-fg: #10231a;
-      --c-accent-soft: #1e3128;
+      --c-accent: #8b72ff;
+      --c-accent-hover: #9d87ff;
+      --c-accent-fg: #0b0b12;
+      --c-accent-soft: #241f45;
+      --c-accent-2: #4dd6ff;
+      --c-accent-2-soft: #10333f;
 
-      --c-recording: #f0655c;
-      --c-recording-soft: #341c1a;
-      --c-warn: #d9a441;
-      --c-warn-soft: #322815;
-      --c-error: #f0655c;
-      --c-error-soft: #341c1a;
-      --c-ok: #5fb888;
-      --c-ok-soft: #1e3128;
+      --c-recording: #ff5c51;
+      --c-recording-soft: #3a1815;
+      --c-warn: #f5b84d;
+      --c-warn-soft: #2e2412;
+      --c-error: #ff6b61;
+      --c-error-soft: #3a1815;
+      --c-ok: #3ed9a4;
+      --c-ok-soft: #10352a;
 
-      --c-spk-1: #5fb888;
-      --c-spk-2: #a992e8;
-      --c-spk-3: #dda05a;
-      --c-spk-4: #6bb8d4;
-      --c-spk-5: #e08ab4;
+      --c-spk-1: #4dd6ff;
+      --c-spk-2: #b78cff;
+      --c-spk-3: #ffb86b;
+      --c-spk-4: #63e6be;
+      --c-spk-5: #ff8fb8;
 
-      --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 12px rgb(0 0 0 / 0.3);
-      --shadow-pop: 0 4px 12px rgb(0 0 0 / 0.5), 0 16px 40px rgb(0 0 0 / 0.6);
+      --grad-aurora: linear-gradient(92deg, var(--c-accent), var(--c-accent-2));
+      --glow-accent: 0 0 20px rgb(139 114 255 / 0.35);
+      --glow-recording: 0 0 16px rgb(255 92 81 / 0.45);
+
+      --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 16px rgb(0 0 0 / 0.35);
+      --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.55), 0 24px 64px rgb(0 0 0 / 0.6);
     }
   }
 
@@ -137,71 +155,81 @@
      leave a few properties following the OS while the rest followed the
      user, which is the "one stubbornly white panel in dark mode" bug. */
   :root[data-theme="light"] {
-    --c-app: #faf8f3;
+    --c-app: #f7f7fa;
     --c-raised: #ffffff;
-    --c-sunken: #f2efe7;
-    --c-hover: #eeeae0;
-    --c-selected: #e6efe9;
-    --c-border: #e4dfd3;
-    --c-border-strong: #d2ccbc;
-    --c-fg: #1c1b17;
-    --c-fg-ai: #6b665c;
-    --c-fg-muted: #8a857a;
-    --c-fg-faint: #a8a294;
-    --c-accent: #2f6f4e;
-    --c-accent-hover: #275e42;
+    --c-sunken: #efeff5;
+    --c-hover: #e9e9f1;
+    --c-selected: #e7e4fa;
+    --c-border: #e3e3ec;
+    --c-border-strong: #cfcfdd;
+    --c-fg: #17171f;
+    --c-fg-ai: #5d5b75;
+    --c-fg-muted: #79778e;
+    --c-fg-faint: #a3a1b8;
+    --c-accent: #6c4ff0;
+    --c-accent-hover: #5b3fe0;
     --c-accent-fg: #ffffff;
-    --c-accent-soft: #e2eee8;
-    --c-recording: #cc3b33;
-    --c-recording-soft: #fbeae8;
-    --c-warn: #9a6b16;
+    --c-accent-soft: #eeeafe;
+    --c-accent-2: #0e7fa8;
+    --c-accent-2-soft: #e3f4fb;
+    --c-recording: #e0342b;
+    --c-recording-soft: #fce9e7;
+    --c-warn: #b07514;
     --c-warn-soft: #fbf1dd;
-    --c-error: #b3271f;
+    --c-error: #c92f26;
     --c-error-soft: #fbe9e7;
-    --c-ok: #2f6f4e;
-    --c-ok-soft: #e2eee8;
-    --c-spk-1: #2f6f4e;
-    --c-spk-2: #6d4fa8;
-    --c-spk-3: #a15c1e;
-    --c-spk-4: #1f6d86;
-    --c-spk-5: #9a3b6d;
-    --shadow-card: 0 1px 2px rgb(28 27 23 / 0.04),
-      0 4px 12px rgb(28 27 23 / 0.04);
-    --shadow-pop: 0 4px 12px rgb(28 27 23 / 0.08),
-      0 16px 40px rgb(28 27 23 / 0.12);
+    --c-ok: #1f9d6c;
+    --c-ok-soft: #e3f5ee;
+    --c-spk-1: #0e7fa8;
+    --c-spk-2: #7c4fd8;
+    --c-spk-3: #b26a1b;
+    --c-spk-4: #1e8f68;
+    --c-spk-5: #c24a7e;
+    --grad-aurora: linear-gradient(92deg, var(--c-accent), var(--c-accent-2));
+    --glow-accent: 0 3px 14px rgb(108 79 240 / 0.2);
+    --glow-recording: 0 2px 12px rgb(224 52 43 / 0.25);
+    --shadow-card: 0 1px 2px rgb(23 23 31 / 0.05),
+      0 4px 14px rgb(108 79 240 / 0.06);
+    --shadow-pop: 0 6px 18px rgb(23 23 31 / 0.1),
+      0 20px 48px rgb(108 79 240 / 0.14);
   }
 
   :root[data-theme="dark"] {
-    --c-app: #16150f;
-    --c-raised: #1e1d17;
-    --c-sunken: #121109;
-    --c-hover: #292820;
-    --c-selected: #23302a;
-    --c-border: #302e26;
-    --c-border-strong: #45423a;
-    --c-fg: #efece3;
-    --c-fg-ai: #a19b8e;
-    --c-fg-muted: #8b8579;
-    --c-fg-faint: #6d6961;
-    --c-accent: #5fb888;
-    --c-accent-hover: #74c99a;
-    --c-accent-fg: #10231a;
-    --c-accent-soft: #1e3128;
-    --c-recording: #f0655c;
-    --c-recording-soft: #341c1a;
-    --c-warn: #d9a441;
-    --c-warn-soft: #322815;
-    --c-error: #f0655c;
-    --c-error-soft: #341c1a;
-    --c-ok: #5fb888;
-    --c-ok-soft: #1e3128;
-    --c-spk-1: #5fb888;
-    --c-spk-2: #a992e8;
-    --c-spk-3: #dda05a;
-    --c-spk-4: #6bb8d4;
-    --c-spk-5: #e08ab4;
-    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 12px rgb(0 0 0 / 0.3);
-    --shadow-pop: 0 4px 12px rgb(0 0 0 / 0.5), 0 16px 40px rgb(0 0 0 / 0.6);
+    --c-app: #0b0b12;
+    --c-raised: #14141f;
+    --c-sunken: #07070c;
+    --c-hover: #1c1c2b;
+    --c-selected: #232338;
+    --c-border: #232336;
+    --c-border-strong: #34344e;
+    --c-fg: #ededf7;
+    --c-fg-ai: #a9a9c5;
+    --c-fg-muted: #8a8aa8;
+    --c-fg-faint: #62627e;
+    --c-accent: #8b72ff;
+    --c-accent-hover: #9d87ff;
+    --c-accent-fg: #0b0b12;
+    --c-accent-soft: #241f45;
+    --c-accent-2: #4dd6ff;
+    --c-accent-2-soft: #10333f;
+    --c-recording: #ff5c51;
+    --c-recording-soft: #3a1815;
+    --c-warn: #f5b84d;
+    --c-warn-soft: #2e2412;
+    --c-error: #ff6b61;
+    --c-error-soft: #3a1815;
+    --c-ok: #3ed9a4;
+    --c-ok-soft: #10352a;
+    --c-spk-1: #4dd6ff;
+    --c-spk-2: #b78cff;
+    --c-spk-3: #ffb86b;
+    --c-spk-4: #63e6be;
+    --c-spk-5: #ff8fb8;
+    --grad-aurora: linear-gradient(92deg, var(--c-accent), var(--c-accent-2));
+    --glow-accent: 0 0 20px rgb(139 114 255 / 0.35);
+    --glow-recording: 0 0 16px rgb(255 92 81 / 0.45);
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 16px rgb(0 0 0 / 0.35);
+    --shadow-pop: 0 8px 24px rgb(0 0 0 / 0.55), 0 24px 64px rgb(0 0 0 / 0.6);
   }
 }
 
@@ -215,6 +243,8 @@
   --color-sunken: var(--c-sunken);
   --color-hover: var(--c-hover);
   --color-selected: var(--c-selected);
+  --color-accent-2: var(--c-accent-2);
+  --color-accent-2-soft: var(--c-accent-2-soft);
   --color-border: var(--c-border);
   --color-border-strong: var(--c-border-strong);
   --color-fg: var(--c-fg);
