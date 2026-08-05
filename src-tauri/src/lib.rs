@@ -6,6 +6,10 @@
 //! command *means* is written once, tested on Linux, and cannot drift between
 //! the desktop app and the served UI.
 //!
+//! The two exceptions are `set_tray_status` and `list_input_devices` under "the
+//! shell itself": they describe this window and this machine, which a phone on
+//! the LAN does not have, so they belong to the shell and not to the contract.
+//!
 //! **This crate cannot be compiled on the development machine** (webkit/gtk and
 //! `libdbus-sys` need system packages there is no sudo to install), so CI is the
 //! only thing that ever type-checks it. That is why the wrappers are written out
@@ -21,6 +25,8 @@
 //! it as "the button does nothing". `runtime::COMMANDS` is the written-down
 //! contract, and a test fails the build if either side drifts from it.
 
+mod tray;
+
 use std::path::Path;
 
 use notetaker_core::capture::platform::PlatformSources;
@@ -30,7 +36,7 @@ use notetaker_core::paths;
 use notetaker_core::power::probe::default_probe;
 use notetaker_core::runtime::Runtime;
 use serde_json::{json, Value};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// Runs one command through core's dispatcher.
 ///
@@ -292,6 +298,50 @@ fn setup_status(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "setup_status", json!({}))
 }
 
+// --- the shell itself ------------------------------------------------------
+//
+// The only two commands that do not go through `dispatch`, because they are
+// about *this window and this machine* rather than about the library: a tray
+// that the served UI does not have, and the microphones plugged into the
+// computer the app is installed on. They are deliberately absent from
+// `runtime::COMMANDS` — a phone on the LAN has neither — and `src/lib/desktop.ts`
+// is the only caller, which checks `isDesktop()` before every one of them.
+
+#[tauri::command]
+fn set_tray_status(app: tauri::AppHandle, state: String) {
+    tray::set_state(&app, &state);
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InputDevice {
+    id: String,
+    label: String,
+    is_default: bool,
+}
+
+#[tauri::command]
+fn list_input_devices() -> Vec<InputDevice> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|d| d.name().ok())
+        .unwrap_or_default();
+    host.input_devices()
+        .map(|devices| {
+            devices
+                .filter_map(|d| d.name().ok())
+                .map(|name| InputDevice {
+                    id: name.clone(),
+                    label: name.clone(),
+                    is_default: name == default_name,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Builds the runtime the whole app hangs off.
 ///
 /// Identical to what `notetaker-serve` does, deliberately: two transports over
@@ -315,6 +365,20 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }))
         .setup(|app| {
             let app_dir = app.path().app_data_dir()?;
             logging::install(&app_dir);
@@ -328,6 +392,12 @@ pub fn run() {
             runtime.launch();
 
             app.manage(runtime);
+
+            // After `manage`, because the tray's own state goes into the same
+            // store. The returned handle is dropped on purpose: Tauri keeps the
+            // icon in its resource table, and `tray_by_id` is how it is reached
+            // again.
+            tray::build(&app.handle().clone())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -370,7 +440,16 @@ pub fn run() {
             find_existing_models,
             detected_tier,
             setup_status,
+            set_tray_status,
+            list_input_devices,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // The frontend owns the decision (setting + first-time note).
+                api.prevent_close();
+                let _ = window.emit("close-requested", ());
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -3560,6 +3560,22 @@ mod tests {
             .collect()
     }
 
+    /// Commands that exist only in the desktop shell, on purpose.
+    ///
+    /// [`COMMANDS`] is the contract *both* transports have to honour, so a
+    /// command belongs in it only when the served UI can answer it too. These
+    /// two cannot: they are about the tray of this window and the microphones
+    /// plugged into this machine, neither of which a phone on the LAN has.
+    /// They live in `src-tauri/src/lib.rs` alone and are called from
+    /// `src/lib/desktop.ts`, which checks `isDesktop()` first and swallows the
+    /// error otherwise.
+    ///
+    /// This list is not an escape hatch: the test below still fails on any
+    /// *other* undocumented command, and it also fails if one of these stops
+    /// being registered — a silent regression to "the microphone list is always
+    /// empty", which is exactly how this pair would break.
+    const SHELL_ONLY_COMMANDS: &[&str] = &["set_tray_status", "list_input_devices"];
+
     /// The desktop shell is the one crate CI alone can compile, so this is the
     /// only check of it that runs on the development machine — and it catches
     /// the failure that actually happens: a command added to `COMMANDS` and to
@@ -3586,8 +3602,15 @@ mod tests {
                 ));
             }
         }
+        for name in SHELL_ONLY_COMMANDS {
+            if !found.iter().any(|f| f == name) {
+                problems.push(format!(
+                    "{name} is a shell-only command but the desktop shell no longer registers it"
+                ));
+            }
+        }
         for name in &found {
-            if !declared.contains(&name.as_str()) {
+            if !declared.contains(&name.as_str()) && !SHELL_ONLY_COMMANDS.contains(&name.as_str()) {
                 problems.push(format!(
                     "{name} is registered in the desktop shell but is not a documented command"
                 ));

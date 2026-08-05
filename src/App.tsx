@@ -7,7 +7,9 @@
  * column too narrow to read comfortably. The rail now does both jobs.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
@@ -22,12 +24,29 @@ import type { SettingsSection } from "./components/Settings";
 import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
-import { IconButton, Notice, TooltipProvider } from "./components/ui";
+import { Button, Dialog, IconButton, Notice, TooltipProvider } from "./components/ui";
 import { api, type CaptureStatus, type Settings as SettingsData, type SetupStatus } from "./lib/ipc";
 import { isDesktop } from "./lib/transport";
+import { setTrayStatus } from "./lib/desktop";
 import { formatAcceleratorParts } from "./lib/hotkeys";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
+/** Set once the tray note has been read, so closing the window is silent after. */
+const TRAY_EXPLAINED_KEY = "notetaker.trayExplained";
+
+/**
+ * Quits the whole app, tray and all.
+ *
+ * The plugin is imported here rather than at the top of the file for the same
+ * reason `updater.ts` does it: it is desktop-only, and a static import pulls it
+ * into the served web bundle — which rollup also reports as a warning, because
+ * `updater.ts` already asked for it dynamically. Every caller below is reached
+ * only from the desktop close listener, so this never runs in a browser.
+ */
+async function quitApp(): Promise<void> {
+  const { exit } = await import("@tauri-apps/plugin-process");
+  await exit(0);
+}
 
 function readFirstRunDismissed(): boolean {
   try {
@@ -63,10 +82,19 @@ function App() {
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
   const [modelsMissing, setModelsMissing] = useState(false);
   const [appSettings, setAppSettings] = useState<SettingsData | null>(null);
+  const [showTrayNote, setShowTrayNote] = useState(false);
+  const [showQuitGuard, setShowQuitGuard] = useState(false);
 
   // Keep installed copies current without ever restarting during a recording.
   // The updater itself verifies the signed artifact before installation.
   useAutoUpdate(capture.status.state === "idle");
+
+  // The tray icon is the only thing that says "still recording" once the window
+  // is hidden, so it follows capture state rather than being set at start/stop
+  // — a session that ends itself never passes through a button handler.
+  useEffect(() => {
+    void setTrayStatus(capture.status.state);
+  }, [capture.status.state]);
 
   // Loaded for the sidebar's empty-state hotkey hint, and for whatever else
   // ends up wanting a native setting later. Refetched when Settings closes so
@@ -134,6 +162,63 @@ function App() {
     await lib.refreshRecordings();
     if (id) await lib.selectRecording(id);
   }, [capture, lib]);
+
+  // Live values for mount-once listeners and OS hotkeys. Without these,
+  // effect deps on `capture` would re-run every poll tick.
+  const captureRef = useRef(capture);
+  captureRef.current = capture;
+  const stopAndOpenRef = useRef(stopAndOpen);
+  stopAndOpenRef.current = stopAndOpen;
+  const closeToTrayRef = useRef(true);
+  closeToTrayRef.current = appSettings?.closeToTray ?? true;
+
+  // What the native shell asks the webview to decide: whether closing the
+  // window means hide or quit, and what the tray's one toggle should do.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    const unlistens = [
+      listen("close-requested", async () => {
+        const live =
+          captureRef.current.status.state === "recording" ||
+          captureRef.current.status.state === "paused";
+        if (!closeToTrayRef.current) {
+          if (live) {
+            // Never let quit eat a take: stop-and-save is offered first.
+            setShowQuitGuard(true);
+            return;
+          }
+          await quitApp();
+          return;
+        }
+        let explained = false;
+        try {
+          explained = localStorage.getItem(TRAY_EXPLAINED_KEY) === "1";
+        } catch {
+          // Storage can refuse; explaining twice beats crashing on close.
+        }
+        if (!explained) {
+          setShowTrayNote(true);
+          return;
+        }
+        await getCurrentWindow().hide();
+      }),
+      listen("tray-toggle-recording", () => {
+        const c = captureRef.current;
+        if (c.status.state === "recording" || c.status.state === "paused") {
+          void stopAndOpenRef.current();
+        } else if (c.status.state === "idle") {
+          c.start("meeting", "");
+        } // finishing: ignore — the recording is still landing.
+      }),
+      listen("tray-open-settings", () => setSettingsOpen(true)),
+    ];
+    return () => {
+      unlistens.forEach((p) => p.then((u) => u()));
+    };
+    // Mounts once: every live value it needs is read through a ref above.
+    // Depending on `capture` here would tear the listeners down and rebuild
+    // them on every one-second status poll.
+  }, []);
 
   // "Process now" queues the recording and wakes the scheduler. When there is
   // no scheduler — because the speech models were never downloaded — that call
@@ -299,6 +384,59 @@ function App() {
             onSelectSection={setSettingsSection}
           />
         )}
+
+        <Dialog
+          open={showTrayNote}
+          onOpenChange={(o) => setShowTrayNote(o)}
+          title="Still running"
+          description="Notetaker keeps running here in the tray so meeting detection and your recording hotkey still work. Quit completely from the tray icon."
+        >
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                await quitApp();
+              }}
+            >
+              Quit instead
+            </Button>
+            <Button
+              variant="primary"
+              onClick={async () => {
+                try {
+                  localStorage.setItem(TRAY_EXPLAINED_KEY, "1");
+                } catch {
+                  // Best effort only — worst case the note appears again.
+                }
+                setShowTrayNote(false);
+                await getCurrentWindow().hide();
+              }}
+            >
+              Got it
+            </Button>
+          </div>
+        </Dialog>
+        <Dialog
+          open={showQuitGuard}
+          onOpenChange={setShowQuitGuard}
+          title="Recording in progress"
+          description="Quitting now would end the recording. It will be stopped and saved first."
+        >
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setShowQuitGuard(false)}>
+              Keep recording
+            </Button>
+            <Button
+              variant="primary"
+              onClick={async () => {
+                await stopAndOpenRef.current();
+                await quitApp();
+              }}
+            >
+              Stop and save, then quit
+            </Button>
+          </div>
+        </Dialog>
 
         {!firstRunDismissed && <FirstRun onDismiss={dismissFirstRun} />}
       </div>
