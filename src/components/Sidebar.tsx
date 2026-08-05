@@ -30,6 +30,7 @@ import { dayLabel, roughDuration, timeOfDay } from "../lib/format";
 import { cn } from "../lib/cn";
 import { Kbd, modKey } from "./ui";
 import { StatusChip } from "./StatusChip";
+import { EchoMark } from "./EchoMark";
 
 export interface SidebarProps {
   tasks: string[];
@@ -49,6 +50,8 @@ export interface SidebarProps {
   onSetFilter: (f: FilterKey) => void;
   /** True while a queued recording cannot process because speech models are absent. */
   modelsMissing?: boolean;
+  /** The record hotkey, formatted for display (e.g. "⌘⌥N"), or null on the web transport. */
+  recordHotkeyLabel: string | null;
   /** Layout only — the shell decides whether the rail is showing. */
   className?: string;
 }
@@ -205,6 +208,7 @@ export function Sidebar({
   filter,
   onSetFilter,
   modelsMissing = false,
+  recordHotkeyLabel,
   className,
 }: SidebarProps) {
   const [tasksOpen, setTasksOpen] = useState(true);
@@ -427,10 +431,14 @@ export function Sidebar({
 
             <section aria-label="Recordings" className="mt-4">
               {recordings.length === 0 ? (
-                <p className="px-2 py-3 text-[12px] leading-relaxed text-fg-faint">
-                  Nothing here yet. Hit record and start typing — your notes and the transcript land
-                  here together.
-                </p>
+                <div className="flex flex-col items-center gap-2 px-2 py-6 text-center">
+                  <EchoMark size={72} dim />
+                  <p className="text-[12px] leading-relaxed text-fg-faint">
+                    {recordHotkeyLabel
+                      ? `Nothing here yet — hit record, or press ${recordHotkeyLabel}.`
+                      : "Nothing here yet — hit record."}
+                  </p>
+                </div>
               ) : sort === "newest" || sort === "oldest" ? (
                 groups.map((group) => (
                   <div key={group.label} className="mb-3">

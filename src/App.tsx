@@ -23,7 +23,9 @@ import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { IconButton, Notice, TooltipProvider } from "./components/ui";
-import { api, type CaptureStatus, type SetupStatus } from "./lib/ipc";
+import { api, type CaptureStatus, type Settings as SettingsData, type SetupStatus } from "./lib/ipc";
+import { isDesktop } from "./lib/transport";
+import { formatAcceleratorParts } from "./lib/hotkeys";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
 
@@ -60,10 +62,18 @@ function App() {
   const [askOpen, setAskOpen] = useState(false);
   const [firstRunDismissed, setFirstRunDismissed] = useState(readFirstRunDismissed);
   const [modelsMissing, setModelsMissing] = useState(false);
+  const [appSettings, setAppSettings] = useState<SettingsData | null>(null);
 
   // Keep installed copies current without ever restarting during a recording.
   // The updater itself verifies the signed artifact before installation.
   useAutoUpdate(capture.status.state === "idle");
+
+  // Loaded for the sidebar's empty-state hotkey hint, and for whatever else
+  // ends up wanting a native setting later. Refetched when Settings closes so
+  // a rebind made in there shows up here without a full reload.
+  useEffect(() => {
+    api.getSettings().then(setAppSettings).catch(() => setAppSettings(null));
+  }, [settingsOpen]);
 
   const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
     setModelsMissing((setup?.missing.length ?? 0) > 0);
@@ -212,6 +222,11 @@ function App() {
             filter={lib.filter}
             onSetFilter={lib.setFilter}
             modelsMissing={modelsMissing}
+            recordHotkeyLabel={
+              isDesktop() && appSettings
+                ? formatAcceleratorParts(appSettings.hotkeyToggleRecord).join("+")
+                : null
+            }
           />
 
           <main className={lib.selectedId ? "flex min-w-0 flex-1" : "hidden min-w-0 flex-1 md:flex"}>

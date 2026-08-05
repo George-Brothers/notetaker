@@ -63,6 +63,7 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}) {
       onSetSort={vi.fn()}
       filter="all"
       onSetFilter={vi.fn()}
+      recordHotkeyLabel={null}
       {...overrides}
     />,
   );
@@ -103,5 +104,22 @@ describe("sort and filter controls", () => {
   it("hides day headers when sorted by length", () => {
     renderSidebar({ sort: "longest", recordings: [ROW_TODAY, ROW_YESTERDAY] });
     expect(screen.queryByText("Today")).not.toBeInTheDocument();
+  });
+});
+
+describe("empty state", () => {
+  it("shows the Echo mark and a plain hint when there is no record hotkey to mention", () => {
+    renderSidebar({ recordings: [], recordHotkeyLabel: null });
+
+    expect(screen.getByText(/Nothing here yet — hit record/)).toBeInTheDocument();
+    expect(screen.queryByText(/press/)).not.toBeInTheDocument();
+  });
+
+  it("names the record hotkey in the empty-state hint when one is known", () => {
+    renderSidebar({ recordings: [], recordHotkeyLabel: "⌘⌥N" });
+
+    expect(
+      screen.getByText("Nothing here yet — hit record, or press ⌘⌥N.")
+    ).toBeInTheDocument();
   });
 });
