@@ -25,6 +25,22 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
   };
 });
 
+// jsdom has no ResizeObserver; cmdk's Command.List uses one purely to track
+// its own rendered height for a CSS variable. The "palette deep link"
+// App-integration test below is the only test in this file that opens the
+// command palette (see commandPalette.test.tsx for the same stub, needed for
+// the same reason).
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+
+// jsdom also has no scrollIntoView; cmdk calls it once on mount to scroll the
+// initially-selected row into view. Layout-only, so a no-op is enough here too.
+Element.prototype.scrollIntoView = vi.fn();
+
 const IDLE_STATUS: CaptureStatus = {
   state: "idle",
   mode: null,
@@ -120,17 +136,34 @@ function setupApi(overrides: { settings?: Settings; ollama?: OllamaStatus; found
  *
  * The old helper opened Settings via the header's gear button and never had
  * to address a specific section — every control lived on one long scroll.
- * Now `initialSection` has to reach the component itself, and nothing in
- * `<App>` exposes that from the outside until the command palette's deep
- * links land in Task 6. `onClose` still does a real unmount (not a `vi.fn()`
- * stub) so "can be closed with the close button" keeps testing real close
- * behavior rather than a mock that was merely called.
+ * `Settings` now takes `section`/`onSelectSection` as a controlled pair
+ * instead of a mount-only `initialSection` (Task 6 review fix — App is the
+ * single source of truth so a palette deep link can retarget an
+ * already-open panel), so this host owns that piece of state itself and
+ * exposes it to callers under the old `initialSection` name, since that's
+ * what every test below already calls it. `onClose` still does a real
+ * unmount (not a `vi.fn()` stub) so "can be closed with the close button"
+ * keeps testing real close behavior rather than a mock that was merely
+ * called.
  */
-function SettingsHost(props: Partial<SettingsProps>) {
+type SettingsHostProps = Partial<Omit<SettingsProps, "section" | "onSelectSection">> & {
+  initialSection?: SettingsSection;
+};
+
+function SettingsHost({ initialSection, ...props }: SettingsHostProps) {
   const theme = useTheme();
   const [open, setOpen] = useState(true);
+  const [section, setSection] = useState<SettingsSection>(initialSection ?? "general");
   if (!open) return null;
-  return <SettingsComponent onClose={() => setOpen(false)} theme={theme} {...props} />;
+  return (
+    <SettingsComponent
+      onClose={() => setOpen(false)}
+      theme={theme}
+      section={section}
+      onSelectSection={setSection}
+      {...props}
+    />
+  );
 }
 
 const SECTION_HEADINGS: Record<SettingsSection, string> = {
@@ -142,7 +175,7 @@ const SECTION_HEADINGS: Record<SettingsSection, string> = {
   updates: "Updates",
 };
 
-async function openSettings(props: Partial<SettingsProps> = {}) {
+async function openSettings(props: SettingsHostProps = {}) {
   render(<SettingsHost {...props} />);
   const dialog = await screen.findByRole("dialog", { name: "Settings" });
   // Wait for the requested section (General by default) to be the one
@@ -198,6 +231,36 @@ describe("App integration", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument()
     );
+  });
+
+  // Review finding on Task 6: the palette's Ctrl+K listener is bound to
+  // `document` unconditionally, so it can open right over an already-visible
+  // Settings panel. Before the fix, Settings read its section from a
+  // mount-time useState initializer, so retargeting it while it stayed
+  // mounted (React reconciles the same instance — settingsOpen was already
+  // true) was silently a no-op: the click closed the palette and changed
+  // nothing. Settings' section now lives in App as a single controlled
+  // value instead, so this proves the *visible* section actually changes —
+  // commandPalette.test.tsx's "deep-links into a settings section" only
+  // proves onOpenSettings was called, with Settings never mounted at all.
+  it("a palette deep link changes the section of an already-open Settings panel", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    const settingsDialog = await screen.findByRole("dialog", { name: "Settings" });
+    expect(within(settingsDialog).getByRole("heading", { name: "General" })).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    const paletteInput = await screen.findByPlaceholderText("Jump to…");
+    const paletteDialog = paletteInput.closest('[role="dialog"]') as HTMLElement;
+    fireEvent.click(within(paletteDialog).getByText("Storage"));
+
+    await waitFor(() =>
+      expect(within(settingsDialog).getByRole("heading", { name: "Storage" })).toBeInTheDocument()
+    );
+    // Same DOM node as before the palette interaction — proving the panel's
+    // own state moved, not that a remount (e.g. a `key` on <Settings>)
+    // happened to pick up the new section.
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBe(settingsDialog);
   });
 });
 

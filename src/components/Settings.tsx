@@ -22,7 +22,7 @@ import type {
 
 export type SettingsSection = "general" | "recording" | "hotkeys" | "ai" | "storage" | "updates";
 
-const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
+export const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "general", label: "General" },
   { id: "recording", label: "Recording" },
   { id: "hotkeys", label: "Hotkeys" },
@@ -39,7 +39,8 @@ const NAV_ITEM_IDLE = "text-fg-muted hover:bg-hover hover:text-fg";
 export interface SettingsProps {
   onClose: () => void;
   theme: ReturnType<typeof useTheme>;
-  initialSection?: SettingsSection;
+  section: SettingsSection;
+  onSelectSection: (s: SettingsSection) => void;
   hotkeyIssues?: { toggleRecord: string | null; showHide: string | null };
 }
 
@@ -116,8 +117,7 @@ function PullBar({ entry, fallbackName }: { entry: PullProgress | undefined; fal
   );
 }
 
-export function Settings({ onClose, theme, initialSection, hotkeyIssues }: SettingsProps) {
-  const [section, setSection] = useState<SettingsSection>(initialSection ?? "general");
+export function Settings({ onClose, theme, section, onSelectSection, hotkeyIssues }: SettingsProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [detectedTier, setDetectedTier] = useState<string | null>(null);
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
@@ -414,7 +414,7 @@ export function Settings({ onClose, theme, initialSection, hotkeyIssues }: Setti
               <button
                 key={s.id}
                 type="button"
-                onClick={() => setSection(s.id)}
+                onClick={() => onSelectSection(s.id)}
                 aria-current={section === s.id ? "true" : undefined}
                 className={cn(NAV_ITEM_BASE, section === s.id ? NAV_ITEM_ACTIVE : NAV_ITEM_IDLE)}
               >

@@ -21,17 +21,9 @@ import { Command } from "cmdk";
 import { FileText, FolderOpen, Settings as SettingsIcon } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import type { RecordingRow } from "../lib/ipc";
+import { SECTIONS } from "./Settings";
 import type { SettingsSection } from "./Settings";
 import { dayLabel, roughDuration } from "../lib/format";
-
-const PALETTE_SECTIONS: Array<{ id: SettingsSection; label: string }> = [
-  { id: "general", label: "General" },
-  { id: "recording", label: "Recording" },
-  { id: "hotkeys", label: "Hotkeys" },
-  { id: "ai", label: "Transcription & AI" },
-  { id: "storage", label: "Storage" },
-  { id: "updates", label: "Updates" },
-];
 
 export function CommandPalette({
   open,
@@ -109,22 +101,24 @@ export function CommandPalette({
                 </Command.Group>
               )}
 
-              <Command.Group
-                heading="Tasks"
-                className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-fg-faint"
-              >
-                {tasks.map((task) => (
-                  <Row key={task} icon={<FolderOpen size={14} />} onSelect={() => run(() => onSelectTask(task))}>
-                    {task}
-                  </Row>
-                ))}
-              </Command.Group>
+              {tasks.length > 0 && (
+                <Command.Group
+                  heading="Tasks"
+                  className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-fg-faint"
+                >
+                  {tasks.map((task) => (
+                    <Row key={task} icon={<FolderOpen size={14} />} onSelect={() => run(() => onSelectTask(task))}>
+                      {task}
+                    </Row>
+                  ))}
+                </Command.Group>
+              )}
 
               <Command.Group
                 heading="Settings"
                 className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-fg-faint"
               >
-                {PALETTE_SECTIONS.map((s) => (
+                {SECTIONS.map((s) => (
                   <Row
                     key={s.id}
                     icon={<SettingsIcon size={14} />}

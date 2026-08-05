@@ -54,7 +54,7 @@ function App() {
   const capture = useCapture();
   const theme = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [processBlocked, setProcessBlocked] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
@@ -74,7 +74,7 @@ function App() {
   // setSettingsSection directly with a specific section instead of going
   // through here.
   const openSettingsPanel = useCallback(() => {
-    setSettingsSection(undefined);
+    setSettingsSection("general");
     setSettingsOpen(true);
   }, []);
 
@@ -247,7 +247,7 @@ function App() {
           onSelectRecording={lib.selectRecording}
           onSelectTask={(name) => lib.setView({ kind: "task", name })}
           onOpenSettings={(section) => {
-            setSettingsSection(section);
+            setSettingsSection(section ?? "general");
             setSettingsOpen(true);
           }}
         />
@@ -266,7 +266,8 @@ function App() {
           <Settings
             onClose={() => setSettingsOpen(false)}
             theme={theme}
-            initialSection={settingsSection}
+            section={settingsSection}
+            onSelectSection={setSettingsSection}
           />
         )}
 

@@ -69,6 +69,16 @@ describe("CommandPalette", () => {
     expect(p.onSelectTask).toHaveBeenCalledWith("Entrepreneurship");
   });
 
+  // cmdk only hides a Command.Group once its item count is filtered to zero
+  // by an active search string; with the search box empty (the state right
+  // after opening), a heading with no rows under it renders anyway. Confirmed
+  // by reading cmdk 1.1.1's own visibility check before adding this guard —
+  // it is not something the library does for you.
+  it("hides the Tasks heading when there are no tasks", () => {
+    renderPalette({ tasks: [] });
+    expect(screen.queryByText("Tasks")).not.toBeInTheDocument();
+  });
+
   it("deep-links into a settings section", () => {
     const p = renderPalette();
     fireEvent.click(screen.getByText("Hotkeys"));
