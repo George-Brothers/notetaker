@@ -25,6 +25,7 @@ import type { SettingsSection } from "./components/Settings";
 import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
+import { WindowControls } from "./components/WindowControls";
 import { Button, Dialog, IconButton, Notice, TooltipProvider } from "./components/ui";
 import {
   api,
@@ -373,7 +374,34 @@ function App() {
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col overflow-hidden bg-app text-fg">
-        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2">
+        {/*
+          The titlebar, drawn by the app.
+
+          `decorations: false` in tauri.conf.json means this strip is the only
+          titlebar there is, so it has to do a titlebar's jobs — move the
+          window, and maximise it on a double-click — as well as its own. Both
+          come from `data-tauri-drag-region`, and the value matters. Tauri's
+          injected script walks the event path upward from whatever was
+          pressed: `"deep"` means anything in this subtree drags the window,
+          where a bare attribute would mean "only a direct hit on the header
+          element itself" and leave the recording pill and the wordmark dead to
+          a drag. The same walk stops at the first `<button>`, `<a>`, `<input>`,
+          `<label>` or `role="button"` it meets, so every control in here — the
+          record button, the mode picker, pause, stop, the two icon buttons and
+          the three window controls — presses instead of dragging, and none of
+          them has to opt out by hand.
+
+          There is deliberately no `onDoubleClick` here. That same script
+          already toggles maximise on a double-click of a drag region; a React
+          handler on top of it would fire second and toggle straight back, so
+          the titlebar would appear to ignore double-clicks entirely.
+
+          `pr-0` so Close sits flush in the corner, where a thrown mouse lands.
+        */}
+        <header
+          data-tauri-drag-region="deep"
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-raised/80 py-1.5 pl-3 pr-0"
+        >
           <RecordBar
             status={capture.status}
             onStart={capture.start}
@@ -381,6 +409,11 @@ function App() {
             onResume={capture.resume}
             onStop={stopAndOpen}
           />
+          {/* Hidden on a phone, where the rail's own header already names the
+              app and 12px of tracking-out capitals would only crowd the pill. */}
+          <span className="pointer-events-none hidden select-none text-[12px] font-semibold tracking-[0.08em] text-fg-faint sm:block">
+            NOTETAKER
+          </span>
           <div className="flex items-center gap-1">
             <IconButton
               label={theme.resolved === "dark" ? "Switch to light mode" : "Switch to dark mode"}
@@ -391,6 +424,7 @@ function App() {
             <IconButton label="Settings" onClick={openSettingsPanel}>
               <SettingsIcon size={15} />
             </IconButton>
+            <WindowControls />
           </div>
         </header>
 

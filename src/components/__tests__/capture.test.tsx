@@ -39,6 +39,11 @@ const shell = vi.hoisted(() => {
     }),
     exit: vi.fn(async () => {}),
     hide: vi.fn(async () => {}),
+    // The custom titlebar's controls read this on mount and follow it after.
+    // Stubbed rather than left off so the desktop tests below render the real
+    // header instead of one whose maximise button quietly failed to set up.
+    isMaximized: vi.fn(async () => false),
+    onResized: vi.fn(async () => () => {}),
     register: vi.fn(async (_shortcut: string, _handler: unknown) => {}),
     unregisterAll: vi.fn(async () => {}),
     isEnabled: vi.fn(async () => false),
@@ -49,7 +54,11 @@ const shell = vi.hoisted(() => {
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: shell.listen }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ hide: shell.hide }),
+  getCurrentWindow: () => ({
+    hide: shell.hide,
+    isMaximized: shell.isMaximized,
+    onResized: shell.onResized,
+  }),
 }));
 vi.mock("@tauri-apps/plugin-process", () => ({ exit: shell.exit }));
 // The OS-wide hotkeys: App registers them the moment settings settle. Stubbed
