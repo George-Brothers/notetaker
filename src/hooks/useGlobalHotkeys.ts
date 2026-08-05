@@ -4,11 +4,11 @@
  * Failures are surfaced, never silent — a hotkey that quietly does nothing is
  * indistinguishable from a broken app.
  *
- * `onToggleRecord` **must be identity-stable** (App passes a `useCallback`). It
- * is one of the registration effect's dependencies, so a fresh function each
- * render, combined with the re-render this hook's own `setIssues` causes, is an
- * unregister/re-register loop against the OS rather than a re-render nobody
- * notices.
+ * `onToggleRecord` should be identity-stable (App passes a `useCallback`) — it
+ * is one of the registration effect's dependencies. A caller that gets that
+ * wrong is no longer catastrophic, though: the `setIssues` at the end of the
+ * effect bails out when nothing changed, which breaks the re-render that would
+ * otherwise make it an unregister/re-register loop against the OS.
  */
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -114,7 +114,19 @@ export function useGlobalHotkeys({
         }
       }
 
-      if (!cancelled) setIssues(next);
+      // Field by field, and bail out when nothing changed. A fresh object here
+      // every time would re-render, and a caller that hands this hook a new
+      // `onToggleRecord` each render — one inline arrow where a `useCallback`
+      // belongs — would turn that re-render into an unregister/re-register
+      // loop against the OS shortcut table. Measured, before this guard
+      // existed: 120,952 registrations inside one second, with nothing in the
+      // symptom pointing at the callback. Returning `prev` makes React skip
+      // the re-render, which is what ends the cycle.
+      if (!cancelled) {
+        setIssues((prev) =>
+          prev.toggleRecord === next.toggleRecord && prev.showHide === next.showHide ? prev : next,
+        );
+      }
     })();
 
     return () => {

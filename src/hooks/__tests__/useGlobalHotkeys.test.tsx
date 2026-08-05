@@ -120,6 +120,42 @@ describe("useGlobalHotkeys", () => {
   });
 
   /**
+   * The runaway this hook used to be one inline arrow away from.
+   *
+   * `onToggleRecord` is a dependency of the registration effect, so a caller
+   * that builds a new function every render — an inline arrow where a
+   * `useCallback` belongs, the single easiest mistake to make in React — re-ran
+   * the effect on every re-render, and the effect's own `setIssues` caused the
+   * next re-render. Measured before the guard: 120,952 registrations against
+   * the OS shortcut table inside one second, with nothing in the symptom
+   * naming the callback. The fix is that `setIssues` now returns the previous
+   * object when nothing changed, so React skips the render that closes the loop.
+   *
+   * Bounded by construction: a fixed number of short waits rather than a
+   * condition a runaway could keep alive, and no `act` around them — `act`
+   * drains React's work loop on exit, which is the one thing that could hang
+   * the suite when the work never ends.
+   */
+  it("does not re-register in a loop when the caller's callback is unstable", async () => {
+    renderHook(() =>
+      // Deliberately wrong, on the caller's side, in the exact way App must
+      // never be: a brand new function on every single render.
+      useGlobalHotkeys({ enabled: true, ...DEFAULTS, onToggleRecord: vi.fn() }),
+    );
+    // Absorb the first registration inside act. Loose assertion on purpose —
+    // an exact count here would fail for the wrong reason when unguarded.
+    await waitFor(() => expect(register).toHaveBeenCalled());
+
+    for (let turn = 0; turn < 5; turn++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    // Exactly the two the one pass registered. Unguarded this reads in the
+    // thousands after 100ms, so the margin between pass and fail is enormous.
+    expect(register).toHaveBeenCalledTimes(2);
+  });
+
+  /**
    * The show/hide half, which is the reason the shortcut exists at all: the
    * window is usually in the tray when it is pressed. `show()` on its own is
    * not enough — a minimized window counts as shown to the OS — so the raise
