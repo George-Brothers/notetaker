@@ -9,6 +9,17 @@
 # (the "recongition" typo is the project's real tag name, not ours)
 set -euo pipefail
 
+# sha256sum is GNU coreutils and is not on a stock Mac; shasum is, and is not
+# on a stock Linux. Use whichever exists rather than requiring either.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELS_DIR="$ROOT_DIR/models"
 mkdir -p "$MODELS_DIR"
@@ -42,7 +53,7 @@ else
 fi
 
 echo "verifying embedding model checksum..."
-ACTUAL_SHA256="$(sha256sum "$EMB_MODEL" | awk '{print $1}')"
+ACTUAL_SHA256="$(sha256_of "$EMB_MODEL")"
 if [ "$ACTUAL_SHA256" != "$EMB_SHA256" ]; then
   echo "error: checksum mismatch for $EMB_MODEL" >&2
   echo "  expected: $EMB_SHA256" >&2

@@ -324,6 +324,35 @@ unsafe fn copy_audio(sample_buffer: &CMSampleBuffer, out: &mut Vec<f32>) -> bool
     };
     let mut block_buffer = std::ptr::null_mut();
 
+    // Two passes, which is the documented idiom and — as this cost an
+    // afternoon to learn — is not optional.
+    //
+    // The obvious thing is to hand over the whole `MAX_CHANNELS` struct and let
+    // CoreMedia fill in as much as it needs. That fails with
+    // `kCMSampleBufferError_ArrayTooSmall` (-12737) on every single buffer,
+    // which is a thoroughly misleading name: the size passed must describe a
+    // list of *exactly* the number of buffers the sample holds, not merely one
+    // big enough to contain it. Passing 136 bytes when it wants 40 is "too
+    // small". The symptom is a stream that starts, calls back at the right
+    // rate, and yields zero samples forever.
+    //
+    // So: ask first, then fill.
+    let mut needed: usize = 0;
+    let probe = unsafe {
+        sample_buffer.audio_buffer_list_with_retained_block_buffer(
+            &mut needed,
+            std::ptr::null_mut(),
+            0,
+            None,
+            None,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if probe != 0 || needed == 0 || needed > std::mem::size_of::<AudioBufferListN>() {
+        return false;
+    }
+
     // The returned `block_buffer` owns the samples. It must outlive our reads,
     // and must be released afterwards — hence the explicit `Retained` below
     // rather than letting it leak on every callback.
@@ -331,7 +360,7 @@ unsafe fn copy_audio(sample_buffer: &CMSampleBuffer, out: &mut Vec<f32>) -> bool
         sample_buffer.audio_buffer_list_with_retained_block_buffer(
             std::ptr::null_mut(),
             &mut list as *mut AudioBufferListN as *mut AudioBufferList,
-            std::mem::size_of::<AudioBufferListN>(),
+            needed,
             None,
             None,
             0,

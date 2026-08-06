@@ -5,6 +5,17 @@
 # Usage: scripts/fetch-whisper-model.sh
 set -euo pipefail
 
+# sha256sum is GNU coreutils and is not on a stock Mac; shasum is, and is not
+# on a stock Linux. Use whichever exists rather than requiring either.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELS_DIR="$REPO_ROOT/models"
 MODEL_PATH="$MODELS_DIR/ggml-tiny.bin"
@@ -19,7 +30,7 @@ echo "Fetching $MODEL_URL -> $MODEL_PATH"
 curl -L -C - -o "$MODEL_PATH" "$MODEL_URL"
 
 echo "Verifying sha256..."
-ACTUAL_SHA256="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
+ACTUAL_SHA256="$(sha256_of "$MODEL_PATH")"
 
 if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
     echo "ERROR: sha256 mismatch for $MODEL_PATH" >&2
