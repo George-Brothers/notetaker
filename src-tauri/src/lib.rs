@@ -6,9 +6,10 @@
 //! command *means* is written once, tested on Linux, and cannot drift between
 //! the desktop app and the served UI.
 //!
-//! The two exceptions are `set_tray_status` and `list_input_devices` under "the
-//! shell itself": they describe this window and this machine, which a phone on
-//! the LAN does not have, so they belong to the shell and not to the contract.
+//! The three exceptions are `set_tray_status`, `list_input_devices`, and
+//! `permission_status` under "the shell itself": they describe this window or
+//! this machine, which a phone on the LAN does not have, so they belong to the
+//! shell and not to the contract.
 //!
 //! **This crate cannot be compiled on the development machine** (webkit/gtk and
 //! `libdbus-sys` need system packages there is no sudo to install), so CI is the
@@ -402,6 +403,29 @@ fn list_input_devices() -> Vec<InputDevice> {
         .unwrap_or_default()
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionStatus {
+    microphone: bool,
+    accessibility: bool,
+    input_monitoring: bool,
+    input_monitoring_required: bool,
+}
+
+/// Reads the local machine's permission state without prompting. The frontend
+/// polls this after the user returns from System Settings; a stale grant is
+/// indistinguishable from a broken paste path if it is read only at startup.
+#[tauri::command]
+fn permission_status() -> PermissionStatus {
+    let status = notetaker_platform::permission_status();
+    PermissionStatus {
+        microphone: status.microphone,
+        accessibility: status.accessibility,
+        input_monitoring: status.input_monitoring,
+        input_monitoring_required: status.input_monitoring_required,
+    }
+}
+
 /// Builds the runtime the whole app hangs off.
 ///
 /// Identical to what `notetaker-serve` does, deliberately: two transports over
@@ -602,6 +626,7 @@ pub fn run() {
             setup_status,
             set_tray_status,
             list_input_devices,
+            permission_status,
         ])
         .on_window_event(|window, event| {
             // The tray popover is dismissed when it loses focus or receives a

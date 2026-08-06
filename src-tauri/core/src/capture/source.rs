@@ -33,6 +33,13 @@ pub trait AudioSource: Send {
         Ok(())
     }
 
+    /// A terminal device failure that should be surfaced instead of treating
+    /// a truncated stream as a successful recording. Normal finite fixtures
+    /// return `None`; real sources may report a disconnect here.
+    fn failure_message(&self) -> Option<String> {
+        None
+    }
+
     /// A short name for error messages, e.g. `"microphone"`.
     fn label(&self) -> &str;
 }

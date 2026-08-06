@@ -452,7 +452,7 @@ fn default_hotkey_highlight() -> String {
 }
 
 fn default_cleanup_model() -> String {
-    "qwen3:1.7b".to_string()
+    "llama3.2:3b".to_string()
 }
 
 fn default_dictation_hotkey() -> String {

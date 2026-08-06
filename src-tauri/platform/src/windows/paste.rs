@@ -26,8 +26,10 @@ pub fn paste_text(text: &str) -> Result<PasteOutcome> {
     write_text(text)?;
     let injected_sequence = unsafe { GetClipboardSequenceNumber() };
 
-    let mut enigo_settings = EnigoSettings::default();
-    enigo_settings.open_prompt_to_get_permissions = false;
+    let enigo_settings = EnigoSettings {
+        open_prompt_to_get_permissions: false,
+        ..Default::default()
+    };
     let mut enigo = Enigo::new(&enigo_settings).context("creating Windows input synthesizer")?;
     if let Err(error) = send_ctrl_v(&mut enigo) {
         return Ok(PasteOutcome::copied(format!(
@@ -128,7 +130,7 @@ fn restore_text(previous: Option<&[u16]>) -> Result<bool> {
             let Some(previous) = previous else {
                 return Ok(true);
             };
-            let bytes = previous.len() * size_of::<u16>();
+            let bytes = std::mem::size_of_val(previous);
             let memory = GlobalAlloc(GMEM_MOVEABLE, bytes)
                 .context("allocating Windows clipboard restore memory")?;
             let pointer = GlobalLock(memory).cast::<u16>();

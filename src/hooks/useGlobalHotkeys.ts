@@ -4,13 +4,16 @@
  * Failures are surfaced, never silent — a hotkey that quietly does nothing is
  * indistinguishable from a broken app.
  *
+ * The press/release registration shape is adapted from Handy (MIT), with the
+ * callback lifetime tightened here so status polling cannot lose a release.
+ *
  * `onToggleRecord` should be identity-stable (App passes a `useCallback`) — it
  * is one of the registration effect's dependencies. A caller that gets that
  * wrong is no longer catastrophic, though: the `setIssues` at the end of the
  * effect bails out when nothing changed, which breaks the re-render that would
  * otherwise make it an unregister/re-register loop against the OS.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isDesktop } from "../lib/transport";
 import { isSafeAccelerator } from "../lib/hotkeys";
@@ -131,13 +134,39 @@ export function useGlobalHotkeys({
     dictation: null,
   });
 
+  // The OS callback must not close over App state: dictation changes state on
+  // every poll, and tearing down the dictation shortcut on each transition can
+  // lose the key-release event that is supposed to finish the utterance.
+  const callbacks = useRef({
+    onToggleRecord,
+    onHighlight,
+    onDictationStart,
+    onDictationStop,
+    onDictationToggle,
+    onDictationCancel,
+    dictationMode,
+  });
+  callbacks.current = {
+    onToggleRecord,
+    onHighlight,
+    onDictationStart,
+    onDictationStop,
+    onDictationToggle,
+    onDictationCancel,
+    dictationMode,
+  };
+  const dictationKeyDown = useRef(false);
+
   useEffect(() => {
     if (!enabled || !isDesktop()) return;
     let cancelled = false;
+    const registrations = Array.from(
+      new Set([toggleRecord, showHide, highlight, ...(dictationHotkey ? [dictationHotkey] : [])]),
+    );
 
     void (async () => {
-      const { register, unregisterAll } = await shortcuts();
-      await unregisterAll().catch(() => undefined);
+      const { register, unregister } = await shortcuts();
+      await unregister(registrations).catch(() => undefined);
       if (cancelled) return;
 
       const next: HotkeyIssues = {
@@ -156,7 +185,7 @@ export function useGlobalHotkeys({
       } else {
         try {
           await register(toggleRecord, (e) => {
-            if (e.state === "Pressed") onToggleRecord();
+            if (e.state === "Pressed") callbacks.current.onToggleRecord();
           });
         } catch {
           next.toggleRecord = CONFLICT_COPY;
@@ -182,7 +211,7 @@ export function useGlobalHotkeys({
       } else {
         try {
           await register(highlight, (e) => {
-            if (e.state === "Pressed") onHighlight();
+            if (e.state === "Pressed") callbacks.current.onHighlight();
           });
         } catch {
           next.highlight = CONFLICT_COPY;
@@ -195,29 +224,22 @@ export function useGlobalHotkeys({
         } else {
           try {
             await register(dictationHotkey, (e) => {
-              if (dictationMode === "toggle") {
-                if (e.state === "Pressed") onDictationToggle?.();
+              if (callbacks.current.dictationMode === "toggle") {
+                if (e.state === "Pressed") callbacks.current.onDictationToggle?.();
                 return;
               }
-              if (e.state === "Pressed") onDictationStart?.();
-              if (e.state === "Released") onDictationStop?.();
+              if (e.state === "Pressed" && !dictationKeyDown.current) {
+                dictationKeyDown.current = true;
+                callbacks.current.onDictationStart?.();
+              }
+              if (e.state === "Released" && dictationKeyDown.current) {
+                dictationKeyDown.current = false;
+                callbacks.current.onDictationStop?.();
+              }
             });
           } catch {
             next.dictation = CONFLICT_COPY;
           }
-        }
-      }
-
-      // Escape exists only for an active dictation run. Keeping it out of the
-      // normal registration set means Escape remains ordinary text input the
-      // rest of the time.
-      if (dictating) {
-        try {
-          await register("Escape", (e) => {
-            if (e.state === "Pressed") onDictationCancel?.();
-          });
-        } catch {
-          next.dictation ??= "Escape could not be registered; use Stop to end dictation.";
         }
       }
 
@@ -243,8 +265,9 @@ export function useGlobalHotkeys({
 
     return () => {
       cancelled = true;
+      dictationKeyDown.current = false;
       void shortcuts()
-        .then((m) => m.unregisterAll())
+        .then((m) => m.unregister(registrations))
         .catch(() => undefined);
     };
   }, [
@@ -252,16 +275,47 @@ export function useGlobalHotkeys({
     toggleRecord,
     showHide,
     highlight,
-    onToggleRecord,
-    onHighlight,
     dictationHotkey,
-    dictationMode,
-    dictating,
-    onDictationStart,
-    onDictationStop,
-    onDictationToggle,
-    onDictationCancel,
   ]);
+
+  // Escape is deliberately a separate registration. It exists only during an
+  // active dictation run, while the dictation press/release handler remains
+  // registered across the recording -> transcribing transition so release
+  // cannot be lost when status polling causes a render.
+  useEffect(() => {
+    const ESCAPE_ERROR = "Escape could not be registered; use Stop to end dictation.";
+    if (!enabled || !isDesktop() || !dictating) return;
+    let cancelled = false;
+
+    void (async () => {
+      const { register, unregister } = await shortcuts();
+      try {
+        await register("Escape", (e) => {
+          if (e.state === "Pressed") callbacks.current.onDictationCancel?.();
+        });
+      } catch {
+        if (!cancelled) {
+          setIssues((prev) => ({ ...prev, dictation: prev.dictation ?? ESCAPE_ERROR }));
+        }
+        return;
+      }
+      if (cancelled) await unregister("Escape").catch(() => undefined);
+    })().catch(() => {
+      if (!cancelled) {
+        setIssues((prev) => ({ ...prev, dictation: prev.dictation ?? ESCAPE_ERROR }));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      void shortcuts()
+        .then((m) => m.unregister("Escape"))
+        .catch(() => undefined);
+      setIssues((prev) =>
+        prev.dictation === ESCAPE_ERROR ? { ...prev, dictation: null } : prev,
+      );
+    };
+  }, [enabled, dictating]);
 
   return { issues };
 }

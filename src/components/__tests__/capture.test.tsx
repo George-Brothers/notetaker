@@ -45,6 +45,7 @@ const shell = vi.hoisted(() => {
     isMaximized: vi.fn(async () => false),
     onResized: vi.fn(async () => () => {}),
     register: vi.fn(async (_shortcut: string, _handler: unknown) => {}),
+    unregister: vi.fn(async (_shortcuts: string | string[]) => {}),
     unregisterAll: vi.fn(async () => {}),
     isEnabled: vi.fn(async () => false),
     enable: vi.fn(async () => {}),
@@ -70,6 +71,7 @@ vi.mock("@tauri-apps/plugin-process", () => ({ exit: shell.exit }));
 // live right now" is something a test can actually read.
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: shell.register,
+  unregister: shell.unregister,
   unregisterAll: shell.unregisterAll,
 }));
 // Same for the login item, which App writes once on a fresh install.
@@ -161,7 +163,7 @@ const BASE_SETTINGS: SettingsData = {
   audioDevicePriority: [],
   performanceMode: "auto",
   modelIdleUnload: "5m",
-  cleanupModel: "qwen3:1.7b",
+  cleanupModel: "llama3.2:3b",
   dictationCleanupEnabled: true,
   dictationDictionary: [],
   dictationReplacements: {},

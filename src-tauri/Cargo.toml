@@ -58,6 +58,7 @@ log = "0.4"
 # disagree about what a device is called.
 cpal = "0.16.0"
 notetaker-core = { path = "core" }
+notetaker-platform = { path = "platform" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

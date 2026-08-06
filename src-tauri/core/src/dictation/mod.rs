@@ -117,7 +117,16 @@ pub fn dictionary_prompt(config: &DictationConfig) -> Option<String> {
         None
     } else {
         let mut joined = prompt.join(", ");
-        joined.truncate(1_000);
+        if joined.len() > 1_000 {
+            // A user dictionary may contain CJK or accented terms. `String::truncate`
+            // panics when its byte index splits one of those code points, so
+            // bound the prompt without turning a valid dictionary into a crash.
+            let mut end = 1_000;
+            while !joined.is_char_boundary(end) {
+                end -= 1;
+            }
+            joined.truncate(end);
+        }
         Some(joined)
     }
 }
@@ -205,6 +214,22 @@ mod tests {
         let prompt = dictionary_prompt(&config).unwrap();
         assert!(prompt.contains("Notetaker"));
         assert!(prompt.len() <= 1_000);
+    }
+
+    #[test]
+    fn dictionary_prompt_bounds_unicode_without_splitting_a_code_point() {
+        let config = DictationConfig {
+            cleanup_enabled: false,
+            cleanup_model: "small".into(),
+            llm_base_url: "http://127.0.0.1:1".into(),
+            dictionary: vec!["界".repeat(1_200)],
+            replacements: BTreeMap::new(),
+            keep_audio: false,
+        };
+        let prompt = dictionary_prompt(&config).unwrap();
+        assert!(prompt.len() <= 1_000);
+        assert!(prompt.is_char_boundary(prompt.len()));
+        assert!(prompt.chars().all(|character| character == '界'));
     }
 
     #[test]

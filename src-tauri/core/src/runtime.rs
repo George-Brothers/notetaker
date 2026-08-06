@@ -58,7 +58,7 @@ use crate::models::{
 };
 use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
 use crate::pipeline::diarize::SherpaDiarizer;
-use crate::pipeline::llm::LlmClient;
+use crate::pipeline::llm::{is_local_ollama_url, LlmClient};
 use crate::pipeline::live::{LiveTranscriptEvent, LiveTranscriptHandle};
 use crate::pipeline::route::{LanguageTranscriber, RoutingTranscriber};
 use crate::pipeline::run::requeue_stale;
@@ -1350,7 +1350,7 @@ impl Runtime {
         }
 
         let preferred_devices = preferred_input_devices(&settings);
-        let source = match self
+        let mut source = match self
             .inner
             .sources
             .mic(&preferred_devices)
@@ -1364,13 +1364,18 @@ impl Runtime {
         };
 
         let (lease_tx, lease_rx) = mpsc::sync_channel::<Result<ModelLease>>(1);
-        thread::Builder::new()
+        if let Err(error) = thread::Builder::new()
             .name("notetaker-dictation-model".to_string())
             .spawn(move || {
                 let result = cache.acquire();
                 let _ = lease_tx.send(result);
             })
-            .context("starting the dictation model loader")?;
+        {
+            let _ = source.stop();
+            let error = anyhow::anyhow!(error).context("starting the dictation model loader");
+            set_dictation_error(&control, error.to_string());
+            return Err(error);
+        }
 
         let config = dictation::DictationConfig {
             cleanup_enabled: settings.dictation_cleanup_enabled,
@@ -1383,12 +1388,17 @@ impl Runtime {
         let behavior = settings.dictation_paste_behavior;
         let inner = Arc::clone(&self.inner);
         let worker_control = Arc::clone(&control);
-        thread::Builder::new()
+        if let Err(error) = thread::Builder::new()
             .name("notetaker-dictation".to_string())
             .spawn(move || {
                 run_dictation(inner, worker_control, source, lease_rx, config, behavior)
             })
-            .context("starting the dictation capture thread")?;
+        {
+            control.stop.store(true, Ordering::Release);
+            let error = anyhow::anyhow!(error).context("starting the dictation capture thread");
+            set_dictation_error(&control, error.to_string());
+            return Err(error);
+        }
 
         let snapshot = lock(&status).clone();
         Ok(snapshot)
@@ -1487,6 +1497,9 @@ impl Runtime {
         log::info!("ollama_status: entered");
         let result = (|| {
             let settings = self.get_settings()?;
+            if !is_local_ollama_url(&settings.llm_base_url) {
+                bail!("Ollama is local-only, so its address must be localhost.");
+            }
             Ok(ollama::status(&settings.llm_base_url, &settings.llm_model))
         })();
         log::info!(
@@ -1505,6 +1518,9 @@ impl Runtime {
     /// window.
     pub fn pull_model(&self, model: &str) -> Result<()> {
         let settings = self.get_settings()?;
+        if !is_local_ollama_url(&settings.llm_base_url) {
+            bail!("Ollama is local-only, so its address must be localhost.");
+        }
         let base_url = settings.llm_base_url;
         let model = model.to_string();
 
@@ -2100,29 +2116,6 @@ fn load_models(paths: &ModelPaths) -> Result<LoadedModels> {
     })
 }
 
-/// The live Ask path is deliberately stricter than the older recording Ask
-/// API: it must never send a rolling transcript to a non-local host.
-fn is_local_ollama_url(base_url: &str) -> bool {
-    let Some((scheme, authority)) = base_url.trim().split_once("://") else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("http") {
-        return false;
-    }
-    let authority = authority.split('/').next().unwrap_or_default();
-    // Do not treat a user-info prefix as the host. `http://localhost@remote`
-    // is a remote URL even though a naive `split(':')` check sees "localhost".
-    if authority.contains('@') {
-        return false;
-    }
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        rest.split(']').next().unwrap_or_default()
-    } else {
-        authority.split(':').next().unwrap_or_default()
-    };
-    host.eq_ignore_ascii_case("localhost") || matches!(host, "127.0.0.1" | "::1")
-}
-
 impl Inner {
     fn find(&self, id: &str) -> Result<RecordingRef> {
         self.store
@@ -2380,6 +2373,13 @@ fn run_dictation(
         return;
     }
 
+    if !control.stop.load(Ordering::Acquire) && !control.cancel.load(Ordering::Acquire) {
+        if let Some(error) = source.failure_message() {
+            set_dictation_error(&control, error);
+            return;
+        }
+    }
+
     if control.cancel.load(Ordering::Acquire) {
         set_dictation_status(&control, |status| {
             status.state = DictationState::Idle;
@@ -2404,15 +2404,26 @@ fn run_dictation(
         status.level = 0.0;
         status.message = None;
     });
-    let lease = match lease_rx.recv() {
-        Ok(Ok(lease)) => lease,
-        Ok(Err(error)) => {
-            set_dictation_error(&control, format!("speech models could not load: {error}"));
+    let lease = loop {
+        if control.cancel.load(Ordering::Acquire) {
+            set_dictation_status(&control, |status| {
+                status.state = DictationState::Idle;
+                status.text.clear();
+                status.message = Some("Dictation canceled.".to_string());
+            });
             return;
         }
-        Err(error) => {
-            set_dictation_error(&control, format!("speech model loader stopped: {error}"));
-            return;
+        match lease_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Ok(lease)) => break lease,
+            Ok(Err(error)) => {
+                set_dictation_error(&control, format!("speech models could not load: {error}"));
+                return;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                set_dictation_error(&control, "speech model loader stopped");
+                return;
+            }
         }
     };
 
@@ -2449,8 +2460,8 @@ fn run_dictation(
         Err(first_error) => match inner.sources.copy_text(&cleaned.text) {
             Ok(mut fallback) => {
                 fallback.message = format!(
-                    "Paste failed ({first_error}); the transcript was copied instead. {}",
-                    fallback.message
+                    "Paste failed ({first_error}); the transcript was copied instead. Use the focused app's paste shortcut. {}",
+                    fallback.message,
                 );
                 fallback
             }
@@ -2491,9 +2502,6 @@ fn run_dictation(
     }
     if !paste.message.trim().is_empty() {
         messages.push(paste.message);
-    }
-    if behavior == api::PasteBehavior::Paste && !paste.inserted {
-        messages.push("Copied — press Cmd-V in the focused app.".to_string());
     }
     if config.keep_audio && entry.audio_path.is_some() {
         messages.push("Audio kept in local dictation history.".to_string());
@@ -4263,7 +4271,11 @@ mod tests {
     /// *other* undocumented command, and it also fails if one of these stops
     /// being registered — a silent regression to "the microphone list is always
     /// empty", which is exactly how this pair would break.
-    const SHELL_ONLY_COMMANDS: &[&str] = &["set_tray_status", "list_input_devices"];
+    const SHELL_ONLY_COMMANDS: &[&str] = &[
+        "set_tray_status",
+        "list_input_devices",
+        "permission_status",
+    ];
 
     /// The desktop shell is the one crate CI alone can compile, so this is the
     /// only check of it that runs on the development machine — and it catches

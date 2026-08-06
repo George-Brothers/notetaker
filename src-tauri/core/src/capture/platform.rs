@@ -121,6 +121,10 @@ impl AudioSource for notetaker_platform::MicSource {
     fn label(&self) -> &str {
         notetaker_platform::MicSource::label(self)
     }
+
+    fn failure_message(&self) -> Option<String> {
+        notetaker_platform::MicSource::failure_message(self)
+    }
 }
 
 #[cfg(target_os = "windows")]

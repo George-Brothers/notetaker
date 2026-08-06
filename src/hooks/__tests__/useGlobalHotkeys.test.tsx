@@ -2,9 +2,11 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const register = vi.fn();
+const unregister = vi.fn();
 const unregisterAll = vi.fn();
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: (...a: unknown[]) => register(...a),
+  unregister: (...a: unknown[]) => unregister(...a),
   unregisterAll: (...a: unknown[]) => unregisterAll(...a),
 }));
 
@@ -38,6 +40,7 @@ const DEFAULTS = {
 describe("useGlobalHotkeys", () => {
   beforeEach(() => {
     register.mockReset().mockResolvedValue(undefined);
+    unregister.mockReset().mockResolvedValue(undefined);
     unregisterAll.mockReset().mockResolvedValue(undefined);
     for (const fn of Object.values(win)) fn.mockReset().mockResolvedValue(undefined);
   });
@@ -128,6 +131,69 @@ describe("useGlobalHotkeys", () => {
     expect(onToggleRecord).not.toHaveBeenCalled();
     handler({ state: "Pressed" });
     expect(onToggleRecord).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps one push-to-talk registration to one press and one release", async () => {
+    const onDictationStart = vi.fn();
+    const onDictationStop = vi.fn();
+    renderHook(() =>
+      useGlobalHotkeys({
+        enabled: true,
+        ...DEFAULTS,
+        onToggleRecord: vi.fn(),
+        dictationHotkey: "CommandOrControl+Alt+D",
+        dictationMode: "pushToTalk",
+        onDictationStart,
+        onDictationStop,
+      }),
+    );
+
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(4));
+    const handler = register.mock.calls[3][1] as (e: { state: string }) => void;
+    handler({ state: "Pressed" });
+    handler({ state: "Pressed" });
+    handler({ state: "Released" });
+    handler({ state: "Released" });
+
+    expect(onDictationStart).toHaveBeenCalledTimes(1);
+    expect(onDictationStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers Escape only while dictation is active and keeps release intact", async () => {
+    const onDictationStart = vi.fn();
+    const onDictationStop = vi.fn();
+    const onDictationCancel = vi.fn();
+    const { rerender } = renderHook(
+      ({ dictating }: { dictating: boolean }) =>
+        useGlobalHotkeys({
+          enabled: true,
+          ...DEFAULTS,
+          onToggleRecord: vi.fn(),
+          dictationHotkey: "CommandOrControl+Alt+D",
+          dictationMode: "pushToTalk",
+          dictating,
+          onDictationStart,
+          onDictationStop,
+          onDictationCancel,
+        }),
+      { initialProps: { dictating: false } },
+    );
+
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(4));
+    const dictationHandler = register.mock.calls[3][1] as (e: { state: string }) => void;
+    dictationHandler({ state: "Pressed" });
+    rerender({ dictating: true });
+    dictationHandler({ state: "Released" });
+
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(5));
+    const escapeHandler = register.mock.calls[4][1] as (e: { state: string }) => void;
+    escapeHandler({ state: "Pressed" });
+    expect(onDictationStart).toHaveBeenCalledTimes(1);
+    expect(onDictationStop).toHaveBeenCalledTimes(1);
+    expect(onDictationCancel).toHaveBeenCalledTimes(1);
+
+    rerender({ dictating: false });
+    await waitFor(() => expect(unregister).toHaveBeenCalledWith("Escape"));
   });
 
   /**

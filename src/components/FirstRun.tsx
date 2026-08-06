@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, LANGUAGE_CHOICES } from "../lib/ipc";
 import type { FoundModel, OllamaStatus, PullProgress, Settings as SettingsData, SetupStatus } from "../lib/ipc";
+import { getPermissionStatus, isMacDesktop, openSystemSettings } from "../lib/desktop";
+import type { PermissionStatus } from "../lib/desktop";
 
 export interface FirstRunProps {
   onDismiss: () => void;
@@ -142,6 +144,7 @@ function LanguageStep({
 export function FirstRun({ onDismiss }: FirstRunProps) {
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
   const [progress, setProgress] = useState<PullProgress[]>([]);
   const [foundModels, setFoundModels] = useState<FoundModel[]>([]);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
@@ -157,6 +160,14 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
       const status = await api.ollamaStatus();
       setOllama(status ?? null);
     } catch (err) {
+      setLoadError(describeError(err));
+    }
+    try {
+      setPermissions(await getPermissionStatus());
+    } catch (err) {
+      // null means the shell could not answer, not that every permission is
+      // denied. The rendered card keeps that distinction visible.
+      setPermissions(null);
       setLoadError(describeError(err));
     }
     try {
@@ -287,6 +298,47 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         ? "in-progress"
         : "done";
 
+  const macPermissions = isMacDesktop();
+  const permissionCheckUnavailable = macPermissions && permissions === null;
+  const microphoneStatus: ItemStatus = !macPermissions
+    ? "info"
+    : permissionCheckUnavailable
+      ? "not-started"
+      : permissions?.microphone
+        ? "done"
+        : "in-progress";
+  const accessibilityStatus: ItemStatus = !macPermissions
+    ? "info"
+    : permissionCheckUnavailable || !permissions?.microphone
+      ? "not-started"
+      : permissions?.accessibility
+        ? "done"
+        : "in-progress";
+  const inputMonitoringVisible =
+    macPermissions && permissions?.inputMonitoringRequired === true;
+  const inputMonitoringStatus: ItemStatus = !permissions
+    ? "not-started"
+    : permissions.inputMonitoring
+      ? "done"
+      : "in-progress";
+  const languagesIndex = inputMonitoringVisible ? 4 : macPermissions ? 3 : 2;
+  const modelsIndex = languagesIndex + 1;
+  const ollamaIndex = modelsIndex + 1;
+
+  async function openPermissionPane(
+    pane: "microphone" | "accessibility" | "inputMonitoring",
+  ) {
+    setLoadError(null);
+    try {
+      const opened = await openSystemSettings(pane);
+      if (!opened) {
+        setLoadError("This System Settings link is available from the macOS desktop app.");
+      }
+    } catch (err) {
+      setLoadError(describeError(err));
+    }
+  }
+
   return (
     <section className="first-run" role="region" aria-label="Getting started">
       <header className="first-run__header">
@@ -305,14 +357,64 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
         </p>
       )}
       <ol className="first-run__list">
-        <ChecklistItem index={1} title="Microphone and screen-recording permissions" status="info">
-          <p className="first-run__item-hint">
-            Your operating system asks for these the first time you record — nothing to check from here.
-          </p>
-        </ChecklistItem>
+        {macPermissions ? (
+          <>
+            <ChecklistItem index={1} title="Microphone permission" status={microphoneStatus}>
+              <p className="first-run__item-hint">
+                {permissionCheckUnavailable
+                  ? "The desktop shell could not verify this grant. Use the pane below, then return here; this card rechecks automatically."
+                  : permissions?.microphone
+                    ? "Granted. Dictation will use the selected 16 kHz microphone."
+                    : "Allow Notetaker to use the microphone. Dictation cannot produce text until this is granted."}
+              </p>
+              {!permissions?.microphone && (
+                <button type="button" onClick={() => void openPermissionPane("microphone")}>
+                  Open Microphone settings
+                </button>
+              )}
+            </ChecklistItem>
+
+            <ChecklistItem index={2} title="Accessibility for automatic paste" status={accessibilityStatus}>
+              <p className="first-run__item-hint">
+                {!permissions?.microphone
+                  ? "Complete the microphone card first."
+                  : permissions.accessibility
+                    ? "Granted. Notetaker can post the layout-aware Cmd-V event."
+                    : "Allow Notetaker under Privacy & Security → Accessibility. Without it, text stays on the clipboard and the app tells you to press Cmd-V."}
+              </p>
+              <p className="first-run__item-hint">
+                Signed identity: <strong>Notetaker Local Signing</strong>. Re-check this row after every rebuild or update; Accessibility persistence across rebuilds is still a hardware verification item.
+              </p>
+              {permissions?.microphone && !permissions.accessibility && (
+                <button type="button" onClick={() => void openPermissionPane("accessibility")}>
+                  Open Accessibility settings
+                </button>
+              )}
+            </ChecklistItem>
+
+            {inputMonitoringVisible && (
+              <ChecklistItem index={3} title="Input Monitoring (only if required)" status={inputMonitoringStatus}>
+                <p className="first-run__item-hint">
+                  This feature is not required by the current Carbon shortcut and CGEvent paste path. It appeared because the running shell reported that an event-listening path needs it.
+                </p>
+                {!permissions.inputMonitoring && (
+                  <button type="button" onClick={() => void openPermissionPane("inputMonitoring")}>
+                    Open Input Monitoring settings
+                  </button>
+                )}
+              </ChecklistItem>
+            )}
+          </>
+        ) : (
+          <ChecklistItem index={1} title="System permissions" status="info">
+            <p className="first-run__item-hint">
+              Windows does not use these macOS TCC prompts. Dictation reports a concrete microphone or input-injection error if the OS blocks it.
+            </p>
+          </ChecklistItem>
+        )}
 
         <ChecklistItem
-          index={2}
+          index={languagesIndex}
           title="Which languages do you speak?"
           status={settings ? "done" : "not-started"}
         >
@@ -325,7 +427,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
           )}
         </ChecklistItem>
 
-        <ChecklistItem index={3} title="Download the speech models" status={speechStatus}>
+        <ChecklistItem index={modelsIndex} title="Download the speech models" status={speechStatus}>
           {speechStatus !== "done" && (
             <>
               {foundModels.length > 0 && (
@@ -352,7 +454,7 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
           ))}
         </ChecklistItem>
 
-        <ChecklistItem index={4} title="Install Ollama and download the summary model" status={ollamaItemStatus}>
+        <ChecklistItem index={ollamaIndex} title="Install Ollama and download the summary model" status={ollamaItemStatus}>
           {ollama?.installHint && (
             <p className="first-run__item-hint">{ollama.installHint}</p>
           )}

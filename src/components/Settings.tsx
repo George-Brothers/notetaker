@@ -118,7 +118,7 @@ function normalizeSettings(value: SettingsData): SettingsData {
     audioDevicePriority: candidate.audioDevicePriority ?? [],
     performanceMode: candidate.performanceMode ?? "auto",
     modelIdleUnload: candidate.modelIdleUnload ?? "5m",
-    cleanupModel: candidate.cleanupModel ?? "qwen3:1.7b",
+    cleanupModel: candidate.cleanupModel ?? "llama3.2:3b",
     dictationCleanupEnabled: candidate.dictationCleanupEnabled ?? true,
     dictationDictionary: candidate.dictationDictionary ?? [],
     dictationReplacements: candidate.dictationReplacements ?? {},
@@ -600,7 +600,7 @@ export function Settings({
   const installedModels = ollama?.models ?? [];
   const modelOptions = Array.from(new Set([settings?.llmModel ?? "", ...installedModels].filter(Boolean)));
   const cleanupModelOptions = Array.from(
-    new Set([settings?.cleanupModel ?? "qwen3:1.7b", ...installedModels].filter(Boolean)),
+    new Set([settings?.cleanupModel ?? "llama3.2:3b", ...installedModels].filter(Boolean)),
   );
 
   return (

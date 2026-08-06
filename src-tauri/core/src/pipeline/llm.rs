@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Cap on establishing the TCP connection only (not the response, which for
@@ -16,6 +16,28 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct LlmClient {
     pub base_url: String,
     pub model: String,
+}
+
+/// The application is local-only. Keep this check next to the HTTP client so
+/// every caller, including dictation cleanup, is protected when settings.json
+/// is edited by hand.
+pub fn is_local_ollama_url(base_url: &str) -> bool {
+    let Some((scheme, authority)) = base_url.trim().split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
+    let authority = authority.split('/').next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    host.eq_ignore_ascii_case("localhost") || matches!(host, "127.0.0.1" | "::1")
 }
 
 #[derive(Serialize)]
@@ -88,6 +110,9 @@ impl LlmClient {
         user: &str,
         keep_alive: KeepAlive,
     ) -> Result<String> {
+        if !is_local_ollama_url(&self.base_url) {
+            bail!("local-only Ollama rejected non-local address {}", self.base_url);
+        }
         let url = format!("{}/api/chat", self.base_url);
         let body = ChatRequest {
             model: &self.model,
@@ -127,6 +152,9 @@ impl LlmClient {
     where
         F: FnMut(&str),
     {
+        if !is_local_ollama_url(&self.base_url) {
+            bail!("local-only Ollama rejected non-local address {}", self.base_url);
+        }
         let url = format!("{}/api/chat", self.base_url);
         let body = ChatRequest {
             model: &self.model,
@@ -277,5 +305,15 @@ mod tests {
         assert_eq!(tokens, ["Hello", " there"]);
         assert_eq!(answer, "Hello there");
         m.assert();
+    }
+
+    #[test]
+    fn non_local_ollama_addresses_are_rejected_before_network_access() {
+        let llm = LlmClient {
+            base_url: "https://ollama.example.test".into(),
+            model: "small".into(),
+        };
+        let error = llm.chat("system", "user").unwrap_err().to_string();
+        assert!(error.contains("local-only Ollama"));
     }
 }

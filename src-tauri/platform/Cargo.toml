@@ -70,6 +70,7 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSData", "NSValue", "NSDictionary", "NSError"] }
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem"] }
 objc2-core-graphics = { version = "0.3", features = ["CGEvent", "CGEventTypes", "CGEventSource", "CGRemoteOperation"] }
+objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat"] }
 objc2-screen-capture-kit = { version = "0.3", features = ["SCStream", "SCShareableContent", "SCError", "block2", "dispatch2", "objc2-core-media", "objc2-core-graphics"] }
 objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer", "CMTime", "objc2-core-audio-types"] }
 # The `AudioBufferList` ScreenCaptureKit delivers audio in, and the serial queue

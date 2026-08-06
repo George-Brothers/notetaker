@@ -154,8 +154,9 @@ fn post_command_v(keycode: u16) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the physical key whose current layout produces `v`. On Dvorak and
-/// other layouts, blindly posting QWERTY keycode 9 inserts the wrong letter.
+/// Resolve the physical key whose current layout produces `v`. This follows
+/// OpenSuperWhisper's MIT-licensed layout-aware approach: on Dvorak and other
+/// layouts, blindly posting QWERTY keycode 9 inserts the wrong letter.
 fn current_layout_v_keycode() -> Option<u16> {
     unsafe {
         let source = TISCopyCurrentKeyboardLayoutInputSource();

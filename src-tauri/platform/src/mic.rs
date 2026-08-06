@@ -274,6 +274,15 @@ impl MicSource {
     pub fn dropped_samples(&self) -> usize {
         self.reader.dropped()
     }
+
+    /// The worker can end because the input device disappeared, which is
+    /// different from a user releasing the dictation key. Core uses this to
+    /// reject a partial utterance rather than silently pasting one.
+    pub fn failure_message(&self) -> Option<String> {
+        self.device_lost
+            .load(Ordering::Acquire)
+            .then(|| format!("{} disconnected while dictating", self.label))
+    }
 }
 
 impl Drop for MicSource {

@@ -84,7 +84,7 @@ const BASE_SETTINGS: Settings = {
   audioDevicePriority: [],
   performanceMode: "auto",
   modelIdleUnload: "5m",
-  cleanupModel: "qwen3:1.7b",
+  cleanupModel: "llama3.2:3b",
   dictationCleanupEnabled: true,
   dictationDictionary: [],
   dictationReplacements: {},
@@ -870,7 +870,7 @@ describe("First-run checklist", () => {
   it("states plainly that permissions are handled by the operating system", async () => {
     render(<App />);
     const card = await screen.findByRole("region", { name: "Getting started" });
-    expect(within(card).getByText("Microphone and screen-recording permissions")).toBeInTheDocument();
+    expect(within(card).getByText("System permissions")).toBeInTheDocument();
     expect(within(card).getByText("Handled by your operating system")).toBeInTheDocument();
   });
 

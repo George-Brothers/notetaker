@@ -185,6 +185,13 @@ function App() {
   libraryRef.current = lib;
   const dictationStatusRef = useRef(dictationStatus);
   dictationStatusRef.current = dictationStatus;
+  const dictationStartingRef = useRef(false);
+  const dictationStopPendingRef = useRef(false);
+
+  const applyDictationStatus = useCallback((status: DictationStatus) => {
+    dictationStatusRef.current = status;
+    setDictationStatus(status);
+  }, []);
 
   useEffect(() => {
     if (!isDesktop()) return;
@@ -208,7 +215,7 @@ function App() {
         .then((status) => {
           // Older desktop shells do not expose the dictation status command;
           // an empty IPC response must not erase the safe idle state.
-          if (!cancelled && status) setDictationStatus(status);
+          if (!cancelled && status) applyDictationStatus(status);
         })
         .catch((error) => {
           if (cancelled || dictationStatusRef.current.state === "idle") return;
@@ -225,7 +232,7 @@ function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [applyDictationStatus]);
 
   // The tray icon is the only thing that says "still recording" once the window
   // is hidden, so it follows capture state rather than being set at start/stop
@@ -502,30 +509,60 @@ function App() {
   }, []);
 
   const showDictationError = useCallback((error: unknown) => {
-    setDictationStatus({
+    applyDictationStatus({
       ...EMPTY_DICTATION_STATUS,
       state: "error",
       message: error instanceof Error ? error.message : String(error),
     });
-  }, []);
+  }, [applyDictationStatus]);
 
   const startDictation = useCallback(() => {
-    if (isDictating(dictationStatusRef.current.state)) return;
-    void api.startDictation().then(setDictationStatus).catch(showDictationError);
-  }, [showDictationError]);
+    if (isDictating(dictationStatusRef.current.state) || dictationStartingRef.current) return;
+    dictationStartingRef.current = true;
+    dictationStopPendingRef.current = false;
+    void api
+      .startDictation()
+      .then((status) => {
+        applyDictationStatus(status);
+        if (!dictationStopPendingRef.current || !isDictating(status.state)) return status;
+        // A very fast press/release can arrive before cold model loading has
+        // returned from IPC. Honor that release instead of leaving a dictation
+        // run active with no further key event available to stop it.
+        dictationStopPendingRef.current = false;
+        return api.stopDictation().then((stopped) => {
+          applyDictationStatus(stopped);
+          return stopped;
+        });
+      })
+      .catch(showDictationError)
+      .finally(() => {
+        dictationStartingRef.current = false;
+        dictationStopPendingRef.current = false;
+      });
+  }, [applyDictationStatus, showDictationError]);
 
   const stopDictation = useCallback(() => {
+    if (dictationStartingRef.current) {
+      dictationStopPendingRef.current = true;
+      return;
+    }
     if (!isDictating(dictationStatusRef.current.state)) return;
-    void api.stopDictation().then(setDictationStatus).catch(showDictationError);
-  }, [showDictationError]);
+    void api
+      .stopDictation()
+      .then(applyDictationStatus)
+      .catch(showDictationError);
+  }, [applyDictationStatus, showDictationError]);
 
   const cancelDictation = useCallback(() => {
     if (!isDictating(dictationStatusRef.current.state)) return;
-    void api.cancelDictation().then(setDictationStatus).catch(showDictationError);
-  }, [showDictationError]);
+    void api
+      .cancelDictation()
+      .then(applyDictationStatus)
+      .catch(showDictationError);
+  }, [applyDictationStatus, showDictationError]);
 
   const toggleDictation = useCallback(() => {
-    if (isDictating(dictationStatusRef.current.state)) stopDictation();
+    if (isDictating(dictationStatusRef.current.state) || dictationStartingRef.current) stopDictation();
     else startDictation();
   }, [startDictation, stopDictation]);
 

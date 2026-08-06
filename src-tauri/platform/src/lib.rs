@@ -70,6 +70,44 @@ pub struct PasteOutcome {
     pub message: String,
 }
 
+/// A non-prompting snapshot of the permissions that can make system-wide
+/// dictation appear to do nothing. The desktop shell serializes this rather
+/// than making the platform crate depend on serde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionStatus {
+    pub microphone: bool,
+    pub accessibility: bool,
+    pub input_monitoring: bool,
+    /// Carbon global shortcuts and CGEvent posting do not require Input
+    /// Monitoring. This remains a field so a future event-tap feature can
+    /// turn the onboarding card on without guessing from a failed dictate.
+    pub input_monitoring_required: bool,
+}
+
+/// Reads permission state without opening a prompt. A caller must re-run this
+/// after the user returns from System Settings; TCC changes are not pushed to
+/// the app as an event.
+pub fn permission_status() -> PermissionStatus {
+    #[cfg(target_os = "macos")]
+    {
+        macos::permissions::read()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::permissions::read()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // Linux is a build/served-UI host, not a shipping desktop target.
+        PermissionStatus {
+            microphone: true,
+            accessibility: true,
+            input_monitoring: true,
+            input_monitoring_required: false,
+        }
+    }
+}
+
 impl PasteOutcome {
     pub fn copied(message: impl Into<String>) -> Self {
         Self {

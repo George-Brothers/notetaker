@@ -13,6 +13,13 @@ export interface InputDevice {
   isDefault: boolean;
 }
 
+export interface PermissionStatus {
+  microphone: boolean;
+  accessibility: boolean;
+  inputMonitoring: boolean;
+  inputMonitoringRequired: boolean;
+}
+
 export async function listInputDevices(): Promise<InputDevice[]> {
   if (!isDesktop()) return [];
   try {
@@ -22,6 +29,32 @@ export async function listInputDevices(): Promise<InputDevice[]> {
     // an error. "System default" alone is the honest offer either way.
     return [];
   }
+}
+
+/**
+ * Non-prompting TCC/OS permission state. A null result means this is an old
+ * shell or a served browser build, not that a grant is absent; callers show
+ * that distinction rather than claiming a permission is denied.
+ */
+export async function getPermissionStatus(): Promise<PermissionStatus | null> {
+  if (!isDesktop()) return null;
+  return invoke<PermissionStatus>("permission_status");
+}
+
+const SYSTEM_SETTINGS_PANES: Record<"microphone" | "accessibility" | "inputMonitoring", string> = {
+  microphone: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+  accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+  inputMonitoring: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+};
+
+/** Opens the exact macOS Privacy pane for the card the user is looking at. */
+export async function openSystemSettings(
+  pane: keyof typeof SYSTEM_SETTINGS_PANES,
+): Promise<boolean> {
+  if (!isMacDesktop()) return false;
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(SYSTEM_SETTINGS_PANES[pane]);
+  return true;
 }
 
 /** The three icons the tray actually has. */
