@@ -77,35 +77,153 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build
 
-      - name: Write the signed update manifest
+      - name: Check the updater signature exists
         shell: pwsh
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis/*.exe' | Select-Object -First 1
           if (-not $installer) { throw "no NSIS installer was produced" }
-          $signaturePath = "$($installer.FullName).sig"
-          if (-not (Test-Path $signaturePath)) { throw "no updater signature found for $($installer.Name)" }
-          $signature = (Get-Content $signaturePath -Raw).Trim()
-          $release = @{
-            version = $env:RELEASE_TAG.TrimStart('v')
-            notes = 'See the release notes on GitHub.'
-            pub_date = (Get-Date).ToUniversalTime().ToString('o')
-            platforms = @{
-              'windows-x86_64' = @{
-                signature = $signature
-                url = "https://github.com/George-Brothers/notetaker/releases/download/$env:RELEASE_TAG/$($installer.Name)"
-              }
-            }
+          if (-not (Test-Path "$($installer.FullName).sig")) { throw "no updater signature found for $($installer.Name)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sig
+          if-no-files-found: error
+
+  macos-release:
+    name: Signed macOS release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-release
+          prefix-key: v2-notetaker-release
+          cache-directories: |
+            ~/Library/Caches/sherpa-rs
+
+      - name: Restore sherpa runtime libraries
+        working-directory: src-tauri
+        run: |
+          cargo clean -p sherpa-rs-sys || true
+          cargo clean -p sherpa-rs-sys --release || true
+
+      # The same certificate every local build signs with. TCC on macOS ties
+      # the Screen Recording grant to `certificate leaf`, so an update signed
+      # with any OTHER identity would silently orphan the user's permission —
+      # the exact bug this certificate exists to end. CI must therefore sign
+      # with the identical cert, imported from secrets into a throwaway
+      # keychain. The runner has passwordless sudo, so the self-signed cert
+      # can be trusted at the system level (headless — no GUI prompt exists).
+      - name: Import the signing certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_SIGNING_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+        run: |
+          echo "$CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security set-keychain-settings build.keychain
+          security import cert.p12 -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S "apple-tool:,apple:" -s -k ci build.keychain
+          openssl pkcs12 -in cert.p12 -passin env:CERT_PASSWORD -nokeys -clcerts -out cert.pem
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain cert.pem
+          rm -f cert.p12 cert.pem
+          security find-identity -v -p codesigning build.keychain
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # Deterministic order: sherpa's build script must copy its dylibs before
+      # the app crate's compile-time resource check looks for them.
+      - name: Compile release dependencies
+        working-directory: src-tauri
+        run: cargo build --release -p notetaker-core
+
+      - name: Build signed updater artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm tauri build
+
+      - name: Check the bundle signature and updater artifact
+        run: |
+          codesign --verify --deep --strict src-tauri/target/release/bundle/macos/Notetaker.app
+          codesign -dvv src-tauri/target/release/bundle/macos/Notetaker.app 2>&1 | grep "Authority=Notetaker Local Signing"
+          test -f src-tauri/target/release/bundle/macos/Notetaker.app.tar.gz
+          test -f src-tauri/target/release/bundle/macos/Notetaker.app.tar.gz.sig
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            src-tauri/target/release/bundle/macos/Notetaker.app.tar.gz
+            src-tauri/target/release/bundle/macos/Notetaker.app.tar.gz.sig
+            src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release and its update manifest
+    needs: [windows-release, macos-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # One latest.json for every platform, assembled from the signatures the
+      # build jobs produced. The installed apps poll this file; a platform
+      # missing from it simply never sees an update.
+      - name: Write the signed update manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, glob, datetime
+
+          tag = os.environ["RELEASE_TAG"]
+          base = f"https://github.com/George-Brothers/notetaker/releases/download/{tag}"
+
+          def entry(pattern):
+              [artifact] = glob.glob(pattern)
+              with open(artifact + ".sig") as f:
+                  sig = f.read().strip()
+              return {"signature": sig, "url": f"{base}/{os.path.basename(artifact)}"}
+
+          manifest = {
+              "version": tag.lstrip("v"),
+              "notes": "See the release notes on GitHub.",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "platforms": {
+                  "windows-x86_64": entry("artifacts/windows-release/*.exe"),
+                  "darwin-aarch64": entry("artifacts/macos-release/macos/*.app.tar.gz"),
+              },
           }
-          $release | ConvertTo-Json -Depth 5 | Set-Content 'latest.json' -NoNewline
-          Get-Content 'latest.json'
+          with open("latest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+          print(json.dumps(manifest, indent=2))
+          EOF
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/nsis/*.sig
+            artifacts/windows-release/*.exe
+            artifacts/windows-release/*.sig
+            artifacts/macos-release/macos/*.app.tar.gz
+            artifacts/macos-release/macos/*.app.tar.gz.sig
+            artifacts/macos-release/dmg/*.dmg
             latest.json
