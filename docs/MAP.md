@@ -636,52 +636,110 @@ appearance, and the second is the one that ships.
   and loading a 1.6 GB model onto Metal takes ~20 s. It looks dead for that
   whole time.
 
+## The signature, and the silence (2026-08-05, second pass)
+First real use on the Mac reproduced the Windows symptom exactly: an
+eleven-minute Zoom recording with a 5 MB `audio-mic.flac` beside a **0-byte**
+`audio-system.wav`, `status: "failed"`, and an error blaming a "damaged" file.
+The mic was perfect. Two separate bugs produced it.
+
+**Tauri never signed the bundle.** What shipped was the linker's automatic
+ad-hoc signature — `Identifier=notetaker-0764321f84a1de0c` against a
+`CFBundleIdentifier` of `com.georgebrothers.notetaker`, `Info.plist=not bound`,
+and `codesign --verify` failing with *"code has no resources but signature
+indicates they must be present"*. **TCC identifies an app by its code
+signature**, so a Screen Recording grant had nothing stable to attach to and did
+not survive a rebuild. `signingIdentity: "-"` fixes it; the bundle now verifies
+valid and satisfies its Designated Requirement.
+
+That turns on the **hardened runtime**, which is why `entitlements.plist` now
+exists. Under it macOS refuses the microphone without
+`com.apple.security.device.audio-input`, and refuses to load the unsigned ONNX
+and sherpa dylibs out of `Contents/Frameworks` without
+`com.apple.security.cs.disable-library-validation`. Neither failure announces
+itself.
+
+**The second bug is the one worth remembering.** *macOS does not report a
+missing Screen Recording grant.* `SCShareableContent` returns displays,
+`startCapture` completes without error, and the delegate is simply never called
+— so the code believed it was recording. Every design in this file had assumed a
+refusal would arrive as an error.
+
+The discriminator is measured, not reasoned:
+
+| Screen Recording | nothing playing | audio playing |
+|---|---|---|
+| granted | 78,463 samples, peak **0.0000** | ~79,000 samples, peak 0.2966 |
+| not granted | **nothing at all** | **nothing at all** |
+
+A silent room still streams buffers at full rate; a missing grant streams
+nothing. So `start()` waits three seconds for a first *buffer* (not a non-zero
+sample — that would fail on a quiet room) and treats its absence as a refusal.
+Meeting mode then declines with the plain-English message, which is what the
+`CaptureSources::system` contract always intended.
+
+**The wider lesson: a permission that is missing usually looks like data that is
+absent, not like an error.** Anywhere the app depends on a grant it did not
+verify, assume silence rather than a failure, and check for arrival.
+
+**Also found: the two front ends use different app directories.** The Tauri
+shell calls `app.path().app_data_dir()` →
+`~/Library/Application Support/com.georgebrothers.notetaker`, while
+`notetaker-serve` uses `paths::default_app_dir()` →
+`~/Library/Application Support/Notetaker`. Different `index.sqlite`, different
+`settings.json`, different logs — despite `open_runtime`'s comment promising the
+two transports are built identically. Not yet fixed; it cost an hour of reading
+the wrong log file.
+
 ## Next
 1. **Windows system audio is still 0 bytes.** The Mac working tells us nothing
    about WASAPI. Re-run a Windows recording with sound definitely playing, and
    if it is still empty, port the diagnostic-example approach to Windows — it is
    what found the Mac bug in one run.
-2. **Non-speech leaks into transcripts, from both engines.** Whisper writes
+2. **The two front ends disagree on the app directory.** The Tauri shell
+   uses `app.path().app_data_dir()`, `notetaker-serve` uses
+   `paths::default_app_dir()`. Two indexes, two settings files, two logs, on
+   every OS. Pick one — `paths::` is the contract — and migrate.
+3. **Non-speech leaks into transcripts, from both engines.** Whisper writes
    `[MUSIC PLAYING]` and `[BLANK_AUDIO]`; SenseVoice hallucinates a short
    interjection (`あ。`) onto the same silence. Both were seen in real audio on
    2026-07-30. Whisper's markers are trivially filterable; SenseVoice's are not
    distinguishable from a real short utterance, so the honest fix is probably a
    VAD gate before transcription rather than a text filter after it.
-3. **Whisper pads every call to a 30-second window.** A recording with many
+4. **Whisper pads every call to a 30-second window.** A recording with many
    short diarization segments therefore costs 30 s of compute per segment
    regardless of length — 70 segments of a 4-minute recording took over ten
    minutes. This predates routing and is the single biggest processing cost in
    the app. Batching adjacent same-speaker spans would cut it directly.
-4. **On the PC — the one thing left.** It is installed and it runs. **No audio
+5. **On the PC — the one thing left.** It is installed and it runs. **No audio
    device has ever produced a sample through this code**, on any platform, and
    nothing else has been exercised on hardware either: the model download, a
    recording, a transcription. Hit Record and find out. This can be driven from
    here through `powershell.exe` (see "Build environment") rather than handed
    to him as a chore.
-5. **On the Mac — a full run through the app itself.** The pieces are all
+6. **On the Mac — a full run through the app itself.** The pieces are all
    verified individually; what has *not* happened is one recording taken end to
    end inside `Notetaker.app` — permission dialogs accepted as the bundle rather
    than as a terminal, a meeting recorded, transcribed on Metal, and summarized
    by Ollama (`qwen3:8b` is installed and serving). That needs a person to click
    Allow twice, and is the last thing standing between this and a working Mac
    product. Re-run the bake-off against `large-v3-turbo` while there.
-6. **A macOS packaging job in CI**, mirroring `package-windows` — build the
+7. **A macOS packaging job in CI**, mirroring `package-windows` — build the
    `.app`/`.dmg` and assert every `@rpath` load resolves inside the bundle, the
    way the Windows job reads import tables. The `.app` is currently only ever
    built by hand.
-7. **`tauri build` cannot finish unattended.** `createUpdaterArtifacts` is on
+8. **`tauri build` cannot finish unattended.** `createUpdaterArtifacts` is on
    and the signing step fails with *"A public key has been found, but no private
    key"* — `TAURI_SIGNING_PRIVATE_KEY` is unset. The `.app` and `.dmg` are
    produced before it fails, so this is not fatal to a local build, but no
    release can be cut until the key is available.
-8. **82 frontend tests fail on the UI-overhaul branch**, in three files, all
+9. **82 frontend tests fail on the UI-overhaul branch**, in three files, all
    from one cause: `shell` is undefined at `capture.test.tsx:475`, so
    `shell.handlers.clear()` throws in `beforeEach`. Confirmed pre-existing by
    running them on the untouched branch — unrelated to any Mac work. It makes
    `pnpm test` useless as a gate until fixed.
-9. **Signing.** The installer is unsigned, so SmartScreen warns on first launch.
+10. **Signing.** The installer is unsigned, so SmartScreen warns on first launch.
    Fine for one user; a wall for anyone else. Needs a certificate, i.e. money.
-10. **Windows truth pass for the UI overhaul** — nothing about the frameless
+11. **Windows truth pass for the UI overhaul** — nothing about the frameless
    window, the tray, or the global hotkeys has been verified on real
    hardware yet; CI compiles and bundles the app but never opens a window.
    Install the CI build, then check: tray icon states (idle/recording/
@@ -690,15 +748,15 @@ appearance, and the second is the one that ships.
    closed, titlebar drag / double-click / edge-snap, autostart after a
    reboot, mic picker lists real devices, `PrintWindow` screenshots of dark
    + light against the pitch.
-11. **Light-mode contrast on the first-run gradient title.** The "Getting
+12. **Light-mode contrast on the first-run gradient title.** The "Getting
    started" heading (15px/600, gradient `background-clip: text`) measures
    4.41:1 at its cyan end — just under the 4.5:1 WCAG AA minimum for that
    size and weight. Dark mode is fine.
-12. **The playhead thumb's glow is WebKit-only.**
+13. **The playhead thumb's glow is WebKit-only.**
    `input[type="range"]::-webkit-slider-thumb` carries the accent glow in
    `panels.css`; there is no `::-moz-range-thumb` rule, so Firefox users of
    the served web UI see a playhead with no glow.
-13. **No `forced-colors` fallback on gradient text.** The same first-run
+14. **No `forced-colors` fallback on gradient text.** The same first-run
     title uses `color: transparent` + `background-clip: text` with nothing
     behind it for Windows High Contrast Mode — it could render invisible
     there.
