@@ -3,19 +3,20 @@
 //! The microphone is not here — `cpal` covers both platforms, so it lives in
 //! [`crate::mic`] and needs nothing macOS-specific.
 //!
-//! # System audio is deliberately not implemented yet
+//! # System audio, written 2026-08-05
 //!
-//! Mr. Brothers' build order for this plan was Windows plus CI first, macOS
-//! after, because the Mac hardware only arrives ~2026-07-30 and Windows is the
-//! platform whose capture code can be compile-verified *and* CI-tested without
-//! it. [`speaker`] therefore holds the design and the reason it is not written
-//! blind, not a guess at an implementation.
+//! The build order for this plan was Windows plus CI first and macOS after,
+//! because Windows is the platform whose capture code can be compile-verified
+//! *and* CI-tested without the hardware. For most of that time [`speaker`] held
+//! a design and a deliberate error return rather than a guess at an
+//! implementation, and a Mac recorded in-person mode while declining meeting
+//! mode with a plain-English message.
 //!
-//! In the meantime a Mac records in-person mode normally and declines meeting
-//! mode with a plain-English message. That is core's existing
-//! `CaptureSources::system` contract — an error there means "I cannot capture
-//! the other side of a call", and meeting mode refuses rather than silently
-//! recording half a conversation. Deliberately not changed here.
+//! It is implemented now, on a real Mac. An error from it still means what
+//! core's `CaptureSources::system` contract says — "I cannot capture the other
+//! side of a call", so meeting mode refuses rather than silently recording half
+//! a conversation — but the case that now produces one is a refused **Screen
+//! Recording** permission, and the message says where to grant it.
 
 pub mod power;
 pub mod speaker;

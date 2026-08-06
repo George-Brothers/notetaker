@@ -50,5 +50,21 @@ tempfile = "3.27.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 cpal = "0.16.0"
 
+# Metal, on macOS only.
+#
+# This is not an optimization — it is what `Tier::AppleSiliconBig` already
+# promises. `models::detect_tier` puts any Apple Silicon machine with >= 16 GB
+# on the large model, and the comment there justifies it with "the large model
+# on the GPU". Without this feature `whisper-rs` builds with `default = []`,
+# there is no GPU path at all, and that tier quietly means "the large model on
+# the CPU" — the worst of both choices. A 4-minute recording already costs over
+# ten minutes on CPU (see docs/MAP.md, "Next"), so the tier would be selecting
+# for a machine that cannot honour it.
+#
+# Declared here rather than in `[dependencies]` because cargo unions features
+# across target sections: the base `whisper-rs` line stays featureless for
+# Windows and Linux, and only a macOS build pulls the Metal path in.
+whisper-rs = { version = "0.16.0", features = ["metal"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 cpal = "0.16.0"

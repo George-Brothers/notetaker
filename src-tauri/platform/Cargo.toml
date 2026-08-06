@@ -62,5 +62,12 @@ windows = { version = "0.62.2", features = [
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSValue", "NSDictionary", "NSError"] }
 objc2-core-graphics = { version = "0.3", features = ["CGEventSource"] }
-objc2-screen-capture-kit = { version = "0.3", features = ["SCStream", "SCShareableContent", "block2", "objc2-core-media", "objc2-core-graphics"] }
-objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer"] }
+objc2-screen-capture-kit = { version = "0.3", features = ["SCStream", "SCShareableContent", "SCError", "block2", "dispatch2", "objc2-core-media", "objc2-core-graphics"] }
+objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer", "CMTime", "objc2-core-audio-types"] }
+# The `AudioBufferList` ScreenCaptureKit delivers audio in, and the serial queue
+# its callbacks are delivered on. `dispatch2` is pure Rust over libdispatch's C
+# ABI, so it keeps the cross-check property this crate's manifest is built
+# around — see the note above `[dependencies]`.
+objc2-core-audio-types = "0.3"
+dispatch2 = "0.3"
+block2 = "0.6"

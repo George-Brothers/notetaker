@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist by Tauri's macOS bundler.
+
+  `NSMicrophoneUsageDescription` is not documentation and not a nicety. On
+  macOS a process that touches the microphone without this key is **killed by
+  the operating system** the instant it does so — not an error, not a denied
+  permission, a termination. The app would have died on the first press of
+  Record with nothing in the UI to explain it.
+
+  There is deliberately no key here for Screen Recording, which is what
+  ScreenCaptureKit needs to capture the other side of a call. macOS has no
+  usage-description key for that permission: it is granted in System Settings
+  and there is nothing an app can put in its plist to ask for it. The
+  plain-English explanation therefore has to come from our own code, and it
+  does — see `platform/src/macos/speaker.rs`.
+
+  Both strings are written for someone who is not an engineer, because these
+  are read inside a system dialog by a person deciding whether to trust the
+  app. They also state the thing that matters most about this product: nothing
+  leaves the machine.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Notetaker needs the microphone to record your meetings and classes. Recordings are transcribed on this computer and are never sent anywhere.</string>
+
+	<!--
+	  Recording the sound of a call means capturing what the speakers are
+	  playing, which macOS treats as screen recording even though Notetaker
+	  never looks at the picture.
+	-->
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Notetaker needs permission to record this computer's sound so it can hear everyone else on a call. It only captures audio, never the picture on your screen.</string>
+</dict>
+</plist>

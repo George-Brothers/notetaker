@@ -35,9 +35,13 @@ impl CaptureSources for PlatformSources {
     }
 
     fn system(&self) -> Result<Box<dyn AudioSource>> {
-        // On macOS this currently returns an error on purpose, which is how the
-        // `CaptureSources::system` contract says "this platform cannot capture
-        // the other side of a call" — meeting mode then declines to start.
+        // Both platforms can now capture the other side of a call: WASAPI
+        // loopback on Windows, ScreenCaptureKit on macOS. An error from either
+        // still means what the `CaptureSources::system` contract says it means
+        // — meeting mode declines to start rather than recording half a
+        // conversation — but on macOS it now describes a *refused permission*
+        // rather than an unimplemented platform, and the message says how to
+        // grant it.
         #[cfg(target_os = "windows")]
         {
             Ok(Box::new(

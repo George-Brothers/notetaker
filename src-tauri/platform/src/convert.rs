@@ -111,6 +111,47 @@ pub fn interleaved_f32_to_mono(data: &[f32], channels: usize, out: &mut Vec<f32>
     frames
 }
 
+/// Downmixes **planar** (non-interleaved) `f32` channels into mono.
+///
+/// This is the ScreenCaptureKit path, and it is a genuinely different memory
+/// layout rather than a variation on one. An interleaved stereo buffer is
+/// `LRLRLR`; ScreenCaptureKit hands over an `AudioBufferList` holding one
+/// buffer *per channel* — `LLL` and `RRR` — so each plane arrives as its own
+/// slice.
+///
+/// Getting this wrong is the exact failure [`to_mono_f32`]'s module docs warn
+/// about. Feeding a planar buffer to [`interleaved_f32_to_mono`] does not error:
+/// it reads `L[0]` and `L[1]` as if they were a left/right pair, and produces a
+/// recording that is audible, half the intended length, and playing at double
+/// speed. Nothing downstream can tell that from a misconfigured device, which
+/// is why the two layouts get two functions instead of a `bool`.
+///
+/// Frames are taken as the length of the **shortest** plane. Channels of
+/// unequal length mean we have misread the buffer list, and reading past the
+/// end of the short one would be unsound; truncating keeps the audio correct
+/// and lets the returned frame count show the drift.
+///
+/// No planes, or planes of zero length, yields nothing.
+pub fn planar_f32_to_mono(planes: &[&[f32]], out: &mut Vec<f32>) -> usize {
+    if planes.is_empty() {
+        return 0;
+    }
+    let frames = planes.iter().map(|p| p.len()).min().unwrap_or(0);
+    if frames == 0 {
+        return 0;
+    }
+
+    out.reserve(frames);
+    let channels = planes.len() as f32;
+    for f in 0..frames {
+        // Averaging, not summing — same reason as `downmix`: two channels at
+        // full scale must stay at full scale rather than clipping at 2.0.
+        let sum: f32 = planes.iter().map(|p| p[f]).sum();
+        out.push(sum / channels);
+    }
+    frames
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +361,85 @@ mod tests {
     fn interleaved_f32_zero_channels_is_safe() {
         let mut out = Vec::new();
         assert_eq!(interleaved_f32_to_mono(&[1.0, 2.0], 0, &mut out), 0);
+    }
+
+    // --- planar (ScreenCaptureKit) ---------------------------------------
+
+    #[test]
+    fn planar_f32_stereo_averages_the_two_planes() {
+        let left = [1.0f32, 0.0, 0.5];
+        let right = [0.0f32, 1.0, 0.5];
+        let mut out = Vec::new();
+        let n = planar_f32_to_mono(&[&left, &right], &mut out);
+        assert_eq!(n, 3);
+        assert_eq!(out, vec![0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn planar_f32_single_plane_is_a_passthrough() {
+        let only = [0.1f32, -0.2, 0.3];
+        let mut out = Vec::new();
+        assert_eq!(planar_f32_to_mono(&[&only], &mut out), 3);
+        assert_eq!(out, vec![0.1, -0.2, 0.3]);
+    }
+
+    /// The whole reason this function exists, stated as a test.
+    ///
+    /// Same bytes, two layouts, two different recordings — and neither one
+    /// errors. Planar `LLL`/`RRR` read as interleaved comes out at half the
+    /// length, which is a recording that plays at double speed.
+    #[test]
+    fn planar_and_interleaved_disagree_on_the_same_numbers() {
+        let left = [1.0f32, 1.0, 1.0];
+        let right = [0.0f32, 0.0, 0.0];
+
+        let mut planar = Vec::new();
+        planar_f32_to_mono(&[&left, &right], &mut planar);
+        assert_eq!(planar, vec![0.5, 0.5, 0.5], "three frames at half scale");
+
+        // The same six numbers laid end to end, misread as interleaved stereo.
+        let flat: Vec<f32> = left.iter().chain(right.iter()).copied().collect();
+        let mut wrong = Vec::new();
+        interleaved_f32_to_mono(&flat, 2, &mut wrong);
+        // Pairs (1,1), (1,0), (0,0) — three frames, but not the same three.
+        assert_eq!(wrong, vec![1.0, 0.5, 0.0], "three frames, but the wrong ones");
+
+        assert_ne!(planar, wrong);
+    }
+
+    /// Unequal planes mean the buffer list was misread. Truncating to the
+    /// shortest keeps this in bounds; the frame count is what shows the drift.
+    #[test]
+    fn planar_f32_truncates_to_the_shortest_plane() {
+        let left = [1.0f32, 1.0, 1.0, 1.0];
+        let right = [1.0f32, 1.0];
+        let mut out = Vec::new();
+        assert_eq!(planar_f32_to_mono(&[&left, &right], &mut out), 2);
+        assert_eq!(out, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn planar_f32_no_planes_or_empty_planes_are_safe() {
+        let mut out = Vec::new();
+        assert_eq!(planar_f32_to_mono(&[], &mut out), 0);
+
+        let empty: [f32; 0] = [];
+        let full = [1.0f32, 2.0];
+        assert_eq!(planar_f32_to_mono(&[&empty], &mut out), 0);
+        assert_eq!(planar_f32_to_mono(&[&full, &empty], &mut out), 0);
+        assert!(out.is_empty());
+    }
+
+    /// Four channels average, rather than the first channel winning. Some
+    /// aggregate devices present more than two.
+    #[test]
+    fn planar_f32_handles_more_than_two_channels() {
+        let a = [1.0f32];
+        let b = [0.0f32];
+        let c = [1.0f32];
+        let d = [0.0f32];
+        let mut out = Vec::new();
+        planar_f32_to_mono(&[&a, &b, &c, &d], &mut out);
+        assert_eq!(out, vec![0.5]);
     }
 }

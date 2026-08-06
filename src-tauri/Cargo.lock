@@ -2903,10 +2903,13 @@ name = "notetaker-platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "cpal",
+ "dispatch2",
  "hound",
  "log",
  "objc2",
+ "objc2-core-audio-types",
  "objc2-core-graphics",
  "objc2-core-media",
  "objc2-foundation",
