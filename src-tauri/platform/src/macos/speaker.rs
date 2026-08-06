@@ -262,6 +262,10 @@ struct OutputIvars {
     /// sample totals because a silent room legitimately produces zero-valued
     /// samples, and only the *absence of buffers* means "not permitted".
     buffers: Arc<AtomicUsize>,
+    /// Buffers that arrived but yielded no audio. Non-zero alongside a healthy
+    /// buffer count means the stream is running and the extraction is wrong —
+    /// a distinction that is invisible from the resulting silent file.
+    unreadable: Arc<AtomicUsize>,
 }
 
 define_class!(
@@ -291,13 +295,26 @@ define_class!(
                 return;
             }
 
-            self.ivars().buffers.fetch_add(1, Ordering::Relaxed);
+            let seen = self.ivars().buffers.fetch_add(1, Ordering::Relaxed);
 
             let mut mono = Vec::new();
             // SAFETY: `sample_buffer` is the buffer ScreenCaptureKit just handed
             // us and is valid for this call.
             let ok = unsafe { copy_audio(sample_buffer, &mut mono) };
+
+            // The first buffer decides whether this recording has system audio
+            // at all, so say what happened to it exactly once. Silence here is
+            // what a 0-byte audio-system track looks like from the inside.
+            if seen == 0 {
+                log::info!(
+                    "system audio: first buffer {}, {} samples",
+                    if ok { "read" } else { "COULD NOT BE READ" },
+                    mono.len()
+                );
+            }
+
             if !ok || mono.is_empty() {
+                self.ivars().unreadable.fetch_add(1, Ordering::Relaxed);
                 return;
             }
 
@@ -323,11 +340,13 @@ impl AudioOutput {
         writer: RingWriter,
         overflowed: Arc<AtomicUsize>,
         buffers: Arc<AtomicUsize>,
+        unreadable: Arc<AtomicUsize>,
     ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(OutputIvars {
             writer: Mutex::new(writer),
             overflowed,
             buffers,
+            unreadable,
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -530,7 +549,8 @@ fn start_stream(
         });
     }
 
-    let output = AudioOutput::new(writer, overflowed, Arc::clone(&buffers));
+    let unreadable = Arc::new(AtomicUsize::new(0));
+    let output = AudioOutput::new(writer, overflowed, Arc::clone(&buffers), unreadable);
     let stream = unsafe {
         SCStream::initWithFilter_configuration_delegate(SCStream::alloc(), &filter, &config, None)
     };

@@ -1,3 +1,92 @@
+# Handover — 2026-08-05 (macOS bring-up)
+
+Read `docs/MAP.md` first — especially **"The Mac day"** and **"The signature,
+and the silence"**. This file is only what is in flight right now.
+
+## Where the work is
+
+Branch **`claude/notetaker-mac-support-907380`**, rebased onto
+`origin/claude/app-ui-ux-overhaul-96e4c6` (the UI overhaul, 55 commits ahead of
+`main`). **Nothing has been pushed.** `main` is *not* the base — building on it
+was a mistake caught early and corrected by rebase.
+
+Commits, oldest first:
+1. `feat(macos)` — ScreenCaptureKit system audio, Metal, Info.plist, dylibs
+2. `fix(macos)` — the two-pass `AudioBufferList`, plus the capture examples
+3. `docs` — the Mac day
+4. `fix(macos)` — bundle signing, entitlements, first-buffer permission check
+5. `docs` — a missing permission looks like absent data
+
+## State: the Mac works
+
+Verified on this machine, not reasoned about:
+
+- Builds all four crates natively (~30 s cold). **535 Rust tests pass, clippy
+  clean at `-D warnings`**, frontend typechecks.
+- **Metal is live** — `GPU name: Apple M5 Pro`, `Metal total size = 1623.92 MB`
+  for `large-v3-turbo`. No Xcode required.
+- **Both capture paths produce real audio.** `--example system-audio`: 79,146
+  samples, peak 0.2966. `--example microphone`: 79,487 samples, "MacBook Pro
+  Microphone".
+- **A full meeting recording through the real `Session` path works**:
+  `audio-mic.flac` + `audio-system.flac` (8.08 s, 16 kHz mono, valid FLAC), with
+  `system audio: first buffer read, 960 samples` in the log.
+- `.app` and `.dmg` build, properly ad-hoc signed
+  (`Identifier=com.georgebrothers.notetaker`, Info.plist bound, hardened
+  runtime, `codesign --verify --deep` valid), all dylibs resolving from
+  `Contents/Frameworks`.
+
+## The one thing not yet proven
+
+**A recording inside `Notetaker.app` itself, with sound actually audible.**
+
+- The app's Screen Recording grant could not be tested end to end because
+  **macOS output is muted** (`output muted: true`, volume 69). Every system
+  track captured so far is therefore *valid but silent*. Unmute, then record.
+- Mr. Brothers says he has now granted permission to the app. `start_capture`
+  has still never appeared in the app's log, so **no recording has yet been
+  attempted through the app UI** — only through `notetaker-serve`.
+- I cannot drive the app: `osascript` is refused ("not allowed to send
+  keystrokes") because Accessibility is not granted to the terminal. Either he
+  presses Record, or he grants Accessibility and the hotkey
+  `Cmd+Option+N` can be sent.
+
+## Traps that already cost time — do not repeat
+
+- **Two app directories.** The Tauri shell uses `app.path().app_data_dir()` →
+  `~/Library/Application Support/com.georgebrothers.notetaker`;
+  `notetaker-serve` uses `paths::default_app_dir()` →
+  `~/Library/Application Support/Notetaker`. Different logs, index and settings.
+  **When debugging the app, read the bundle-id one.** (Next item 2.)
+- **Rebuild the binary you are about to test.** A Session test was run against a
+  `notetaker-serve` built *before* the two-pass fix; its 44-byte
+  `audio-system.wav` was misread as a capture bug that had already been fixed.
+- **A missing permission looks like absent data, not an error.** ScreenCaptureKit
+  reports success and simply never calls back.
+- `pnpm tauri build` always ends with `Error A public key has been found, but no
+  private key` (updater signing, `TAURI_SIGNING_PRIVATE_KEY` unset). **The
+  `.app` and `.dmg` are already written when this fires** — it is not a failed
+  build.
+- Homebrew rustup lives at `/opt/homebrew/opt/rustup/bin`, **not** `~/.cargo/bin`.
+
+## Known-bad, pre-existing, not mine
+
+**82 frontend tests fail** in 3 files on the UI-overhaul branch — `shell` is
+undefined at `capture.test.tsx:475`, so `shell.handlers.clear()` throws in
+`beforeEach`. Confirmed by running them on the untouched branch. `pnpm test` is
+useless as a gate until fixed. (Next item 9.)
+
+## Housekeeping owed
+
+Two throwaway recordings I created are sitting in his library and should
+probably go — **not deleted without his word**:
+`~/Notetaker/Unsorted/2026-08-05 21.01 Mac end-to-end capture test` and
+`2026-08-05 21.06 system audio diagnostic`. His real one,
+`2026-08-05 19.39 Zoom meeting`, has an intact 5 MB mic track and a 0-byte
+system track — keep it.
+
+---
+
 # Handover — 2026-08-01
 
 Read `docs/MAP.md` first; this file only covers what is in flight right now.
