@@ -1286,7 +1286,7 @@ export function Settings({
                         <option value="topCenter">Top center</option>
                         <option value="bottomCenter">Bottom center</option>
                       </select>
-                      <p className="settings-hint">Meeting controls use this saved position. While dictating, the flow bar moves to bottom-center so it stays near the active cursor without covering the top edge.</p>
+                      <p className="settings-hint">Your choice is saved now. Applying positions beyond the current top-right placement is ticketed for the desktop window-positioning pass. While dictating, the flow bar moves to bottom-center so it stays near the active cursor without covering the top edge.</p>
                     </div>
 
                     <div className="settings-field">
