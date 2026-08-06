@@ -166,9 +166,18 @@ export interface Settings {
   hotkeyShowHide: string;
   /** Closing the window hides to the tray instead of quitting. */
   closeToTray: boolean;
+  /** When the floating meeting overlay appears. Desktop-shell-only. */
+  overlay: OverlayMode;
 }
 
 export type SpeechEngine = "auto" | "whisper" | "senseVoice";
+
+/**
+ * When the floating overlay (the always-on-top recording pill) shows:
+ * never, with each recording, or from the moment a meeting is detected —
+ * where it doubles as the "record this?" prompt.
+ */
+export type OverlayMode = "off" | "recording" | "meeting";
 
 /** One model the app needs and does not have. */
 export interface MissingModel {

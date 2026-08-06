@@ -27,6 +27,34 @@ non-empty `audio-system.flac` in this app's life. In-app log shows
 every "dead" press had actually called `start_capture`, opened the mic, then
 hit the orphaned permission and rolled back silently.
 
+## Also shipped tonight, after the fixes above
+
+- **Native macOS chrome** — traffic lights via `titleBarStyle: Overlay`, the
+  Windows-style controls render nothing on Mac, header steps right 84px. The
+  trap: the window-state plugin restored `decorated: false` from old builds
+  over the new config; DECORATIONS is now excluded from remembered state.
+- **The tray grew up** — live status line with elapsed time, Record meeting /
+  Record in person, Pause/Resume, Stop; recording actions don't open the
+  window (that's the point of a tray). Driven by the frontend's existing 1s
+  poll via `set_tray_status(state, statusLine)`.
+- **The floating overlay** — a 300×48 always-on-top pill (own webview,
+  `index.html#overlay`): pulsing dot, elapsed, pause/resume, stop, open-app.
+  Content-protected (never in screen shares), follows across workspaces.
+  Settings → Recording → "Floating overlay": while recording (default) /
+  when a meeting is detected (pill becomes the record-this? prompt) / never.
+  Architecture: the main window owns all state and emits `overlay-sync`; the
+  pill answers with intent events handled by the same code as the tray. Do
+  not let the overlay poll — `poll_meetings` drains, two pollers steal
+  events from each other.
+- **The release pipeline does macOS now** — every `v*` tag builds signed
+  Windows + macOS updater artifacts and one `latest.json` for both. CI signs
+  with the same "Notetaker Local Signing" cert (from repo secrets), so
+  updates keep the TCC grant. v0.1.2 was in flight at handover time.
+- **Competitor research** commissioned and filed:
+  `docs/superpowers/specs/2026-08-05-competitor-research.md` — ranked
+  steal-list; top item is live "catch me up" over the running transcript via
+  the local LLM.
+
 ## New problems found tonight, in priority order
 
 1. **Processing fails with `error: "diarization"`, 5 attempts,** on the 21:48

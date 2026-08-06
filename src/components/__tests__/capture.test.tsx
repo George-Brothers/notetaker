@@ -137,6 +137,7 @@ const ZOOM_STARTED_ALWAYS: MeetingEvent = {
 };
 
 const BASE_SETTINGS: SettingsData = {
+  overlay: "recording",
   storageRoot: "/Users/george/Notetaker",
   llmBaseUrl: "http://localhost:11434",
   llmModel: "qwen2.5:7b",

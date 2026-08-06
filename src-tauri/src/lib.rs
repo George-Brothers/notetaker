@@ -308,8 +308,8 @@ fn setup_status(rt: State<'_, Runtime>) -> Result<Value, String> {
 // is the only caller, which checks `isDesktop()` before every one of them.
 
 #[tauri::command]
-fn set_tray_status(app: tauri::AppHandle, state: String) {
-    tray::set_state(&app, &state);
+fn set_tray_status(app: tauri::AppHandle, state: String, status_line: String) {
+    tray::set_state(&app, &state, &status_line);
 }
 
 #[derive(serde::Serialize)]
@@ -415,6 +415,45 @@ pub fn run() {
             // icon in its resource table, and `tray_by_id` is how it is reached
             // again.
             tray::build(&app.handle().clone())?;
+
+            // The floating overlay: a small always-on-top pill the main
+            // webview shows and hides (its visibility policy lives in
+            // settings, which the main webview already watches). Created here
+            // rather than in config so the macOS overlay file doesn't have to
+            // mirror the whole windows array. Hidden until wanted.
+            //
+            // `content_protected` keeps it out of screen shares — a recording
+            // indicator the other side of the call can see is a worse
+            // presence than a bot. `visible_on_all_workspaces` because a
+            // meeting is usually fullscreen on its own space, which is
+            // exactly where the pill must follow.
+            {
+                let overlay = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "overlay",
+                    tauri::WebviewUrl::App("index.html#overlay".into()),
+                )
+                .title("Notetaker overlay")
+                .inner_size(300.0, 48.0)
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
+                .decorations(false)
+                .always_on_top(true)
+                .visible_on_all_workspaces(true)
+                .content_protected(true)
+                .skip_taskbar(true)
+                .visible(false)
+                .build()?;
+                // Top-right of the primary screen, clear of the menu bar and
+                // the notch, mirroring where every OS puts its own overlays.
+                if let Ok(Some(monitor)) = overlay.primary_monitor() {
+                    let size = monitor.size();
+                    let scale = monitor.scale_factor();
+                    let x = (size.width as f64 / scale) - 300.0 - 16.0;
+                    let _ = overlay.set_position(tauri::LogicalPosition::new(x, 48.0));
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

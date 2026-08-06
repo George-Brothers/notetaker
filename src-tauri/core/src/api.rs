@@ -173,6 +173,25 @@ pub struct Settings {
     /// Closing the window hides to the tray instead of quitting.
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
+    /// When the floating meeting overlay appears. Desktop-shell-only — the
+    /// served browser UI has no windows to float.
+    #[serde(default)]
+    pub overlay: OverlayMode,
+}
+
+/// When the floating overlay (the little always-on-top recording pill) shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayMode {
+    /// Never.
+    Off,
+    /// While a recording is running — it appears with the recording and
+    /// leaves with it.
+    #[default]
+    Recording,
+    /// From the moment a meeting is detected: doubles as the "record this?"
+    /// prompt before anything is captured, then stays for the recording.
+    Meeting,
 }
 
 /// Which speech model transcribes a recording.
@@ -276,6 +295,7 @@ impl Default for Settings {
             min_idle_secs: default_min_idle_secs(),
             require_ac: default_true(),
             keep_wav: false,
+            overlay: OverlayMode::default(),
             input_device: None,
             hotkey_toggle_record: default_hotkey_toggle_record(),
             hotkey_show_hide: default_hotkey_show_hide(),
@@ -1053,6 +1073,7 @@ mod tests {
             keep_wav: true,
             languages: vec!["en".to_string(), "zh".to_string()],
             speech_engine: SpeechEngine::SenseVoice,
+            overlay: OverlayMode::Meeting,
             input_device: None,
             hotkey_toggle_record: "CommandOrControl+Alt+N".to_string(),
             hotkey_show_hide: "CommandOrControl+Alt+Space".to_string(),

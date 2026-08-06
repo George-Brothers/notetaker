@@ -42,22 +42,26 @@ export function trayStateFor(state: CaptureState): TrayState {
 }
 
 /**
- * The last icon the tray was told to show, so an unchanged state costs nothing.
+ * The last state and status line the tray was told to show, so an unchanged
+ * pair costs nothing. The line carries elapsed time, so while recording this
+ * changes — and sends — once a second; that is the price of a menu that reads
+ * "Recording — 12:34" and it is one small IPC.
  *
  * Module-level on purpose: the tray is a single OS-level object, so this cache
  * is per-process, matching what it describes. Nothing reads it — it only ever
  * suppresses a redundant IPC — so a stale value can at worst skip one no-op
  * call, never show the wrong icon.
  */
-let lastTray: TrayState | null = null;
+let lastTray: string | null = null;
 
-export async function setTrayStatus(state: CaptureState): Promise<void> {
+export async function setTrayStatus(state: CaptureState, statusLine: string): Promise<void> {
   if (!isDesktop()) return;
   const next = trayStateFor(state);
-  if (next === lastTray) return;
-  lastTray = next;
+  const key = `${next}|${statusLine}`;
+  if (key === lastTray) return;
+  lastTray = key;
   try {
-    await invoke("set_tray_status", { state: next });
+    await invoke("set_tray_status", { state: next, statusLine });
   } catch {
     // An older shell has no tray; the app must not care.
   }

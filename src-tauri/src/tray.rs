@@ -1,8 +1,13 @@
 //! The tray: Echo in the corner, state at a glance, essentials on right-click.
 //!
 //! The frontend drives state via `set_tray_status` (it already polls capture
-//! status for the record bar). Open/Quit act natively; Start/Stop/Settings are
+//! status for the record bar, so the elapsed time in the status line rides the
+//! same poll). Open/Quit act natively; record/pause/stop/Settings are
 //! forwarded to the webview, which owns the capture flow.
+//!
+//! One static menu whose items change text and enablement, never a rebuild:
+//! `set_state` arrives once a second while recording, and swapping the menu
+//! out from under a pointer that has it open closes it.
 
 use tauri::{
     image::Image,
@@ -13,9 +18,13 @@ use tauri::{
 
 pub const TRAY_ID: &str = "main-tray";
 
-/// The one menu item whose label changes with capture state.
+/// Every item whose label or enablement follows capture state.
 pub struct TrayHandles<R: Runtime> {
-    toggle: MenuItem<R>,
+    status: MenuItem<R>,
+    record_meeting: MenuItem<R>,
+    record_in_person: MenuItem<R>,
+    pause: MenuItem<R>,
+    stop: MenuItem<R>,
 }
 
 fn icon_bytes(state: &str) -> &'static [u8] {
@@ -35,13 +44,46 @@ fn show_main<R: Runtime>(app: &AppHandle<R>) {
 }
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
-    let toggle = MenuItem::with_id(app, "tray-toggle", "Start recording", true, None::<&str>)?;
+    // Disabled: it is a reading, not a control. Menus have no other way to
+    // show a line of state.
+    let status = MenuItem::with_id(app, "tray-status", "Not recording", false, None::<&str>)?;
+    let record_meeting =
+        MenuItem::with_id(app, "tray-record-meeting", "Record meeting", true, None::<&str>)?;
+    let record_in_person = MenuItem::with_id(
+        app,
+        "tray-record-in-person",
+        "Record in person",
+        true,
+        None::<&str>,
+    )?;
+    let pause = MenuItem::with_id(app, "tray-pause", "Pause", false, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "tray-stop", "Stop recording", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "tray-open", "Open Notetaker", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "tray-settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "tray-quit", "Quit Notetaker", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&toggle, &open, &sep, &settings, &quit])?;
-    app.manage(TrayHandles { toggle });
+    let menu = Menu::with_items(
+        app,
+        &[
+            &status,
+            &PredefinedMenuItem::separator(app)?,
+            &record_meeting,
+            &record_in_person,
+            &pause,
+            &stop,
+            &PredefinedMenuItem::separator(app)?,
+            &open,
+            &PredefinedMenuItem::separator(app)?,
+            &settings,
+            &quit,
+        ],
+    )?;
+    app.manage(TrayHandles {
+        status,
+        record_meeting,
+        record_in_person,
+        pause,
+        stop,
+    });
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(icon_bytes("idle"))?)
@@ -63,10 +105,20 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
             }
         })
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "tray-toggle" => {
-                // The webview decides start vs stop from its own state.
-                show_main(app);
-                let _ = app.emit("tray-toggle-recording", ());
+            // Recording actions deliberately do NOT show the window: the point
+            // of running them from the tray is not having to open the app.
+            // The webview stays the owner of the capture flow either way.
+            "tray-record-meeting" => {
+                let _ = app.emit("tray-record", "meeting");
+            }
+            "tray-record-in-person" => {
+                let _ = app.emit("tray-record", "in_person");
+            }
+            "tray-pause" => {
+                let _ = app.emit("tray-pause-resume", ());
+            }
+            "tray-stop" => {
+                let _ = app.emit("tray-stop", ());
             }
             "tray-open" => show_main(app),
             "tray-settings" => {
@@ -90,8 +142,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
         .build(app)
 }
 
-/// Called by the frontend whenever capture state changes.
-pub fn set_state<R: Runtime>(app: &AppHandle<R>, state: &str) {
+/// Called by the frontend whenever capture state changes, and once a second
+/// while recording so the status line's elapsed time keeps up. `status_line`
+/// arrives ready-made ("Recording — 12:34") because the frontend already
+/// formats elapsed time for the record bar; Rust stays dumb about wording.
+pub fn set_state<R: Runtime>(app: &AppHandle<R>, state: &str, status_line: &str) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Ok(icon) = Image::from_bytes(icon_bytes(state)) {
             let _ = tray.set_icon(Some(icon));
@@ -103,11 +158,14 @@ pub fn set_state<R: Runtime>(app: &AppHandle<R>, state: &str) {
         }));
     }
     if let Some(handles) = app.try_state::<TrayHandles<R>>() {
-        let label = if state == "recording" || state == "paused" {
-            "Stop recording"
-        } else {
-            "Start recording"
-        };
-        let _ = handles.toggle.set_text(label);
+        let capturing = state == "recording" || state == "paused";
+        let _ = handles.status.set_text(status_line);
+        let _ = handles.record_meeting.set_enabled(!capturing);
+        let _ = handles.record_in_person.set_enabled(!capturing);
+        let _ = handles.pause.set_enabled(capturing);
+        let _ = handles
+            .pause
+            .set_text(if state == "paused" { "Resume" } else { "Pause" });
+        let _ = handles.stop.set_enabled(capturing);
     }
 }

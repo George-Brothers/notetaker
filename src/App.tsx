@@ -8,8 +8,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
@@ -36,6 +37,7 @@ import {
 } from "./lib/ipc";
 import { isDesktop } from "./lib/transport";
 import { cn } from "./lib/cn";
+import { duration } from "./lib/format";
 import { isMacDesktop, setAutostart, setTrayStatus } from "./lib/desktop";
 import { formatAcceleratorParts } from "./lib/hotkeys";
 
@@ -133,9 +135,57 @@ function App() {
   // The tray icon is the only thing that says "still recording" once the window
   // is hidden, so it follows capture state rather than being set at start/stop
   // — a session that ends itself never passes through a button handler.
+  // The status line rides along: elapsed time comes from the same 1s status
+  // poll the record bar reads, so the menu's first line stays current without
+  // a timer of its own.
   useEffect(() => {
-    void setTrayStatus(capture.status.state);
-  }, [capture.status.state]);
+    const s = capture.status;
+    const line =
+      s.state === "recording"
+        ? `Recording — ${duration(s.elapsedS)}`
+        : s.state === "paused"
+          ? `Paused — ${duration(s.elapsedS)}`
+          : s.state === "finishing"
+            ? "Finishing…"
+            : "Not recording";
+    void setTrayStatus(s.state, line);
+  }, [capture.status]);
+
+  // The floating overlay follows the same principle as the tray: this window
+  // owns all state and pushes a rendering, the pill answers with intents.
+  // Visibility is policy from settings — "recording" shows it with each
+  // recording; "meeting" also shows it as the record-this? prompt the moment
+  // the watcher reports a meeting. Fired from the same 1s status poll, so the
+  // pill's clock ticks without a timer of its own.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    const mode = appSettings?.overlay ?? "recording";
+    const s = capture.status;
+    const capturing = isCapturing(s.state) || s.state === "finishing";
+    const prompting = mode === "meeting" && !capturing && capture.pendingMeeting != null;
+    const visible = mode !== "off" && (capturing || prompting);
+
+    void (async () => {
+      try {
+        const overlay = await WebviewWindow.getByLabel("overlay");
+        if (!overlay) return;
+        if (visible) {
+          await emit("overlay-sync", {
+            kind: prompting ? "prompt" : "recording",
+            state: s.state === "paused" ? "paused" : s.state === "finishing" ? "finishing" : "recording",
+            elapsedS: s.elapsedS,
+            appName: capture.pendingMeeting?.appName ?? null,
+          });
+          if (!(await overlay.isVisible())) await overlay.show();
+        } else if (await overlay.isVisible()) {
+          await overlay.hide();
+        }
+      } catch {
+        // No overlay window (older shell, or the served UI): the app works
+        // identically without the pill.
+      }
+    })();
+  }, [capture.status, capture.pendingMeeting, appSettings?.overlay]);
 
   // Loaded for the sidebar's empty-state hotkey hint, and to decide which
   // accelerators are registered OS-wide. Refetched on `settingsVersion`, which
@@ -326,6 +376,49 @@ function App() {
         await getCurrentWindow().hide();
       }),
       listen("tray-toggle-recording", () => toggleRecording()),
+      // The tray's own controls. None of these shows the window — the point
+      // of the tray is doing this without opening the app. Each one re-reads
+      // live state from the ref: a menu can sit open while the state changes
+      // under it, so the item pressed may no longer apply, and doing nothing
+      // is better than doing the wrong thing.
+      listen<string>("tray-record", (e) => {
+        const c = captureRef.current;
+        if (c.status.state === "idle") {
+          c.start(e.payload === "in_person" ? "in_person" : "meeting", "");
+        }
+      }),
+      listen("tray-pause-resume", () => {
+        const c = captureRef.current;
+        if (c.status.state === "recording") c.pause();
+        else if (c.status.state === "paused") c.resume();
+      }),
+      listen("tray-stop", () => {
+        if (isCapturing(captureRef.current.status.state)) void stopAndOpenRef.current();
+      }),
+      // The overlay pill's intents — same owners as the tray's, plus the
+      // prompt pair. `overlay-record` prefers the pending meeting (it carries
+      // the app's name for the title) and falls back to a plain meeting
+      // recording so the button still works if the prompt expired underneath.
+      listen("overlay-record", () => {
+        const c = captureRef.current;
+        if (c.pendingMeeting) void c.recordPendingMeeting();
+        else if (c.status.state === "idle") c.start("meeting", "");
+      }),
+      listen("overlay-dismiss", () => captureRef.current.dismissPendingMeeting()),
+      listen("overlay-pause-resume", () => {
+        const c = captureRef.current;
+        if (c.status.state === "recording") c.pause();
+        else if (c.status.state === "paused") c.resume();
+      }),
+      listen("overlay-stop", () => {
+        if (isCapturing(captureRef.current.status.state)) void stopAndOpenRef.current();
+      }),
+      listen("overlay-open", async () => {
+        const win = getCurrentWindow();
+        await win.show();
+        await win.unminimize();
+        await win.setFocus();
+      }),
       listen("tray-open-settings", () => setSettingsOpen(true)),
       // The tray's Quit asks rather than exits. It used to call `app.exit(0)`
       // straight from the menu handler, which skips destructors — so quitting

@@ -29,7 +29,7 @@ describe("the shell-only commands off the desktop", () => {
    * hence the `isDesktop()` check inside each, which this pins.
    */
   it("never invokes anything, and still answers", async () => {
-    await expect(setTrayStatus("recording")).resolves.toBeUndefined();
+    await expect(setTrayStatus("recording", "Recording — 0:05")).resolves.toBeUndefined();
     await expect(listInputDevices()).resolves.toEqual([]);
     expect(invoke).not.toHaveBeenCalled();
   });

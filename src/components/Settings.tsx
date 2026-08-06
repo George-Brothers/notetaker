@@ -16,6 +16,7 @@ import { cn } from "../lib/cn";
 import type {
   AutoRecordPolicy,
   OllamaStatus,
+  OverlayMode,
   PullProgress,
   Settings as SettingsData,
   SetupStatus,
@@ -657,6 +658,31 @@ export function Settings({
                         ))}
                       </select>
                     </div>
+
+                    {isDesktop() && (
+                      <div className="settings-field">
+                        <label htmlFor="settings-overlay">Floating overlay</label>
+                        <select
+                          id="settings-overlay"
+                          value={settings.overlay ?? "recording"}
+                          onChange={(e) =>
+                            updateSettings({
+                              ...settings,
+                              overlay: e.target.value as OverlayMode,
+                            })
+                          }
+                        >
+                          <option value="recording">While recording</option>
+                          <option value="meeting">When a meeting is detected</option>
+                          <option value="off">Never</option>
+                        </select>
+                        <p className="settings-hint">
+                          The small always-on-top pill with the timer and controls. "When a
+                          meeting is detected" also makes it the record-this-meeting? prompt.
+                          It never appears in screen shares.
+                        </p>
+                      </div>
+                    )}
 
                     <p className="settings-hint">
                       When one of these opens, decide what happens: ask every time, always record without
