@@ -445,7 +445,7 @@ fn open_runtime(app_dir: &Path) -> anyhow::Result<Runtime> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // First, deliberately. Plugins initialise in the order they are added
         // (tauri-plugin-single-instance's own README says so), so a second
         // launch has to hit this one before anything else has a chance to open
@@ -460,8 +460,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_nspanel::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    // tauri-nspanel is AppKit-backed and cannot even compile for Windows.
+    // The windowing module keeps the matching panel behavior behind this same
+    // platform boundary, while Windows uses ordinary Tauri windows.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder;
+
+    builder
         .plugin(tauri_plugin_positioner::init())
         // DECORATIONS excluded: whether a window has OS chrome is the
         // platform's decision, made in config — native overlay titlebar on
