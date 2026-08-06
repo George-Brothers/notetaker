@@ -111,6 +111,32 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often the worker checks whether it has been asked to stop.
 const STOP_POLL: Duration = Duration::from_millis(100);
 
+/// How long to wait for the *first* buffer before concluding that Screen
+/// Recording was never granted — the only honest permission check available.
+///
+/// **macOS does not report a missing Screen Recording grant.** Everything
+/// succeeds: `SCShareableContent` returns displays, `SCContentFilter` builds,
+/// `startCapture` completes with no error, and the delegate is simply never
+/// called. This file originally assumed a refusal would surface as an error. It
+/// does not, and the consequence was real: on 2026-08-05 a Zoom meeting was
+/// recorded for eleven minutes with a 5 MB `audio-mic.flac` beside a **0-byte**
+/// `audio-system.wav` — half a conversation, saved, with nothing said about it
+/// until processing failed claiming the file was "damaged". That is the one
+/// outcome the ground rules call worse than any crash.
+///
+/// The discriminator is measured, not assumed. With the grant in place
+/// ScreenCaptureKit delivers buffers **continuously even in total silence** —
+/// 78,463 samples over five seconds at peak 0.0000 with nothing playing.
+/// Without it, nothing arrives at all. So "no buffer within three seconds"
+/// means "not permitted", and cannot be confused with a quiet room, which is
+/// the one false positive that would matter.
+///
+/// Three seconds because buffers arrive every few milliseconds once the stream
+/// is real, so this is orders of magnitude of headroom; and because it is paid
+/// only when starting a meeting recording, where being told up front is worth
+/// far more than the delay.
+const FIRST_AUDIO_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// System audio as a pull-based source.
 ///
 /// Deliberately holds no Objective-C object — see the module docs. Everything
@@ -141,16 +167,19 @@ impl SystemAudioSource {
         let (writer, reader) = ring::channel(ring::DEFAULT_CAPACITY);
         let (init_tx, init_rx) = mpsc::channel();
 
+        let buffers = Arc::new(AtomicUsize::new(0));
+
         let worker = {
             let stop = stop.clone();
             let overflowed = overflowed.clone();
+            let buffers = Arc::clone(&buffers);
             thread::Builder::new()
                 .name("notetaker-sck-audio".into())
-                .spawn(move || capture_thread(writer, stop, overflowed, init_tx))
+                .spawn(move || capture_thread(writer, stop, overflowed, buffers, init_tx))
                 .context("Notetaker could not start the system-audio thread.")?
         };
 
-        match init_rx.recv_timeout(START_TIMEOUT) {
+        match init_rx.recv_timeout(START_TIMEOUT + FIRST_AUDIO_TIMEOUT) {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 stop.store(true, Ordering::Release);
@@ -227,6 +256,12 @@ impl Drop for SystemAudioSource {
 struct OutputIvars {
     writer: Mutex<RingWriter>,
     overflowed: Arc<AtomicUsize>,
+    /// Every audio buffer ScreenCaptureKit hands over, counted before it is
+    /// read. `start` waits on this to decide whether the stream is real — see
+    /// [`FIRST_AUDIO_IS_THE_PERMISSION_CHECK`]. Counted here rather than from
+    /// sample totals because a silent room legitimately produces zero-valued
+    /// samples, and only the *absence of buffers* means "not permitted".
+    buffers: Arc<AtomicUsize>,
 }
 
 define_class!(
@@ -256,6 +291,8 @@ define_class!(
                 return;
             }
 
+            self.ivars().buffers.fetch_add(1, Ordering::Relaxed);
+
             let mut mono = Vec::new();
             // SAFETY: `sample_buffer` is the buffer ScreenCaptureKit just handed
             // us and is valid for this call.
@@ -282,10 +319,15 @@ define_class!(
 );
 
 impl AudioOutput {
-    fn new(writer: RingWriter, overflowed: Arc<AtomicUsize>) -> Retained<Self> {
+    fn new(
+        writer: RingWriter,
+        overflowed: Arc<AtomicUsize>,
+        buffers: Arc<AtomicUsize>,
+    ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(OutputIvars {
             writer: Mutex::new(writer),
             overflowed,
+            buffers,
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -408,9 +450,10 @@ fn capture_thread(
     writer: RingWriter,
     stop: Arc<AtomicBool>,
     overflowed: Arc<AtomicUsize>,
+    buffers: Arc<AtomicUsize>,
     init_tx: mpsc::Sender<Result<()>>,
 ) {
-    let started = start_stream(writer, overflowed);
+    let started = start_stream(writer, overflowed, buffers);
     let (stream, _output, _queue) = match started {
         Ok(parts) => {
             let _ = init_tx.send(Ok(()));
@@ -449,7 +492,11 @@ type StreamParts = (
     dispatch2::DispatchRetained<DispatchQueue>,
 );
 
-fn start_stream(writer: RingWriter, overflowed: Arc<AtomicUsize>) -> Result<StreamParts> {
+fn start_stream(
+    writer: RingWriter,
+    overflowed: Arc<AtomicUsize>,
+    buffers: Arc<AtomicUsize>,
+) -> Result<StreamParts> {
     let display = first_display()?;
 
     // No windows excluded: we want the whole display's audio, and its pixels
@@ -483,7 +530,7 @@ fn start_stream(writer: RingWriter, overflowed: Arc<AtomicUsize>) -> Result<Stre
         });
     }
 
-    let output = AudioOutput::new(writer, overflowed);
+    let output = AudioOutput::new(writer, overflowed, Arc::clone(&buffers));
     let stream = unsafe {
         SCStream::initWithFilter_configuration_delegate(SCStream::alloc(), &filter, &config, None)
     };
@@ -518,13 +565,33 @@ fn start_stream(writer: RingWriter, overflowed: Arc<AtomicUsize>) -> Result<Stre
     unsafe { stream.startCaptureWithCompletionHandler(Some(&handler)) };
 
     match rx.recv_timeout(START_TIMEOUT) {
-        Ok(None) => Ok((stream, output, queue)),
-        Ok(Some(message)) => Err(anyhow::anyhow!(message)),
+        Ok(None) => {}
+        Ok(Some(message)) => return Err(anyhow::anyhow!(message)),
         Err(_) => anyhow::bail!(
             "This computer did not start sharing its sound within {} seconds.",
             START_TIMEOUT.as_secs()
         ),
     }
+
+    // `startCapture` reporting success is not evidence that anything will
+    // arrive — see `FIRST_AUDIO_IS_THE_PERMISSION_CHECK`. Wait for a real
+    // buffer, and treat its absence as a refused permission.
+    let deadline = std::time::Instant::now() + FIRST_AUDIO_TIMEOUT;
+    while buffers.load(Ordering::Relaxed) == 0 {
+        if std::time::Instant::now() >= deadline {
+            // Leave nothing running behind a failed start.
+            let (tx, rx) = mpsc::channel();
+            let handler = RcBlock::new(move |_e: *mut objc2_foundation::NSError| {
+                let _ = tx.send(());
+            });
+            unsafe { stream.stopCaptureWithCompletionHandler(Some(&handler)) };
+            let _ = rx.recv_timeout(Duration::from_secs(2));
+            anyhow::bail!(PERMISSION_MESSAGE);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    Ok((stream, output, queue))
 }
 
 /// Finds a display to attach to, and doubles as the permission check.

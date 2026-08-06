@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What the app is allowed to ask the operating system for.
+
+  These matter because the bundle is signed with the **hardened runtime**. Under
+  it, macOS refuses microphone access outright unless the signature carries
+  `device.audio-input` — the `NSMicrophoneUsageDescription` string in
+  Info.plist explains *why* the app wants the microphone, but this is what makes
+  asking legal at all. A build missing this does not show a denied dialog; it
+  simply never records.
+
+  `disable-library-validation` is not optional either. The app loads ONNX
+  Runtime and sherpa's dylibs out of `Contents/Frameworks/`, and those are
+  third-party binaries signed by nobody. The hardened runtime otherwise refuses
+  to load any library not signed by the same team, which would stop the app on
+  its first attempt to transcribe.
+
+  There is no entitlement for Screen Recording. That permission has no
+  entitlement and no Info.plist key — it is granted only in System Settings,
+  which is why `speaker.rs` has to explain it in prose instead.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- Loading the unsigned third-party dylibs we bundle ourselves. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

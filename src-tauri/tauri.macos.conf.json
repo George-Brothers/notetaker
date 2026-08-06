@@ -7,7 +7,9 @@
         "target/release/libsherpa-onnx-c-api.dylib",
         "target/release/libsherpa-onnx-cxx-api.dylib"
       ],
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-",
+      "entitlements": "entitlements.plist"
     }
   }
 }
