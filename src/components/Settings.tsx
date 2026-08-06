@@ -792,6 +792,13 @@ export function Settings({
                         issue={hotkeyIssues?.showHide ?? null}
                         onChange={(a) => updateSettings({ ...settings, hotkeyShowHide: a })}
                       />
+                      <HotkeyField
+                        label="Star this moment"
+                        hint="Bookmarks the current moment of a live recording — the AI treats starred moments as important"
+                        value={settings.hotkeyHighlight}
+                        issue={hotkeyIssues?.highlight ?? null}
+                        onChange={(a) => updateSettings({ ...settings, hotkeyHighlight: a })}
+                      />
                     </div>
                   </section>
                 )}

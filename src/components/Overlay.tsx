@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Mic, Pause, Play, Square, X } from "lucide-react";
+import { Mic, Pause, Play, Square, Star, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useTheme } from "../hooks/useTheme";
 import { duration } from "../lib/format";
@@ -98,6 +98,14 @@ export function Overlay() {
           </span>
           {sync.state !== "finishing" && (
             <>
+              <button
+                type="button"
+                aria-label="Star this moment"
+                className={iconBtn}
+                onClick={send("overlay-highlight")}
+              >
+                <Star size={13} />
+              </button>
               <button
                 type="button"
                 aria-label={sync.state === "paused" ? "Resume" : "Pause"}

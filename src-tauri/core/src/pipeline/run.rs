@@ -134,8 +134,18 @@ pub fn process_recording(
 
     // Whatever the user typed during the recording. The summarizer is asked to
     // expand on it rather than summarize the call from scratch — see
-    // `summarize`'s module note.
-    let notes_md = crate::notes::read(&rec.dir);
+    // `summarize`'s module note. Starred moments ride along as an addendum:
+    // a star pressed mid-meeting means "this part mattered", which is exactly
+    // the signal the summarizer should weight.
+    let mut notes_md = crate::notes::read(&rec.dir);
+    let highlights = crate::notes::read_highlights(&rec.dir);
+    if !highlights.trim().is_empty() {
+        if !notes_md.is_empty() {
+            notes_md.push_str("\n\n");
+        }
+        notes_md.push_str("Moments I starred as important during the recording:\n");
+        notes_md.push_str(&highlights);
+    }
 
     let summary_md = timed(&mut stages, "summarize", || {
         summarize(

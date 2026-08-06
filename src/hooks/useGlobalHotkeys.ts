@@ -26,6 +26,7 @@ const UNSAFE_COPY = "That combination needs Ctrl or Alt — pick a different one
 export interface HotkeyIssues {
   toggleRecord: string | null;
   showHide: string | null;
+  highlight: string | null;
 }
 
 /**
@@ -39,6 +40,7 @@ export interface HotkeyIssues {
 const ISSUE_FIELDS = Object.keys({
   toggleRecord: true,
   showHide: true,
+  highlight: true,
 } satisfies Record<keyof HotkeyIssues, true>) as Array<keyof HotkeyIssues>;
 
 function sameIssues(a: HotkeyIssues, b: HotkeyIssues): boolean {
@@ -91,14 +93,23 @@ export function useGlobalHotkeys({
   enabled,
   toggleRecord,
   showHide,
+  highlight,
   onToggleRecord,
+  onHighlight,
 }: {
   enabled: boolean;
   toggleRecord: string;
   showHide: string;
+  highlight: string;
   onToggleRecord: () => void;
+  /** Stars the current moment; identity-stable for the same reason as onToggleRecord. */
+  onHighlight: () => void;
 }): { issues: HotkeyIssues } {
-  const [issues, setIssues] = useState<HotkeyIssues>({ toggleRecord: null, showHide: null });
+  const [issues, setIssues] = useState<HotkeyIssues>({
+    toggleRecord: null,
+    showHide: null,
+    highlight: null,
+  });
 
   useEffect(() => {
     if (!enabled || !isDesktop()) return;
@@ -114,7 +125,7 @@ export function useGlobalHotkeys({
       await unregisterAll().catch(() => undefined);
       if (cancelled) return;
 
-      const next: HotkeyIssues = { toggleRecord: null, showHide: null };
+      const next: HotkeyIssues = { toggleRecord: null, showHide: null, highlight: null };
 
       // The guard runs here as well as in the capture field because a stored
       // accelerator need not have come from the field: `settings.json` predates
@@ -146,6 +157,18 @@ export function useGlobalHotkeys({
         }
       }
 
+      if (!isSafeAccelerator(highlight)) {
+        next.highlight = UNSAFE_COPY;
+      } else {
+        try {
+          await register(highlight, (e) => {
+            if (e.state === "Pressed") onHighlight();
+          });
+        } catch {
+          next.highlight = CONFLICT_COPY;
+        }
+      }
+
       // Field by field, and bail out when nothing changed. A fresh object here
       // every time would re-render, and a caller that hands this hook a new
       // `onToggleRecord` each render — one inline arrow where a `useCallback`
@@ -163,7 +186,7 @@ export function useGlobalHotkeys({
         .then((m) => m.unregisterAll())
         .catch(() => undefined);
     };
-  }, [enabled, toggleRecord, showHide, onToggleRecord]);
+  }, [enabled, toggleRecord, showHide, highlight, onToggleRecord, onHighlight]);
 
   return { issues };
 }

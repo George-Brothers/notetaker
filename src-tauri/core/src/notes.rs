@@ -42,6 +42,34 @@ pub fn write(dir: &Path, notes_md: &str) -> Result<()> {
     fs::write(&path, notes_md).with_context(|| format!("writing your notes to {}", path.display()))
 }
 
+/// Starred moments live in their own file, deliberately not in `notes.md`:
+/// the notepad autosaves the whole notes file from its own editor state, so
+/// anything a second writer appended there would be silently dropped by the
+/// next keystroke's save. A file nothing else writes cannot lose a star.
+pub const HIGHLIGHTS_FILE: &str = "highlights.md";
+
+/// Appends one starred moment (`- ⭐ H:MM:SS`) and returns the appended line.
+pub fn append_highlight(dir: &Path, elapsed_s: f64) -> Result<String> {
+    let total = elapsed_s.max(0.0) as u64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    let line = format!("- ⭐ {h}:{m:02}:{s:02}");
+    let path = dir.join(HIGHLIGHTS_FILE);
+    let mut existing = fs::read_to_string(&path).unwrap_or_default();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        existing.push('\n');
+    }
+    existing.push_str(&line);
+    existing.push('\n');
+    fs::write(&path, existing)
+        .with_context(|| format!("writing your starred moment to {}", path.display()))?;
+    Ok(line)
+}
+
+/// Reads the starred moments; a recording with none returns an empty string.
+pub fn read_highlights(dir: &Path) -> String {
+    fs::read_to_string(dir.join(HIGHLIGHTS_FILE)).unwrap_or_default()
+}
+
 /// True if the user actually typed something — whitespace does not count.
 ///
 /// Drives whether the summarizer is told to expand on the user's notes or to

@@ -170,6 +170,9 @@ pub struct Settings {
     /// Global accelerator that shows/hides the window, Tauri notation.
     #[serde(default = "default_hotkey_show_hide")]
     pub hotkey_show_hide: String,
+    /// Global accelerator that stars the current moment of a live recording.
+    #[serde(default = "default_hotkey_highlight")]
+    pub hotkey_highlight: String,
     /// Closing the window hides to the tray instead of quitting.
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
@@ -281,6 +284,10 @@ fn default_hotkey_show_hide() -> String {
     "CommandOrControl+Alt+Space".to_string()
 }
 
+fn default_hotkey_highlight() -> String {
+    "CommandOrControl+Alt+H".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -296,6 +303,7 @@ impl Default for Settings {
             require_ac: default_true(),
             keep_wav: false,
             overlay: OverlayMode::default(),
+            hotkey_highlight: default_hotkey_highlight(),
             input_device: None,
             hotkey_toggle_record: default_hotkey_toggle_record(),
             hotkey_show_hide: default_hotkey_show_hide(),
@@ -1074,6 +1082,7 @@ mod tests {
             languages: vec!["en".to_string(), "zh".to_string()],
             speech_engine: SpeechEngine::SenseVoice,
             overlay: OverlayMode::Meeting,
+            hotkey_highlight: "CommandOrControl+Alt+B".to_string(),
             input_device: None,
             hotkey_toggle_record: "CommandOrControl+Alt+N".to_string(),
             hotkey_show_hide: "CommandOrControl+Alt+Space".to_string(),

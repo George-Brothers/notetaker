@@ -141,6 +141,11 @@ fn save_notes(rt: State<'_, Runtime>, id: String, notes_md: String) -> Result<Va
 }
 
 #[tauri::command]
+fn add_highlight(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "add_highlight", json!({}))
+}
+
+#[tauri::command]
 fn list_templates(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "list_templates", json!({}))
 }
@@ -472,6 +477,7 @@ pub fn run() {
             delete_recording,
             rename_speaker,
             save_notes,
+            add_highlight,
             list_templates,
             set_template,
             set_action_done,

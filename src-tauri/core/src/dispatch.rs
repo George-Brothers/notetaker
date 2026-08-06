@@ -64,6 +64,7 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
 
         // --- the notepad ------------------------------------------------
         "save_notes" => to_json(rt.save_notes(str_arg(args, "id")?, str_arg(args, "notesMd")?)?),
+        "add_highlight" => to_json(rt.add_highlight()?),
         "list_templates" => to_json(rt.list_templates()),
         "set_template" => {
             to_json(rt.set_template(str_arg(args, "id")?, str_arg(args, "template")?)?)
@@ -225,6 +226,7 @@ mod tests {
             "delete_recording",
             "rename_speaker",
             "save_notes",
+            "add_highlight",
             "list_templates",
             "set_template",
             "set_action_done",

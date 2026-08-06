@@ -57,6 +57,7 @@ const AUTOSTART_DONE = "1";
 /** What the hotkeys fall back to when settings cannot be read. */
 const DEFAULT_TOGGLE_RECORD = "CommandOrControl+Alt+N";
 const DEFAULT_SHOW_HIDE = "CommandOrControl+Alt+Space";
+const DEFAULT_HIGHLIGHT = "CommandOrControl+Alt+H";
 
 /**
  * True while a take is on the line.
@@ -304,11 +305,23 @@ function App() {
     } // finishing: ignore — the recording is still landing.
   }, []);
 
+  /**
+   * Stars the current moment of the live recording. Identity-stable for the
+   * same reason as `toggleRecording` — it is a hotkey-registration dependency.
+   * A press with nothing recording is a no-op by the runtime's own refusal;
+   * surfacing that as an error would punish a mis-hit hotkey.
+   */
+  const starMoment = useCallback(() => {
+    void api.addHighlight().catch(() => undefined);
+  }, []);
+
   const hotkeys = useGlobalHotkeys({
     enabled: settingsSettled,
     toggleRecord: appSettings?.hotkeyToggleRecord ?? DEFAULT_TOGGLE_RECORD,
     showHide: appSettings?.hotkeyShowHide ?? DEFAULT_SHOW_HIDE,
+    highlight: appSettings?.hotkeyHighlight ?? DEFAULT_HIGHLIGHT,
     onToggleRecord: toggleRecording,
+    onHighlight: starMoment,
   });
 
   // Start with Windows, on by default — asked for exactly once, ever.
@@ -405,6 +418,7 @@ function App() {
         else if (c.status.state === "idle") c.start("meeting", "");
       }),
       listen("overlay-dismiss", () => captureRef.current.dismissPendingMeeting()),
+      listen("overlay-highlight", () => void api.addHighlight().catch(() => undefined)),
       listen("overlay-pause-resume", () => {
         const c = captureRef.current;
         if (c.status.state === "recording") c.pause();

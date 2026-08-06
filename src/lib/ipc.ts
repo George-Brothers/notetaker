@@ -164,6 +164,8 @@ export interface Settings {
   hotkeyToggleRecord: string;
   /** Global show/hide-window accelerator, Tauri notation. */
   hotkeyShowHide: string;
+  /** Global star-this-moment accelerator, Tauri notation. */
+  hotkeyHighlight: string;
   /** Closing the window hides to the tray instead of quitting. */
   closeToTray: boolean;
   /** When the floating meeting overlay appears. Desktop-shell-only. */
@@ -345,6 +347,12 @@ export const api = {
    */
   saveNotes: (id: string, notesMd: string) =>
     invoke<void>("save_notes", { id, notesMd }),
+  /**
+   * Stars the current moment of the live recording. No arguments: the
+   * runtime knows the live recording and its clock better than any frontend
+   * snapshot. Returns the appended line ("- ⭐ 0:12:34").
+   */
+  addHighlight: () => invoke<string>("add_highlight"),
   /** Every note shape available in the picker. */
   listTemplates: () => invoke<Template[]>("list_templates"),
   /**

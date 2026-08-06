@@ -31,6 +31,8 @@ const UNSAFE_COPY = "That combination needs Ctrl or Alt — pick a different one
 const DEFAULTS = {
   toggleRecord: "CommandOrControl+Alt+N",
   showHide: "CommandOrControl+Alt+Space",
+  highlight: "CommandOrControl+Alt+H",
+  onHighlight: () => {},
 };
 
 describe("useGlobalHotkeys", () => {
@@ -51,10 +53,11 @@ describe("useGlobalHotkeys", () => {
     const onToggleRecord = vi.fn();
     renderHook(() => useGlobalHotkeys({ enabled: true, ...DEFAULTS, onToggleRecord }));
 
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(3));
     expect(register.mock.calls.map((c) => c[0])).toEqual([
       "CommandOrControl+Alt+N",
       "CommandOrControl+Alt+Space",
+      "CommandOrControl+Alt+H",
     ]);
   });
 
@@ -83,12 +86,20 @@ describe("useGlobalHotkeys", () => {
         enabled: true,
         toggleRecord: "Shift+N",
         showHide: "CommandOrControl+Alt+Space",
+        highlight: "CommandOrControl+Alt+H",
         onToggleRecord,
+        // DEFAULTS' stable noop: an inline arrow here is a new identity on
+        // every render, which re-runs the registration effect and doubles
+        // every register call.
+        onHighlight: DEFAULTS.onHighlight,
       }),
     );
 
     await waitFor(() => expect(result.current.issues.toggleRecord).toBe(UNSAFE_COPY));
-    expect(register.mock.calls.map((c) => c[0])).toEqual(["CommandOrControl+Alt+Space"]);
+    expect(register.mock.calls.map((c) => c[0])).toEqual([
+      "CommandOrControl+Alt+Space",
+      "CommandOrControl+Alt+H",
+    ]);
     expect(result.current.issues.showHide).toBeNull();
   });
 
@@ -104,13 +115,13 @@ describe("useGlobalHotkeys", () => {
     expect(register).not.toHaveBeenCalled();
 
     rerender({ enabled: true });
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(3));
   });
 
   it("runs the record callback on press, and not on release", async () => {
     const onToggleRecord = vi.fn();
     renderHook(() => useGlobalHotkeys({ enabled: true, ...DEFAULTS, onToggleRecord }));
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(3));
 
     const handler = register.mock.calls[0][1] as (e: { state: string }) => void;
     handler({ state: "Released" });
@@ -152,7 +163,7 @@ describe("useGlobalHotkeys", () => {
 
     // Exactly the two the one pass registered. Unguarded this reads in the
     // thousands after 100ms, so the margin between pass and fail is enormous.
-    expect(register).toHaveBeenCalledTimes(2);
+    expect(register).toHaveBeenCalledTimes(3);
   });
 
   /**
@@ -174,7 +185,7 @@ describe("useGlobalHotkeys", () => {
     async function showHideHandler() {
       const onToggleRecord = vi.fn();
       renderHook(() => useGlobalHotkeys({ enabled: true, ...DEFAULTS, onToggleRecord }));
-      await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(register).toHaveBeenCalledTimes(3));
       return register.mock.calls[1][1] as (e: { state: string }) => void;
     }
 
@@ -207,7 +218,7 @@ describe("useGlobalHotkeys", () => {
 
       handler({ state: "Released" });
 
-      await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(register).toHaveBeenCalledTimes(3));
       expect(win.isVisible).not.toHaveBeenCalled();
       expect(win.hide).not.toHaveBeenCalled();
       expect(win.show).not.toHaveBeenCalled();

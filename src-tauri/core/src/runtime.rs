@@ -207,6 +207,10 @@ pub const COMMANDS: &[Command] = &[
         args: &["id", "notesMd"],
     },
     Command {
+        name: "add_highlight",
+        args: &[],
+    },
+    Command {
         name: "list_templates",
         args: &[],
     },
@@ -753,6 +757,21 @@ impl Runtime {
         // thing you will search for.
         let rec = self.inner.find(id)?;
         self.inner.index_one(&rec)
+    }
+
+    /// Stars the current moment of the recording that is running right now.
+    ///
+    /// No arguments on purpose: the caller is a hotkey or an overlay button
+    /// pressed mid-meeting, and the runtime knows the live recording and its
+    /// clock better than any frontend snapshot does. Returns the appended
+    /// line so the UI can confirm without re-reading the file.
+    pub fn add_highlight(&self) -> Result<String> {
+        let status = self.capture_status();
+        let id = status.recording_id.ok_or_else(|| {
+            anyhow::anyhow!("Nothing is recording right now, so there is no moment to star.")
+        })?;
+        let rec = self.inner.find(&id)?;
+        crate::notes::append_highlight(&rec.dir, status.elapsed_s)
     }
 
     /// Every note template this build knows, for the picker.
@@ -3474,7 +3493,16 @@ mod tests {
         );
         assert!(rt.pause_capture().is_err(), "nothing is recording");
         assert!(rt.resume_capture().is_err(), "nothing is recording");
+        assert!(
+            rt.add_highlight().is_err(),
+            "a star with nothing recording must refuse, not write to nowhere"
+        );
         rt.start_capture(Mode::InPerson, "Another").unwrap();
+        let star = rt.add_highlight().unwrap();
+        assert!(
+            star.starts_with("- ⭐ "),
+            "the appended highlight line is the UI's confirmation: {star}"
+        );
         rt.stop_capture().unwrap();
 
         // The state this whole call exists to report: nothing was downloaded
@@ -3507,9 +3535,10 @@ mod tests {
 
         // capture_status, pull_progress, detected_tier, log_path,
         // list_templates, ask_recording, setup_status, pause, resume, start,
-        // stop, find_existing_models, capture_levels — thirteen not in the list above.
+        // stop, find_existing_models, capture_levels, add_highlight —
+        // fourteen not in the list above.
         assert_eq!(
-            called.len() + 13,
+            called.len() + 14,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

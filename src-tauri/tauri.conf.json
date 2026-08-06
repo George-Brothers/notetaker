@@ -53,7 +53,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ4MTQ1RkE3Njc3OTE2QUQKUldTdEZubG5wMThVU05CUzBtWlFjM2F5aXRxNEYrUzBmVHNzS3dSVlUwL0ZUN3hmTXJ5RDhoWVYK",
       "endpoints": [
-        "https://github.com/George-Brothers/notetaker/releases/latest/download/latest.json"
+        "https://github.com/George-Brothers/notetaker-releases/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

@@ -194,7 +194,7 @@ jobs:
           import json, os, glob, datetime
 
           tag = os.environ["RELEASE_TAG"]
-          base = f"https://github.com/George-Brothers/notetaker/releases/download/{tag}"
+          base = f"https://github.com/George-Brothers/notetaker-releases/releases/download/{tag}"
 
           def entry(pattern):
               [artifact] = glob.glob(pattern)
@@ -216,10 +216,17 @@ jobs:
           print(json.dumps(manifest, indent=2))
           EOF
 
+      # Published to the PUBLIC releases repo, not this one: the source repo is
+      # private, and assets on a private repo 404 for the installed apps'
+      # updater (no way to ship auth inside the binary without leaking it).
+      # RELEASES_TOKEN is a token with write access to notetaker-releases.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          repository: George-Brothers/notetaker-releases
+          token: ${{ secrets.RELEASES_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: false
           files: |
             artifacts/windows-release/*.exe
             artifacts/windows-release/*.sig

@@ -64,6 +64,7 @@ const IDLE_STATUS: CaptureStatus = {
 
 const BASE_SETTINGS: Settings = {
   overlay: "recording",
+  hotkeyHighlight: "CommandOrControl+Alt+H",
   storageRoot: "/Users/george/Notetaker",
   llmBaseUrl: "http://localhost:11434",
   llmModel: "qwen2.5:7b",
