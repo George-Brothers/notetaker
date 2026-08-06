@@ -35,7 +35,10 @@ is next, and what is waiting on Mr. Brothers.
   (2026-07-30) the **scheduler wiring** — recordings are now actually
   transcribed instead of queueing forever — and the **Windows installer**, built
   by CI on every push.
-  Remaining: **macOS system audio** (ScreenCaptureKit).
+  **Plan C is COMPLETE as of 2026-08-05**: macOS system audio (ScreenCaptureKit)
+  is written and **verified capturing real audio on a real Mac**, along with
+  Metal, the `.app` bundle, and the microphone permission string. See
+  "The Mac day" below.
   Plan and decisions: `docs/superpowers/plans/2026-07-29-cross-platform.md`.
 
 ## Where this lives
@@ -70,7 +73,11 @@ first two is load-bearing — see "How this is verified".
   other notetaker crate**, and only on pure-Rust libraries.
   - `convert`, `resample`, `ring` — pure, platform-independent, fully tested.
   - `mic` (cpal, both platforms), `windows/` (WASAPI loopback + Win32 power),
-    `macos/` (CoreGraphics idle; ScreenCaptureKit **not yet written**).
+    `macos/` (CoreGraphics idle; ScreenCaptureKit system audio, **written and
+    run** 2026-08-05).
+  - `examples/` — `system-audio` and `microphone`. Not demos: they are the only
+    way to answer "does a real device produce a sample", which no unit test and
+    no CI runner can. Run them on hardware after touching capture.
 - **`server/`** — `notetaker-server`: serves the UI over HTTP.
   `notetaker-serve` is a working Notetaker on a PC with no Tauri at all.
 - **`.` (app crate)** — the Tauri shell: thirty one-line `#[tauri::command]`
@@ -95,9 +102,16 @@ first two is load-bearing — see "How this is verified".
 - `fixtures/` — `bilingual.wav`, `diarization-check.wav`, reference transcript.
 
 ## How this is verified — read this before trusting anything
-Nothing here can *run* macOS or Windows code. The thing that makes writing it
-anyway defensible is one property: **`cargo check` does not link**, so a crate
-with pure-Rust dependencies type-checks against a foreign target with no
+**Read this section knowing which machine you are on.** It was written from a
+Linux box that could not run macOS or Windows code at all, and every technique
+below exists to work around that. Since 2026-08-05 there is **a Mac**, where
+none of the workarounds are needed: it builds all four crates natively in about
+30 seconds, runs the full suite in two, and can open a real microphone. On a
+Mac, prefer running the thing to reasoning about it.
+
+The cross-check still matters for Windows, and from Linux. The property that
+makes writing foreign code defensible is: **`cargo check` does not link**, so a
+crate with pure-Rust dependencies type-checks against a foreign target with no
 cross-compiler and no SDK.
 
 That is why `notetaker-platform` depends on no other notetaker crate. Core pulls
@@ -111,7 +125,8 @@ scripts/check-platforms.sh      # all three targets, ~30s
 | Layer | How far it is verified |
 |---|---|
 | `convert`, `resample`, `ring` | **Fully tested on Linux.** Deliberate — this is where capture bugs live, and they all produce plausible *audio* rather than an error |
-| `windows/`, `macos/`, `mic` | **Compile-verified** for the real target. Never run |
+| `macos/speaker` (system audio), `mic` on a Mac | **Run on real hardware** (2026-08-05) — real samples, non-zero peak, nothing dropped. See "The Mac day" |
+| `windows/` | **Compile-verified** for the real target. Mic confirmed by a real recording; loopback wrote 0 bytes and is unexplained |
 | `capture::platform`, `power::probe` per-OS arms | **CI only.** Never compiled on Linux |
 | The Tauri app crate | **CI only.** Never compiles on Linux |
 | `notetaker-server` + `dispatch` | **Fully verified here**, including a real binary over a real socket |
@@ -122,6 +137,30 @@ scripts/check-platforms.sh      # all three targets, ~30s
 
 The cross-check was itself confirmed with a negative control: a deliberate type
 error in `windows/power.rs` *is* caught.
+
+## Build environment (macOS)
+Set up from nothing on 2026-08-05 — the machine had no Rust at all. Homebrew's
+`rustup` keeps its shims in a keg, so the PATH entry is not `~/.cargo/bin`:
+
+```bash
+brew install rustup cmake && rustup default stable
+export PATH="/opt/homebrew/opt/rustup/bin:$PATH"   # not ~/.cargo/bin
+npm install -g pnpm
+```
+
+- **Xcode is not required.** Command Line Tools carry the ScreenCaptureKit SDK,
+  and whisper.cpp embeds its Metal shaders as source, so the missing
+  `xcrun metal` never matters. See "The Mac day" for the one thing it may cost.
+- `cargo test -p notetaker-core -p notetaker-platform -p notetaker-server` from
+  `src-tauri/` — no `LIBCLANG_PATH`, no `LD_LIBRARY_PATH`, nothing. ~2 s warm.
+- `pnpm tauri build` produces `.app` and `.dmg` under
+  `src-tauri/target/release/bundle/`. It then **fails** on updater signing
+  unless `TAURI_SIGNING_PRIVATE_KEY` is set; both bundles are already written by
+  that point.
+- After changing anything in capture, run the two examples on hardware —
+  `cargo run -p notetaker-platform --example system-audio` and
+  `--example microphone`. Nothing else can catch a stream that starts and
+  records silence.
 
 ## Build environment (WSL2, hard-won)
 - `cargo test -p notetaker-core -p notetaker-platform -p notetaker-server` from
@@ -219,11 +258,20 @@ Retired since B1: the `ioreg` **idle-time** scrape is gone — `MacProbe` now us
 `CGEventSourceSecondsSinceLastEventType`, so it can no longer fail silently and
 stop background transcription forever.
 
+Retired 2026-08-05: **system audio**. It had never produced a sample on *any*
+platform — Windows' three real recordings all wrote a 0-byte
+`audio-system.flac`. ScreenCaptureKit now delivers real audio on a Mac,
+measured (see "The Mac day"), which makes macOS the first platform on which
+the other side of a call has ever been recorded. Windows loopback is still
+unexplained and still owed a run with sound actually playing.
+
 Still assumed:
-- **Every capture path.** No audio device has ever produced a sample through
-  this code. CI runners have none either, so CI will not close this — it needs a
-  human at a real machine.
-- **macOS Screen Recording permission** — never requested, granted or refused.
+- **Windows system audio.** See above: 0 bytes on all three real recordings,
+  cause unknown. The Mac working does not tell us anything about WASAPI.
+- **The macOS microphone permission dialog** — the mic itself is verified
+  (`MacBook Pro Microphone`, real samples), but it was granted to a terminal,
+  not to `Notetaker.app`. The first launch of the bundle asks again, and a
+  *refusal* is still an untravelled path.
 - `pmset -g batt` parsing for AC/battery: tested against captured real output,
   never run on a Mac.
 - `ollama` — verified against `httpmock` only; the NDJSON field names come from
@@ -466,10 +514,17 @@ working product: **whether a microphone produces a sample.** Nothing beyond the
 app's own startup has been exercised on hardware — no recording, no model
 download, no transcription.
 
-macOS has the identical bug and is not fixed: `.app` resources land in
-`Contents/Resources/` while the binary is in `Contents/MacOS/`, so the dylibs
-need `Contents/Frameworks` and an rpath instead. Left alone rather than guessed
-at, because it cannot be verified from here and the Mac work is blocked anyway.
+macOS had the identical bug. **Fixed 2026-08-05** and verified against the built
+bundle rather than reasoned about: `bundle.macOS.frameworks` in
+`tauri.macos.conf.json` puts the three dylibs in `Contents/Frameworks/`, and
+`otool -L` on every shipped binary shows all three `@rpath` loads resolving
+inside the bundle. `core/tests/installer.rs` now guards macOS the same way it
+guards Windows — and it matters more there, because `frameworks` takes literal
+paths and **does not glob**, so the "a glob matching nothing is a hard error"
+safety net does not exist. It must name `libonnxruntime.1.17.1.dylib`, the
+versioned file; the unversioned `libonnxruntime.dylib` beside it is a symlink
+and bundling that instead yields an app that launches and dies on first
+transcribe. A test pins exactly that.
 
 ## First real use, 2026-07-30 — what a person found in ten minutes
 Mr. Brothers installed it and used it. **Capture works on real hardware**: three
@@ -511,10 +566,81 @@ Two capture bugs found in his files, not yet chased:
   `null`, so whatever happened was never reported. The silence is the bug
   regardless of the cause.
 
+## The Mac day, 2026-08-05 — and the bug only hardware could find
+The constraint this whole document was written under is gone. Every line of
+this project was authored on a Linux box that could not compile macOS code, let
+alone run it; the Mac now builds all four crates natively in about 30 seconds
+and runs the tests in two.
+
+**What was actually missing, in the order it mattered:**
+
+- **`NSMicrophoneUsageDescription` did not exist anywhere in the repo.** There
+  was no `Info.plist` and no entitlements file at all. This is not a nicety: a
+  macOS process that touches the microphone without that key is **killed by the
+  OS**, not denied. The app would have died on the first press of Record with
+  nothing to explain it. Now in `src-tauri/Info.plist`, which Tauri merges.
+- **Metal was never compiled in.** `whisper-rs` is `default = []` and no feature
+  was set in any manifest, while `detect_tier` puts every Apple Silicon machine
+  with ≥16 GB on `AppleSiliconBig` — a tier whose stated justification is "the
+  large model on the GPU". The tier was promising something the build did not
+  contain. Confirmed fixed by reading the binary, not the config: `Metal.framework`
+  and `MetalKit.framework` are linked, and a real run logs
+  `GPU name: Apple M5 Pro` with `Metal total size = 1623.92 MB` — the whole
+  `large-v3-turbo` resident on the GPU.
+- **No full Xcode needed.** Command Line Tools carry the ScreenCaptureKit SDK,
+  and whisper.cpp embeds its Metal shaders as *source* compiled at runtime
+  (`ggml-metal-embed`), so the absent `xcrun metal` never comes up. One thing is
+  left on the table: `ggml_metal_library_init_from_source: error compiling
+  source` → *"the tensor API is not supported in this environment - disabling"*.
+  Installing Xcode may unlock the M5's tensor path. Untested, and worth a try.
+
+**The bug that justifies all of this.** ScreenCaptureKit started cleanly, called
+the delegate at the correct rate with `type=1` (audio), and delivered **zero
+samples, forever**. `CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer`
+returned `kCMSampleBufferError_ArrayTooSmall` (-12737) on every buffer while
+being handed a list *four times larger* than it asked for — 136 bytes provided
+against 40 needed.
+
+The name is a lie. The size passed must describe a list of **exactly** the
+number of buffers the sample holds, not merely one big enough to hold it. So
+ask first, then fill: one call with a null list to learn the size, a second with
+that size. Nothing about this is visible to a compiler, a unit test, or CI. It
+compiles, it starts, it calls back, and it records silence — which is precisely
+the outcome the ground rules call worse than any crash.
+
+**How that gets caught now.** Two examples exist because no unit test can open a
+device and no CI runner has one:
+
+```bash
+cargo run -p notetaker-platform --example system-audio   # play something first
+cargo run -p notetaker-platform --example microphone     # then say something
+```
+
+Both were run, and both passed for the first time in this project's life:
+
+| | samples in 5 s | peak | dropped |
+|---|---|---|---|
+| system audio | 79,146 (~4.9 s @ 16 kHz) | 0.2966 | 0 |
+| microphone | 79,487 (~5.0 s @ 16 kHz) | 0.0260 | 0 |
+
+They print sample counts *and* peak amplitude on purpose: "opened and delivered
+nothing" and "delivered nothing but silence" are different bugs with the same
+appearance, and the second is the one that ships.
+
+**Two things worth keeping:**
+- `rustc-link-arg-bins` only reaches binaries of the package that emits it. The
+  app crate's `build.rs` did nothing for `notetaker-serve`, which then died with
+  `no LC_RPATH's found` — macOS has no system fallback the way Linux does. The
+  server crate has its own `build.rs` now.
+- `notetaker-serve` does not bind its socket until `Runtime::launch` finishes,
+  and loading a 1.6 GB model onto Metal takes ~20 s. It looks dead for that
+  whole time.
+
 ## Next
-1. **macOS system audio** — ScreenCaptureKit. The full design and the reason it
-   was not written blind are in `platform/src/macos/speaker.rs`. Everything below
-   it (ring, downmix, resample) is already shared and tested.
+1. **Windows system audio is still 0 bytes.** The Mac working tells us nothing
+   about WASAPI. Re-run a Windows recording with sound definitely playing, and
+   if it is still empty, port the diagnostic-example approach to Windows — it is
+   what found the Mac bug in one run.
 2. **Non-speech leaks into transcripts, from both engines.** Whisper writes
    `[MUSIC PLAYING]` and `[BLANK_AUDIO]`; SenseVoice hallucinates a short
    interjection (`あ。`) onto the same silence. Both were seen in real audio on
@@ -532,12 +658,30 @@ Two capture bugs found in his files, not yet chased:
    recording, a transcription. Hit Record and find out. This can be driven from
    here through `powershell.exe` (see "Build environment") rather than handed
    to him as a chore.
-5. **On the Mac**: bundle the dylibs (above), Metal build and tier detection,
-   Screen Recording permission, and re-run the bake-off against
-   `large-v3-turbo`. Blocked behind ScreenCaptureKit either way.
-6. **Signing.** The installer is unsigned, so SmartScreen warns on first launch.
+5. **On the Mac — a full run through the app itself.** The pieces are all
+   verified individually; what has *not* happened is one recording taken end to
+   end inside `Notetaker.app` — permission dialogs accepted as the bundle rather
+   than as a terminal, a meeting recorded, transcribed on Metal, and summarized
+   by Ollama (`qwen3:8b` is installed and serving). That needs a person to click
+   Allow twice, and is the last thing standing between this and a working Mac
+   product. Re-run the bake-off against `large-v3-turbo` while there.
+6. **A macOS packaging job in CI**, mirroring `package-windows` — build the
+   `.app`/`.dmg` and assert every `@rpath` load resolves inside the bundle, the
+   way the Windows job reads import tables. The `.app` is currently only ever
+   built by hand.
+7. **`tauri build` cannot finish unattended.** `createUpdaterArtifacts` is on
+   and the signing step fails with *"A public key has been found, but no private
+   key"* — `TAURI_SIGNING_PRIVATE_KEY` is unset. The `.app` and `.dmg` are
+   produced before it fails, so this is not fatal to a local build, but no
+   release can be cut until the key is available.
+8. **82 frontend tests fail on the UI-overhaul branch**, in three files, all
+   from one cause: `shell` is undefined at `capture.test.tsx:475`, so
+   `shell.handlers.clear()` throws in `beforeEach`. Confirmed pre-existing by
+   running them on the untouched branch — unrelated to any Mac work. It makes
+   `pnpm test` useless as a gate until fixed.
+9. **Signing.** The installer is unsigned, so SmartScreen warns on first launch.
    Fine for one user; a wall for anyone else. Needs a certificate, i.e. money.
-7. **Windows truth pass for the UI overhaul** — nothing about the frameless
+10. **Windows truth pass for the UI overhaul** — nothing about the frameless
    window, the tray, or the global hotkeys has been verified on real
    hardware yet; CI compiles and bundles the app but never opens a window.
    Install the CI build, then check: tray icon states (idle/recording/
@@ -546,15 +690,15 @@ Two capture bugs found in his files, not yet chased:
    closed, titlebar drag / double-click / edge-snap, autostart after a
    reboot, mic picker lists real devices, `PrintWindow` screenshots of dark
    + light against the pitch.
-8. **Light-mode contrast on the first-run gradient title.** The "Getting
+11. **Light-mode contrast on the first-run gradient title.** The "Getting
    started" heading (15px/600, gradient `background-clip: text`) measures
    4.41:1 at its cyan end — just under the 4.5:1 WCAG AA minimum for that
    size and weight. Dark mode is fine.
-9. **The playhead thumb's glow is WebKit-only.**
+12. **The playhead thumb's glow is WebKit-only.**
    `input[type="range"]::-webkit-slider-thumb` carries the accent glow in
    `panels.css`; there is no `::-moz-range-thumb` rule, so Firefox users of
    the served web UI see a playhead with no glow.
-10. **No `forced-colors` fallback on gradient text.** The same first-run
+13. **No `forced-colors` fallback on gradient text.** The same first-run
     title uses `color: transparent` + `background-clip: text` with nothing
     behind it for Windows High Contrast Mode — it could render invisible
     there.
