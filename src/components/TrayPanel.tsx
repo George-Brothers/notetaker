@@ -99,7 +99,7 @@ export function TrayPanel() {
 
   useEffect(() => {
     const un = listen<TrayPanelSync>("tray-panel-sync", (event) => setSync(event.payload));
-    void emit("tray-panel-ready").catch(() => {});
+    void un.then(() => emit("tray-panel-ready")).catch(() => {});
     un.catch(() => {});
     return () => {
       void un.then((stop) => stop()).catch(() => {});
