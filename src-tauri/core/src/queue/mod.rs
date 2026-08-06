@@ -128,11 +128,24 @@ impl<'a> Queue<'a> {
         match result {
             Ok(()) => {
                 rec.meta.status = Status::Ready;
+                // A ready recording never carries an error: whatever earlier
+                // attempts recorded is now disproven by this success.
+                rec.meta.error = None;
                 self.store.save_meta(&rec)?;
                 Ok(RunOutcome::Ran)
             }
             Err(e) => {
                 rec.meta.attempts += 1;
+                // The whole chain, to the log only. `meta.error` keeps the
+                // user-facing top line; without this line the cause below it
+                // ("diarization failed: …") was discarded entirely, and a
+                // failed recording could only be diagnosed by rebuilding the
+                // pipeline with stderr attached.
+                log::warn!(
+                    "processing {} failed (attempt {}): {e:#}",
+                    rec.meta.id,
+                    rec.meta.attempts
+                );
                 if rec.meta.attempts >= MAX_ATTEMPTS {
                     rec.meta.status = Status::Failed;
                     rec.meta.error = Some(e.to_string());
@@ -174,6 +187,8 @@ mod tests {
         let store = Store::new(dir.path());
         let queue = Queue { store: &store };
         let mut rec = recorded(&store, "Lecture", 2026, 8, 4, 9, 0);
+        // Left over from an earlier failed attempt; success must clear it.
+        rec.meta.error = Some("diarization".to_string());
         queue.enqueue(&mut rec).unwrap();
 
         // The closure stands in for process_recording: it enriches meta.json
@@ -197,6 +212,10 @@ mod tests {
         assert_eq!(outcome, RunOutcome::Ran);
         let on_disk = store.scan().unwrap();
         assert_eq!(on_disk[0].meta.status, Status::Ready);
+        assert_eq!(
+            on_disk[0].meta.error, None,
+            "a ready recording never carries an error"
+        );
         assert_eq!(
             on_disk[0].meta.speakers.get("spk1").map(String::as_str),
             Some("Speaker 1"),

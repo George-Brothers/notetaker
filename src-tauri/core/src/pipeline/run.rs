@@ -95,10 +95,19 @@ pub fn process_recording(
             })
             .context("diarization")?;
             let ranges = spans_to_ranges(&spans);
-            let others_texts = timed(&mut stages, "transcribe-system", || {
-                deps.transcriber.transcribe(&system_samples, &ranges)
-            })
-            .context("transcription (system track)")?;
+            // Nobody spoke on the system track (nothing was playing, or what
+            // played had no voices). Skip its transcription entirely: the
+            // Transcriber contract reads an empty range list as "transcribe
+            // the whole file", and Whisper run over minutes of silence
+            // hallucinates markers into the transcript.
+            let others_texts = if spans.is_empty() {
+                timed(&mut stages, "transcribe-system", || Ok(Vec::new()))?
+            } else {
+                timed(&mut stages, "transcribe-system", || {
+                    deps.transcriber.transcribe(&system_samples, &ranges)
+                })
+                .context("transcription (system track)")?
+            };
             let mic_texts = timed(&mut stages, "transcribe-mic", || {
                 deps.transcriber.transcribe(&mic_samples, &[])
             })
@@ -358,6 +367,114 @@ mod tests {
         assert!(
             meta_raw.contains("stages"),
             "stage timings missing: {meta_raw}"
+        );
+    }
+
+    /// Write a real, decodable 16 kHz mono WAV of `n` samples so the loader
+    /// accepts it; the content never matters because the fakes below never
+    /// look at it beyond its length.
+    fn write_test_wav(path: &Path, n: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for _ in 0..n {
+            w.write_sample(0i16).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+
+    /// A meeting whose system track holds no speech (nothing was playing
+    /// through the speakers) must still yield a transcript from the mic
+    /// track. Found on real hardware 2026-08-05: sherpa reports "no
+    /// speakers" as an error, and the whole recording failed — discarding a
+    /// perfectly good mic track. The diarizer fake returns the zero spans
+    /// that case now produces; the transcriber fake fails the test if the
+    /// pipeline tries to transcribe the speakerless system track wholesale.
+    #[test]
+    fn meeting_with_speakerless_system_track_keeps_the_mic_transcript() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/api/chat");
+            then.status(200).json_body(serde_json::json!({
+                "message": { "role": "assistant",
+                    "content": "{\"task\": \"Accounting 302\", \"confidence\": 0.9}" }
+            }));
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 5, 21, 48, 0)
+            .unwrap();
+        let rec = store
+            .create_recording("Meeting", Mode::Meeting, created)
+            .unwrap();
+        // Mic and system tracks distinguishable by length alone.
+        write_test_wav(&rec.dir.join("audio-mic.wav"), 3200);
+        write_test_wav(&rec.dir.join("audio-system.wav"), 1600);
+
+        struct NoSpeakers;
+        impl Diarizer for NoSpeakers {
+            fn diarize(&self, _: &[f32]) -> Result<Vec<SpeakerSpan>> {
+                Ok(Vec::new())
+            }
+        }
+        struct MicOnly {
+            calls: std::sync::atomic::AtomicU32,
+        }
+        impl Transcriber for MicOnly {
+            fn transcribe(
+                &self,
+                samples: &[f32],
+                spans: &[(f32, f32)],
+            ) -> Result<Vec<(f32, f32, String)>> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert!(spans.is_empty(), "the mic track is transcribed wholesale");
+                assert_eq!(
+                    samples.len(),
+                    3200,
+                    "only the mic track may be transcribed; a speakerless \
+                     system track must be skipped, not sent wholesale"
+                );
+                Ok(vec![(0.0, 0.2, "the words that must survive".to_string())])
+            }
+        }
+
+        let transcriber = MicOnly {
+            calls: std::sync::atomic::AtomicU32::new(0),
+        };
+        let diarizer = NoSpeakers;
+        let llm = LlmClient {
+            base_url: server.base_url(),
+            model: "test".to_string(),
+        };
+        let deps = PipelineDeps {
+            transcriber: &transcriber,
+            diarizer: &diarizer,
+            llm: &llm,
+            tasks: vec!["Accounting 302".to_string()],
+        };
+
+        let out = process_recording(&store, &deps, &rec).unwrap();
+
+        assert_eq!(
+            transcriber.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "exactly one transcription: the mic"
+        );
+        assert!(
+            out.transcript_md.contains("George"),
+            "the mic speaker survives: {}",
+            out.transcript_md
+        );
+        assert!(
+            out.transcript_md.contains("the words that must survive"),
+            "the mic words survive: {}",
+            out.transcript_md
         );
     }
 

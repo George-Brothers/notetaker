@@ -681,6 +681,22 @@ Meeting mode then declines with the plain-English message, which is what the
 absent, not like an error.** Anywhere the app depends on a grant it did not
 verify, assume silence rather than a failure, and check for arrival.
 
+**Resolved (2026-08-05, third pass): ad-hoc was not enough.** `signingIdentity:
+"-"` makes the signature *valid* but pins the app's identity to the build's
+cdhash — so every rebuild orphaned the Screen Recording grant while the
+Settings checkbox stayed on, which is how Mr. Brothers granted it "25 times"
+and it never held. The fix is a stable identity: a self-signed certificate
+**"Notetaker Local Signing"** in `~/Library/Keychains/notetaker-sign.keychain-db`
+(keychain password stored as the `notetaker-sign-keychain` generic password in
+the login keychain; the CI-style separate keychain exists because the login
+keychain's own password could not be matched for `set-key-partition-list`).
+`tauri.macos.conf.json` signs with it, so the designated requirement is
+`certificate leaf = H"cc31effe…"` — stable across every rebuild. After changing
+a signing identity, clear the orphaned grant once:
+`tccutil reset ScreenCapture com.georgebrothers.notetaker`. Verified by Mr.
+Brothers pressing Record: mic audible on playback, and the app's log shows
+`system audio: first buffer read, 960 samples` — in-app capture, proven.
+
 **Also found: the two front ends use different app directories.** The Tauri
 shell calls `app.path().app_data_dir()` →
 `~/Library/Application Support/com.georgebrothers.notetaker`, while

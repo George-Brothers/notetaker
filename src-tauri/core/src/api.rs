@@ -440,6 +440,10 @@ pub fn process_now(store: &Store, id: &str) -> Result<()> {
     match rec.meta.status {
         Status::Recorded | Status::Failed | Status::Ready => {
             rec.meta.status = Status::Queued;
+            // `meta.error` describes a processing attempt and clears on retry
+            // (ground rule) — without this, a recording that failed, was
+            // retried by hand, and succeeded kept its old error text forever.
+            rec.meta.error = None;
             store.save_meta(&rec)?;
         }
         Status::Queued | Status::Processing => {}
@@ -876,11 +880,14 @@ mod tests {
 
         let mut failed = create(&s, "Failed one");
         failed.meta.status = Status::Failed;
+        failed.meta.error = Some("diarization".to_string());
         s.save_meta(&failed).unwrap();
         process_now(&s, &failed.meta.id).unwrap();
+        let requeued = find_by_id(&s, &failed.meta.id).unwrap();
+        assert_eq!(requeued.meta.status, Status::Queued);
         assert_eq!(
-            find_by_id(&s, &failed.meta.id).unwrap().meta.status,
-            Status::Queued
+            requeued.meta.error, None,
+            "an error describes an attempt and clears on retry"
         );
 
         let mut ready = create(&s, "Ready one");

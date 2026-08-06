@@ -1,3 +1,48 @@
+# Update — 2026-08-05, late session: the permission is FIXED, capture proven in-app
+
+**Root cause of the "granted 25 times and still refused" loop:** TCC binds a
+grant to the app's code signature. Ad-hoc signing (`signingIdentity: "-"`)
+pins the identity to the build's cdhash — every rebuild silently orphaned the
+grant while the Settings checkbox stayed on. Builds before 21:08 additionally
+had an *invalid* signature no grant could attach to at all.
+
+**The fix, in place and verified:** a self-signed certificate
+(**"Notetaker Local Signing"**) in a dedicated keychain
+`~/Library/Keychains/notetaker-sign.keychain-db` (its password is a generic
+password named `notetaker-sign-keychain` in the login keychain — CI-style,
+because Mr. Brothers' login-keychain password did not match his login
+password, so `set-key-partition-list` on the login keychain was impossible).
+The installed app is re-signed with it; designated requirement is now
+`certificate leaf = H"cc31effe…"` — **stable across rebuilds, so the grant can
+never be orphaned again**. `tauri.macos.conf.json` now signs future builds
+with the same identity. Stale TCC entries were cleared with
+`tccutil reset ScreenCapture com.georgebrothers.notetaker`.
+
+**Proven on hardware, by Mr. Brothers himself (21:48):** a 40 s meeting
+recording through the app UI — mic track audible on playback, and the first
+non-empty `audio-system.flac` in this app's life. In-app log shows
+`system audio: first buffer read, 960 samples`.
+
+**Not a bug after all:** the global hotkey (Cmd+Opt+N) worked the whole time —
+every "dead" press had actually called `start_capture`, opened the mic, then
+hit the orphaned permission and rolled back silently.
+
+## New problems found tonight, in priority order
+
+1. **Processing fails with `error: "diarization"`, 5 attempts,** on the 21:48
+   recording. Meeting mode diarizes the *system* track; this one is ~40 s of
+   pure silence (nothing was playing). Prime suspect: diarizing a silent/empty
+   signal has never been exercised on any platform. Being reproduced through
+   `notetaker-serve` with stderr visible. `meta.error` carries only the stage
+   name — the pipeline swallows the real error text; that is itself a bug.
+2. **The macOS window chrome is Windows chrome** (Mr. Brothers, 21:55): the
+   custom titlebar draws Windows-style minimize/maximize/close glyphs, on the
+   right. On a Mac they must be traffic lights, on the left — likely the
+   overhaul's `feat(native): the window draws its own titlebar` needs a
+   per-OS branch or native decorations on macOS.
+
+---
+
 # Handover — 2026-08-05 (macOS bring-up)
 
 Read `docs/MAP.md` first — especially **"The Mac day"** and **"The signature,

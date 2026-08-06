@@ -8,7 +8,7 @@
         "target/release/libsherpa-onnx-cxx-api.dylib"
       ],
       "minimumSystemVersion": "13.0",
-      "signingIdentity": "-",
+      "signingIdentity": "Notetaker Local Signing",
       "entitlements": "entitlements.plist"
     }
   }

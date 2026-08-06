@@ -47,9 +47,20 @@ impl Diarizer for SherpaDiarizer {
             .inner
             .lock()
             .map_err(|_| anyhow::anyhow!("diarizer lock poisoned"))?;
-        let segments = inner
-            .compute(samples.to_vec(), None)
-            .map_err(|e| anyhow::anyhow!("diarization failed: {e}"))?;
+        // sherpa-rs 0.6.8 reports "nobody spoke" as an error: `compute` bails
+        // with this exact string whenever the result holds zero segments,
+        // which is the normal outcome for a track with no speech on it — a
+        // meeting where nothing played through the speakers, or music with no
+        // voices. Zero speakers is an answer, not a failure. The cost of
+        // matching the string: a genuine null-pointer failure inside sherpa is
+        // also read as "nobody spoke", surfacing as an empty transcript rather
+        // than a failed recording — the better wrong outcome for an app whose
+        // ground rule is never to lose a recording.
+        let segments = match inner.compute(samples.to_vec(), None) {
+            Ok(segments) => segments,
+            Err(e) if e.to_string().contains("No segments found") => Vec::new(),
+            Err(e) => return Err(anyhow::anyhow!("diarization failed: {e}")),
+        };
         Ok(segments
             .into_iter()
             .map(|s| SpeakerSpan {
