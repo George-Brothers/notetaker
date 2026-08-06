@@ -3,6 +3,7 @@
 //! The microphone is not here — `cpal` covers both platforms, so it lives in
 //! [`crate::mic`].
 
+pub mod mic_activity;
 pub mod power;
 pub mod speaker;
 

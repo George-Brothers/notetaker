@@ -73,6 +73,11 @@ const KNOWN_APPS: Array<{ id: string; label: string }> = [
   { id: "webex", label: "Webex" },
   { id: "discord", label: "Discord" },
   { id: "facetime", label: "FaceTime" },
+  // Not a process the watcher matches — the virtual id for "the microphone
+  // went hot with no known meeting app running", which catches huddles and
+  // browser calls. In this table so the policy row renders and saves exactly
+  // like an app's ("Ask" by default).
+  { id: "call", label: "Any other call (microphone in use)" },
 ];
 
 const POLICY_OPTIONS: Array<{ value: AutoRecordPolicy; label: string }> = [

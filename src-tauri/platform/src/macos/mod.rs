@@ -18,5 +18,6 @@
 //! a conversation — but the case that now produces one is a refused **Screen
 //! Recording** permission, and the message says where to grant it.
 
+pub mod mic_activity;
 pub mod power;
 pub mod speaker;

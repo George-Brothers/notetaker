@@ -37,6 +37,25 @@ pub trait ProcessSource: Send + Sync {
     fn running_processes(&self) -> Vec<String>;
 }
 
+/// The second seam: is the microphone hot right now?
+///
+/// This is what catches the calls the process list cannot — FaceTime, a Slack
+/// huddle, a meeting in a browser tab. The OS knows the moment any app opens
+/// the mic; the watcher only needs the yes/no.
+pub trait MicSource: Send + Sync {
+    /// True while some app (on Windows: some OTHER app; on macOS the device
+    /// flag is process-blind, which is why the runtime suppresses this signal
+    /// while its own capture runs) is using the default microphone.
+    fn mic_in_use(&self) -> bool;
+}
+
+/// The virtual app id the mic signal reports under. Not in `KNOWN_APPS` —
+/// there is no process to match — but it lives in the same `auto_record`
+/// policy map, so "Ask / Always / Never" work for it like any app.
+pub const MIC_APP_ID: &str = "call";
+/// What the prompt calls it: "Record Call?" / "Call — Aug 5, 9:12 PM".
+pub const MIC_APP_NAME: &str = "Call";
+
 /// The production source: `sysinfo`, which enumerates processes identically on
 /// macOS and Linux.
 ///
@@ -136,6 +155,10 @@ pub struct Watcher {
     /// order when two apps change in the same poll — is the table's order and
     /// not a hash map's whim.
     states: Vec<AppState>,
+    /// `None` means mic detection is off (no platform probe wired, or tests
+    /// that only exercise the process side).
+    mic: Option<Box<dyn MicSource>>,
+    mic_state: AppState,
 }
 
 impl Watcher {
@@ -143,7 +166,16 @@ impl Watcher {
         Watcher {
             source,
             states: KNOWN_APPS.iter().map(|_| AppState::default()).collect(),
+            mic: None,
+            mic_state: AppState::default(),
         }
+    }
+
+    /// Adds mic-in-use detection. Builder-style so every existing caller and
+    /// test keeps its exact shape.
+    pub fn with_mic(mut self, mic: Box<dyn MicSource>) -> Self {
+        self.mic = Some(mic);
+        self
     }
 
     /// The production constructor: watch this machine's real processes.
@@ -202,6 +234,51 @@ impl Watcher {
                     events.push(MeetingEvent {
                         app_id: app.id.to_string(),
                         app_name: app.display_name.to_string(),
+                        kind,
+                        auto_start: policy == AutoRecordPolicy::Always,
+                    });
+                }
+            }
+        }
+
+        // The mic signal, debounced exactly like an app. Suppressed whenever
+        // any known app is visible at all (present this poll, or mid-meeting):
+        // the app-level detection owns those calls, and "Zoom detected" plus
+        // "Call detected" for the same meeting would be a double prompt. The
+        // suppression also resets the mic streak, so a Zoom meeting ending
+        // does not instantly convert its trailing mic activity into a prompt.
+        if let Some(mic) = &self.mic {
+            let app_visible =
+                self.states.iter().any(|s| s.running || s.present_streak > 0);
+            let hot = !app_visible && mic.mic_in_use();
+            if hot {
+                self.mic_state.present_streak = self.mic_state.present_streak.saturating_add(1);
+                self.mic_state.absent_streak = 0;
+            } else {
+                self.mic_state.absent_streak = self.mic_state.absent_streak.saturating_add(1);
+                self.mic_state.present_streak = 0;
+            }
+            let kind = if !self.mic_state.running
+                && self.mic_state.present_streak >= CONFIRM_POLLS
+            {
+                self.mic_state.running = true;
+                Some(MeetingEventKind::Started)
+            } else if self.mic_state.running && self.mic_state.absent_streak >= CONFIRM_POLLS {
+                self.mic_state.running = false;
+                Some(MeetingEventKind::Ended)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                let policy = settings
+                    .auto_record
+                    .get(MIC_APP_ID)
+                    .copied()
+                    .unwrap_or_default();
+                if policy != AutoRecordPolicy::Never {
+                    events.push(MeetingEvent {
+                        app_id: MIC_APP_ID.to_string(),
+                        app_name: MIC_APP_NAME.to_string(),
                         kind,
                         auto_start: policy == AutoRecordPolicy::Always,
                     });
@@ -424,5 +501,86 @@ mod tests {
         // that happens to have Slack open right now.
         let mut watcher = Watcher::with_sysinfo();
         assert!(watcher.poll(&Settings::default()).is_empty());
+    }
+
+    /// A scripted mic: one bool per poll, quiet once the script runs out.
+    struct FakeMic {
+        frames: Vec<bool>,
+        cursor: Mutex<usize>,
+    }
+    impl FakeMic {
+        fn hot_for(polls: usize) -> Box<Self> {
+            Box::new(FakeMic {
+                frames: vec![true; polls],
+                cursor: Mutex::new(0),
+            })
+        }
+    }
+    impl MicSource for FakeMic {
+        fn mic_in_use(&self) -> bool {
+            let mut cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
+            let hot = self.frames.get(*cursor).copied().unwrap_or(false);
+            *cursor += 1;
+            hot
+        }
+    }
+
+    /// A hot mic with no known meeting app running is a call — FaceTime, a
+    /// huddle, a browser tab. Debounced exactly like an app.
+    #[test]
+    fn a_hot_mic_alone_is_a_call() {
+        let mut watcher =
+            watcher_over(frames(&[], N * 2)).with_mic(FakeMic::hot_for(N * 2));
+        let events = poll_n(&mut watcher, &Settings::default(), N);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].app_id, MIC_APP_ID);
+        assert_eq!(events[0].app_name, MIC_APP_NAME);
+        assert_eq!(events[0].kind, MeetingEventKind::Started);
+        assert!(!events[0].auto_start, "default policy is Ask");
+    }
+
+    /// Zoom visible and the mic hot is ONE meeting, and Zoom's. A second
+    /// "Call detected" prompt for the same meeting would teach the user to
+    /// dismiss prompts without reading them.
+    #[test]
+    fn a_known_app_owns_its_call_no_double_prompt() {
+        let mut watcher =
+            watcher_over(frames(&["zoom.us"], N * 3)).with_mic(FakeMic::hot_for(N * 3));
+        let events = poll_n(&mut watcher, &Settings::default(), N * 3);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].app_id, "zoom");
+    }
+
+    /// The call ends the way it began: quiet mic for CONFIRM_POLLS.
+    #[test]
+    fn a_call_ends_when_the_mic_goes_quiet() {
+        let mut watcher =
+            watcher_over(frames(&[], N * 3)).with_mic(FakeMic::hot_for(N));
+        let events = poll_n(&mut watcher, &Settings::default(), N * 3);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[1].kind, MeetingEventKind::Ended);
+        assert_eq!(events[1].app_id, MIC_APP_ID);
+    }
+
+    /// "Never" for the virtual call id silences mic detection entirely, same
+    /// contract as any app the user has muted.
+    #[test]
+    fn never_policy_silences_mic_detection() {
+        let mut watcher =
+            watcher_over(frames(&[], N * 2)).with_mic(FakeMic::hot_for(N * 2));
+        let settings = settings_with(&[(MIC_APP_ID, AutoRecordPolicy::Never)]);
+        let events = poll_n(&mut watcher, &settings, N * 2);
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    /// "Always" auto-starts a call recording like it does for a known app.
+    #[test]
+    fn always_policy_auto_starts_a_call() {
+        let mut watcher =
+            watcher_over(frames(&[], N)).with_mic(FakeMic::hot_for(N));
+        let settings = settings_with(&[(MIC_APP_ID, AutoRecordPolicy::Always)]);
+        let events = poll_n(&mut watcher, &settings, N);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].auto_start);
     }
 }

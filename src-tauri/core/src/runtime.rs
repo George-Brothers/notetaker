@@ -674,7 +674,10 @@ impl Runtime {
                 last_recording: Mutex::new(None),
                 finishing: Mutex::new(()),
                 closing: Mutex::new(None),
-                watcher: Mutex::new(Watcher::with_sysinfo()),
+                watcher: Mutex::new(
+                    Watcher::with_sysinfo()
+                        .with_mic(Box::new(crate::watch::mic::PlatformMic)),
+                ),
                 sources,
                 probe,
                 idle: LivePolicy::new(policy),
@@ -1097,7 +1100,19 @@ impl Runtime {
     /// silences it on the next tick rather than on the next launch.
     pub fn poll_meetings(&self) -> Result<Vec<MeetingEvent>> {
         let settings = self.get_settings()?;
-        Ok(lock(&self.inner.watcher).poll(&settings))
+        let mut events = lock(&self.inner.watcher).poll(&settings);
+        // The mic signal cannot tell our own capture from a call — on macOS
+        // the device flag is process-blind, and our recording holds the mic.
+        // While anything is being captured, a "call started" from the mic is
+        // therefore us, and prompting the user to record the recording would
+        // be nonsense. App-level events (Zoom seen) still flow.
+        if self.capture_status().state != CaptureState::Idle {
+            events.retain(|e| {
+                !(e.app_id == crate::watch::watcher::MIC_APP_ID
+                    && e.kind == crate::watch::MeetingEventKind::Started)
+            });
+        }
+        Ok(events)
     }
 
     /// Replaces the meeting watcher — for tests driving a scripted

@@ -6,6 +6,7 @@
 //! and tested here rather than waiting for the Mac.
 
 pub mod apps;
+pub mod mic;
 pub mod watcher;
 
 use serde::{Deserialize, Serialize};

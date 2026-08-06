@@ -47,6 +47,10 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Power",
     "Win32_System_SystemInformation",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
 ] }
 
 # macOS: ScreenCaptureKit for system audio (which does require the Screen
@@ -69,5 +73,8 @@ objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMFormatDes
 # ABI, so it keeps the cross-check property this crate's manifest is built
 # around — see the note above `[dependencies]`.
 objc2-core-audio-types = "0.3"
+# The HAL's "is the default input device running somewhere" property — how
+# mic-in-use detection works. Pure bindings, so the cross-check holds.
+objc2-core-audio = "0.3"
 dispatch2 = "0.3"
 block2 = "0.6"
