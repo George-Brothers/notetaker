@@ -494,7 +494,25 @@ describe("closing the window, the tray menu, and the OS-wide shell", () => {
     // *and* we are on the desktop — precisely the state `closeToTrayRef` reads
     // from, so this is the honest signal that the listeners can be fired.
     await screen.findByText(/hit record, or press/i);
-    await waitFor(() => expect(shell.handlers.size).toBe(4));
+    await waitFor(() => {
+      expect([...shell.handlers.keys()]).toEqual(
+        expect.arrayContaining([
+          "close-requested",
+          "tray-toggle-recording",
+          "tray-record",
+          "tray-pause-resume",
+          "tray-stop",
+          "overlay-record",
+          "overlay-dismiss",
+          "overlay-highlight",
+          "overlay-pause-resume",
+          "overlay-stop",
+          "overlay-open",
+          "tray-open-settings",
+          "tray-quit-requested",
+        ]),
+      );
+    });
     return view;
   }
 
@@ -723,9 +741,10 @@ describe("closing the window, the tray menu, and the OS-wide shell", () => {
   it("drops its subscriptions when the shell goes away", async () => {
     const { unmount } = await mount();
     const before = shell.unlisten.mock.calls.length;
+    const subscriptions = shell.handlers.size;
 
     unmount();
 
-    await waitFor(() => expect(shell.unlisten.mock.calls.length).toBe(before + 4));
+    await waitFor(() => expect(shell.unlisten.mock.calls.length).toBe(before + subscriptions));
   });
 });
