@@ -32,7 +32,12 @@ tauri-build = { version = "2", features = [] }
 # tauri 2.11.5's Cargo.toml and the `#[cfg]`s on `image::Image::from_bytes` and
 # `pub mod tray`), and neither can be discovered on this machine because this
 # crate never compiles here.
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri = { version = "2", features = [
+    "protocol-asset",
+    "tray-icon",
+    "image-png",
+    "macos-private-api",
+] }
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
@@ -41,6 +46,9 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-dialog = "2"
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
+tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
+window-vibrancy = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
@@ -50,3 +58,6 @@ log = "0.4"
 # disagree about what a device is called.
 cpal = "0.16.0"
 notetaker-core = { path = "core" }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

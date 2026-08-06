@@ -61,6 +61,25 @@ pub use mic::MicSource;
 /// silently.
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 
+/// Result of a platform paste attempt. Core maps this to its serializable
+/// dictation result without making the platform crate depend on core.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteOutcome {
+    pub inserted: bool,
+    pub clipboard_restored: bool,
+    pub message: String,
+}
+
+impl PasteOutcome {
+    pub fn copied(message: impl Into<String>) -> Self {
+        Self {
+            inserted: false,
+            clipboard_restored: false,
+            message: message.into(),
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub mod windows;
 

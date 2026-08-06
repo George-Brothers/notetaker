@@ -71,6 +71,13 @@ impl MicSource {
     /// missing or busy microphone is an error from this call rather than a
     /// recording that turns out to be silent.
     pub fn start() -> Result<Self> {
+        Self::start_preferred(&[])
+    }
+
+    /// Opens the first named input device that is available, falling back to
+    /// the system default when none of the saved choices is connected.
+    pub fn start_preferred(preferred_devices: &[String]) -> Result<Self> {
+        let preferred_devices = preferred_devices.to_vec();
         let (mut writer, reader) = ring::channel(ring::DEFAULT_CAPACITY);
         let device_lost = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
@@ -85,8 +92,14 @@ impl MicSource {
             .spawn(move || {
                 let opened = (|| -> Result<(cpal::Stream, Opened)> {
                     let host = cpal::default_host();
-                    let device = host
-                        .default_input_device()
+                    let device = preferred_devices
+                        .iter()
+                        .find_map(|preferred| {
+                            host.input_devices().ok()?.find(|device| {
+                                device.name().ok().as_deref() == Some(preferred.as_str())
+                            })
+                        })
+                        .or_else(|| host.default_input_device())
                         .context("No microphone is available on this computer.")?;
                     let name = device
                         .name()

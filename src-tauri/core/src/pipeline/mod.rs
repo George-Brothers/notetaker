@@ -5,6 +5,7 @@ pub mod ask;
 pub mod audio;
 pub mod diarize;
 pub mod llm;
+pub mod live;
 pub mod merge;
 pub mod route;
 pub mod run;

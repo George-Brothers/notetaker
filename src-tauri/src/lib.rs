@@ -26,8 +26,10 @@
 //! contract, and a test fails the build if either side drifts from it.
 
 mod tray;
+mod windowing;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use notetaker_core::capture::platform::PlatformSources;
 use notetaker_core::dispatch::dispatch;
@@ -141,6 +143,11 @@ fn save_notes(rt: State<'_, Runtime>, id: String, notes_md: String) -> Result<Va
 }
 
 #[tauri::command]
+fn append_note(rt: State<'_, Runtime>, id: String, jot: String) -> Result<Value, String> {
+    call(&rt, "append_note", json!({ "id": id, "jot": jot }))
+}
+
+#[tauri::command]
 fn add_highlight(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "add_highlight", json!({}))
 }
@@ -180,6 +187,24 @@ fn ask_recording(rt: State<'_, Runtime>, id: String, question: String) -> Result
         "ask_recording",
         json!({ "id": id, "question": question }),
     )
+}
+
+#[tauri::command]
+fn start_live_ask(
+    rt: State<'_, Runtime>,
+    question: String,
+    context: String,
+) -> Result<Value, String> {
+    call(
+        &rt,
+        "start_live_ask",
+        json!({ "question": question, "context": context }),
+    )
+}
+
+#[tauri::command]
+fn poll_live_ask(rt: State<'_, Runtime>, id: String) -> Result<Value, String> {
+    call(&rt, "poll_live_ask", json!({ "id": id }))
 }
 
 #[tauri::command]
@@ -254,6 +279,36 @@ fn capture_status(rt: State<'_, Runtime>) -> Result<Value, String> {
 #[tauri::command]
 fn capture_levels(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "capture_levels", json!({}))
+}
+
+#[tauri::command]
+fn live_transcript(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "live_transcript", json!({}))
+}
+
+#[tauri::command]
+fn start_dictation(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "start_dictation", json!({}))
+}
+
+#[tauri::command]
+fn stop_dictation(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "stop_dictation", json!({}))
+}
+
+#[tauri::command]
+fn cancel_dictation(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "cancel_dictation", json!({}))
+}
+
+#[tauri::command]
+fn dictation_status(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "dictation_status", json!({}))
+}
+
+#[tauri::command]
+fn copy_last_transcript(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "copy_last_transcript", json!({}))
 }
 
 #[tauri::command]
@@ -382,6 +437,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_nspanel::init())
+        .plugin(tauri_plugin_positioner::init())
         // DECORATIONS excluded: whether a window has OS chrome is the
         // platform's decision, made in config — native overlay titlebar on
         // macOS, our own drawn one on Windows — not user state to remember.
@@ -405,6 +462,10 @@ pub fn run() {
             let app_dir = app.path().app_data_dir()?;
             logging::install(&app_dir);
             let runtime = open_runtime(&app_dir)?;
+            let event_app = app.handle().clone();
+            runtime.set_model_event_sink(Arc::new(move |event| {
+                let _ = event_app.emit("model-state-changed", event);
+            }));
 
             // Recovers what a crash left behind, rebuilds the search index, and
             // starts transcribing in the background. One call, shared with
@@ -420,6 +481,31 @@ pub fn run() {
             // icon in its resource table, and `tray_by_id` is how it is reached
             // again.
             tray::build(&app.handle().clone())?;
+
+            // The tray popover is a third dumb remote. It is created by Rust
+            // so the native tray can position it before showing it; its
+            // controls send the same intent events as the menu below.
+            {
+                let panel = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "tray-panel",
+                    tauri::WebviewUrl::App("index.html#tray-panel".into()),
+                )
+                .title("Notetaker")
+                .inner_size(360.0, 420.0)
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .visible_on_all_workspaces(true)
+                .skip_taskbar(true)
+                .visible(false)
+                .build()?;
+                windowing::configure_panel(&panel, windowing::FloatingWindow::TrayPanel)?;
+                windowing::apply_vibrancy(&panel);
+            }
 
             // The floating overlay: a small always-on-top pill the main
             // webview shows and hides (its visibility policy lives in
@@ -444,12 +530,15 @@ pub fn run() {
                 .maximizable(false)
                 .minimizable(false)
                 .decorations(false)
+                .transparent(true)
                 .always_on_top(true)
                 .visible_on_all_workspaces(true)
                 .content_protected(true)
                 .skip_taskbar(true)
                 .visible(false)
                 .build()?;
+                windowing::configure_panel(&overlay, windowing::FloatingWindow::Overlay)?;
+                windowing::apply_vibrancy(&overlay);
                 // Top-right of the primary screen, clear of the menu bar and
                 // the notch, mirroring where every OS puts its own overlays.
                 if let Ok(Some(monitor)) = overlay.primary_monitor() {
@@ -477,11 +566,14 @@ pub fn run() {
             delete_recording,
             rename_speaker,
             save_notes,
+            append_note,
             add_highlight,
             list_templates,
             set_template,
             set_action_done,
             ask_recording,
+            start_live_ask,
+            poll_live_ask,
             audio_path,
             log_path,
             get_settings,
@@ -493,6 +585,12 @@ pub fn run() {
             stop_capture,
             capture_status,
             capture_levels,
+            live_transcript,
+            start_dictation,
+            stop_dictation,
+            cancel_dictation,
+            dictation_status,
+            copy_last_transcript,
             poll_meetings,
             ollama_status,
             pull_model,
@@ -506,10 +604,34 @@ pub fn run() {
             list_input_devices,
         ])
         .on_window_event(|window, event| {
-            // Only the main window. This handler fires for every window there
-            // is, and a second one — the titlebar work adds candidates — would
-            // otherwise have its close cancelled by a listener that only ever
-            // knew how to hide this one, leaving it impossible to close at all.
+            // The tray popover is dismissed when it loses focus or receives a
+            // close request. On macOS it is a non-activating panel; on Windows
+            // the focus change is the platform's normal flyout behavior.
+            if window.label() == "tray-panel" {
+                match event {
+                    tauri::WindowEvent::Focused(false) => {
+                        let _ = window.hide();
+                    }
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
+            // The overlay is persistent while recording. Closing it means
+            // hide, never destroy; the main owner will show it again on the
+            // next sync if the setting still allows it.
+            if window.label() == "overlay" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                return;
+            }
+
             if window.label() != "main" {
                 return;
             }

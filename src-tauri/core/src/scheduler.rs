@@ -6,6 +6,7 @@
 //! app spawns; it parks between ticks and can be woken early (a user pressing
 //! "Process now") via the returned [`Waker`].
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, Thread};
@@ -13,7 +14,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::pipeline::llm::LlmClient;
 use crate::pipeline::run::{process_recording, PipelineDeps};
+use crate::models::ModelCache;
 use crate::queue::{IdleSource, Queue, RunOutcome};
 
 /// How long the loop sleeps between ticks when it has nothing to do. A wake
@@ -21,9 +24,52 @@ use crate::queue::{IdleSource, Queue, RunOutcome};
 pub const TICK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// One scheduling decision: if the machine is idle, run at most one queued
-/// recording through the pipeline. Returns what happened so a caller (or a
-/// test) can react. Pure with respect to time — no sleeping, no threads.
-pub fn tick(queue: &Queue, idle: &dyn IdleSource, deps: &PipelineDeps) -> Result<RunOutcome> {
+/// recording through the pipeline. Models are acquired only after
+/// `Queue::run_one` has passed both the idle gate and the queued-recording
+/// check. The cache sweep is deliberately at the end of this function — the
+/// scheduler tick is the only idle sweeper.
+pub fn tick(
+    queue: &Queue,
+    idle: &dyn IdleSource,
+    cache: &ModelCache,
+    llm: &LlmClient,
+    tasks: &[String],
+    task_models: &BTreeMap<String, String>,
+) -> Result<RunOutcome> {
+    let outcome = queue.run_one(idle, |rec| {
+        let task_llm = rec
+            .task
+            .as_deref()
+            .and_then(|task| task_models.get(task))
+            .map(|model| LlmClient {
+                base_url: llm.base_url.clone(),
+                model: model.clone(),
+            });
+        let lease = cache.acquire()?;
+        let deps = PipelineDeps {
+            transcriber: lease.transcriber(),
+            diarizer: lease.diarizer(),
+            llm: task_llm.as_ref().unwrap_or(llm),
+            tasks: tasks.to_vec(),
+        };
+        let result = process_recording(queue.store, &deps, rec).map(|_| ());
+        // Keep the lease across every pipeline stage, including the final
+        // metadata write, then release it before the tick's idle sweep.
+        drop(lease);
+        result
+    })?;
+    cache.sweep();
+    Ok(outcome)
+}
+
+/// Direct-dependency seam retained for small scheduler tests and callers that
+/// already own a loaded model set. Production scheduling uses [`tick`] so
+/// model lifetime is governed by [`ModelCache`].
+pub fn tick_with_deps(
+    queue: &Queue,
+    idle: &dyn IdleSource,
+    deps: &PipelineDeps,
+) -> Result<RunOutcome> {
     queue.run_one(idle, |rec| {
         process_recording(queue.store, deps, rec).map(|_| ())
     })
@@ -50,27 +96,51 @@ impl Waker {
     }
 }
 
-/// Runs the scheduler loop on the current thread until stopped. Intended to
-/// be given its own `std::thread`. `on_outcome` is called after every tick
-/// (the app uses it to emit `queue-changed` / `processing-progress` events);
-/// tests use it to observe progress.
-///
-/// The caller owns the thread and the [`Waker`]: spawn a thread running this,
-/// then build a `Waker` from that thread's handle and the same `stop` flag so
-/// a "Process now" command can cut the current sleep short. Wiring the actual
-/// `std::thread::spawn` lives in the app layer (Plan B), because it needs
-/// `'static` model handles the core can't own.
+/// Runs the cache-backed scheduler loop on the current thread until stopped.
+/// `on_outcome` is called after every tick (the app uses it to index finished
+/// recordings); tests use it to observe progress. `tick_interval` is separate
+/// from the model idle window and is injectable in tests.
 pub fn run_loop<F>(
     queue: &Queue,
     idle: &dyn IdleSource,
-    deps: &PipelineDeps,
+    cache: &ModelCache,
+    llm: &LlmClient,
+    tasks: &[String],
+    task_models: &BTreeMap<String, String>,
     stop: Arc<AtomicBool>,
+    on_outcome: F,
+) where
+    F: FnMut(&RunOutcome),
+{
+    run_loop_with_interval(
+        queue,
+        idle,
+        cache,
+        llm,
+        tasks,
+        task_models,
+        stop,
+        TICK_INTERVAL,
+        on_outcome,
+    );
+}
+
+/// Test-injectable version of [`run_loop`].
+pub fn run_loop_with_interval<F>(
+    queue: &Queue,
+    idle: &dyn IdleSource,
+    cache: &ModelCache,
+    llm: &LlmClient,
+    tasks: &[String],
+    task_models: &BTreeMap<String, String>,
+    stop: Arc<AtomicBool>,
+    tick_interval: Duration,
     mut on_outcome: F,
 ) where
     F: FnMut(&RunOutcome),
 {
     while !stop.load(Ordering::SeqCst) {
-        match tick(queue, idle, deps) {
+        match tick(queue, idle, cache, llm, tasks, task_models) {
             Ok(outcome) => {
                 let more_now = matches!(outcome, RunOutcome::Ran);
                 on_outcome(&outcome);
@@ -89,19 +159,23 @@ pub fn run_loop<F>(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        thread::park_timeout(TICK_INTERVAL);
+        thread::park_timeout(tick_interval);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{ModelIdleUnload, SpeechEngine};
     use crate::pipeline::diarize::{Diarizer, SpeakerSpan};
     use crate::pipeline::llm::LlmClient;
     use crate::pipeline::transcribe::Transcriber;
+    use crate::models::cache::{LoadedModels, ModelPaths};
     use crate::queue::AlwaysIdle;
     use crate::storage::{Mode, Status, Store};
     use chrono::TimeZone;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct NeverIdle;
     impl IdleSource for NeverIdle {
@@ -190,7 +264,7 @@ mod tests {
         let (t, d) = (EmptyText, OneSpeaker);
         let deps = deps(&t, &d, &llm);
 
-        let outcome = tick(&queue, &AlwaysIdle, &deps).unwrap();
+        let outcome = tick_with_deps(&queue, &AlwaysIdle, &deps).unwrap();
         // The recording was picked up and attempted (LLM failure → retry).
         assert!(matches!(
             outcome,
@@ -216,11 +290,56 @@ mod tests {
         let (t, d) = (EmptyText, OneSpeaker);
         let deps = deps(&t, &d, &llm);
 
-        let outcome = tick(&queue, &NeverIdle, &deps).unwrap();
+        let outcome = tick_with_deps(&queue, &NeverIdle, &deps).unwrap();
         assert_eq!(outcome, RunOutcome::NotIdle);
         // Untouched: still queued, no attempts.
         let on_disk = store.scan().unwrap();
         assert_eq!(on_disk[0].meta.status, Status::Queued);
         assert_eq!(on_disk[0].meta.attempts, 0);
+    }
+
+    #[test]
+    fn cache_backed_tick_does_not_load_models_until_idle_queued_work_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let queue = Queue { store: &store };
+        let loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let loader_loads = std::sync::Arc::clone(&loads);
+        let cache = ModelCache::new(
+            ModelPaths {
+                speech: PathBuf::new(),
+                segmentation: PathBuf::new(),
+                embedding: PathBuf::new(),
+                sense_voice: None,
+                speech_engine: SpeechEngine::Whisper,
+            },
+            ModelIdleUnload::Never,
+            move |_| {
+                loader_loads.fetch_add(1, Ordering::SeqCst);
+                Ok(LoadedModels {
+                    transcriber: Box::new(EmptyText),
+                    diarizer: Box::new(OneSpeaker),
+                })
+            },
+            None,
+        );
+        let llm = LlmClient {
+            base_url: "http://127.0.0.1:1".to_string(),
+            model: "x".to_string(),
+        };
+        let tasks = Vec::new();
+
+        let outcome = tick(&queue, &NeverIdle, &cache, &llm, &tasks, &BTreeMap::new()).unwrap();
+        assert_eq!(outcome, RunOutcome::NotIdle);
+        assert_eq!(loads.load(Ordering::SeqCst), 0);
+
+        let mut rec = wav_recording(&store, "Lecture");
+        queue.enqueue(&mut rec).unwrap();
+        let outcome = tick(&queue, &AlwaysIdle, &cache, &llm, &tasks, &BTreeMap::new()).unwrap();
+        assert!(matches!(
+            outcome,
+            RunOutcome::FailedWillRetry | RunOutcome::Ran
+        ));
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 }

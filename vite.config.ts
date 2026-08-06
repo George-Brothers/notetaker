@@ -45,6 +45,6 @@ export default defineConfig(async () => ({
     // are separate checkouts with their own React installation. Letting Vitest
     // discover them makes React and ReactDOM come from different module graphs
     // and turns every copied UI test into an invalid-hook-call failure.
-    exclude: ["**/.claude/**"],
+    exclude: ["**/.claude/**", "**/node_modules/**"],
   },
 }));

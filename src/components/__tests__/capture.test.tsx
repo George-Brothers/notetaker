@@ -52,7 +52,10 @@ const shell = vi.hoisted(() => {
   };
 });
 
-vi.mock("@tauri-apps/api/event", () => ({ listen: shell.listen }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: shell.listen,
+  emit: vi.fn(async () => {}),
+}));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     hide: shell.hide,
@@ -142,6 +145,7 @@ const BASE_SETTINGS: SettingsData = {
   storageRoot: "/Users/george/Notetaker",
   llmBaseUrl: "http://localhost:11434",
   llmModel: "qwen2.5:7b",
+  taskModels: {},
   tierOverride: null,
   processWhenIdle: true,
   autoRecord: {},
@@ -154,6 +158,20 @@ const BASE_SETTINGS: SettingsData = {
   hotkeyToggleRecord: "CommandOrControl+Alt+N",
   hotkeyShowHide: "CommandOrControl+Alt+Space",
   closeToTray: true,
+  audioDevicePriority: [],
+  performanceMode: "auto",
+  modelIdleUnload: "5m",
+  cleanupModel: "qwen3:1.7b",
+  dictationCleanupEnabled: true,
+  dictationDictionary: [],
+  dictationReplacements: {},
+  dictationMode: "pushToTalk",
+  dictationPasteBehavior: "paste",
+  dictationHotkey: "CommandOrControl+Alt+D",
+  dictationKeepAudio: false,
+  overlayPosition: "topRight",
+  overlayStyle: "glass",
+  overlayHideFromShare: true,
 };
 
 function setupApi() {
@@ -664,7 +682,7 @@ describe("closing the window, the tray menu, and the OS-wide shell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     const dialog = await screen.findByRole("dialog", { name: "Settings" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Hotkeys" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Shortcuts" }));
     const field = await within(dialog).findByRole("button", {
       name: "Change shortcut: Start / stop recording",
     });

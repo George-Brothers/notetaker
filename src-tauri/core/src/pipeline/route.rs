@@ -82,15 +82,26 @@ impl RoutingTranscriber {
 
 impl Transcriber for RoutingTranscriber {
     fn transcribe(&self, samples: &[f32], spans: &[(f32, f32)]) -> Result<Vec<(f32, f32, String)>> {
+        self.transcribe_with_prompt(samples, spans, None)
+    }
+
+    fn transcribe_with_prompt(
+        &self,
+        samples: &[f32],
+        spans: &[(f32, f32)],
+        initial_prompt: Option<&str>,
+    ) -> Result<Vec<(f32, f32, String)>> {
         let Some(sense_voice) = self.sense_voice.as_deref() else {
             // Nothing to route to. The overwhelmingly common case for an
             // English-only user, and identical to the behaviour before routing
             // existed.
-            return self.whisper.transcribe(samples, spans);
+            return self.whisper.transcribe_with_prompt(samples, spans, initial_prompt);
         };
 
         match self.engine {
-            SpeechEngine::Whisper => return self.whisper.transcribe(samples, spans),
+            SpeechEngine::Whisper => {
+                return self.whisper.transcribe_with_prompt(samples, spans, initial_prompt)
+            }
             SpeechEngine::Auto | SpeechEngine::SenseVoice => {}
         }
 
@@ -100,7 +111,7 @@ impl Transcriber for RoutingTranscriber {
             // which for an hour-long recording would be a transcript with a
             // single timestamp on it. Whisper segments internally, so it is the
             // right answer here even for Chinese.
-            return self.whisper.transcribe(samples, spans);
+            return self.whisper.transcribe_with_prompt(samples, spans, initial_prompt);
         }
 
         let mut out = Vec::with_capacity(spans.len());
@@ -115,7 +126,11 @@ impl Transcriber for RoutingTranscriber {
                 // a second pass. `transcribe` rather than a raw span call so
                 // Whisper's own internal segmentation and timestamps are used
                 // for it, exactly as they would be without routing.
-                let refined = self.whisper.transcribe(samples, &[(start_s, end_s)])?;
+                let refined = self.whisper.transcribe_with_prompt(
+                    samples,
+                    &[(start_s, end_s)],
+                    initial_prompt,
+                )?;
                 if refined.is_empty() {
                     // Whisper heard nothing where SenseVoice heard something.
                     // Keeping SenseVoice's text loses nothing and avoids

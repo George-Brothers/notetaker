@@ -11,6 +11,7 @@
 use anyhow::Result;
 
 use super::source::AudioSource;
+use crate::dictation::PasteResult;
 use crate::runtime::CaptureSources;
 
 /// The real devices on this machine.
@@ -30,8 +31,8 @@ impl PlatformSources {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl CaptureSources for PlatformSources {
-    fn mic(&self) -> Result<Box<dyn AudioSource>> {
-        Ok(Box::new(notetaker_platform::MicSource::start()?))
+    fn mic(&self, preferred_devices: &[String]) -> Result<Box<dyn AudioSource>> {
+        Ok(Box::new(notetaker_platform::MicSource::start_preferred(preferred_devices)?))
     }
 
     fn system(&self) -> Result<Box<dyn AudioSource>> {
@@ -55,6 +56,28 @@ impl CaptureSources for PlatformSources {
             ))
         }
     }
+
+    fn paste_text(&self, text: &str) -> Result<PasteResult> {
+        #[cfg(target_os = "windows")]
+        {
+            return Ok(from_platform(notetaker_platform::windows::paste::paste_text(text)?));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            return Ok(from_platform(notetaker_platform::macos::paste::paste_text(text)?));
+        }
+    }
+
+    fn copy_text(&self, text: &str) -> Result<PasteResult> {
+        #[cfg(target_os = "windows")]
+        {
+            return Ok(from_platform(notetaker_platform::windows::paste::copy_text(text)?));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            return Ok(from_platform(notetaker_platform::macos::paste::copy_text(text)?));
+        }
+    }
 }
 
 /// Linux has no capture implementation — `cpal` is not built there (its
@@ -63,12 +86,21 @@ impl CaptureSources for PlatformSources {
 /// therefore fail with a message that says so instead of pretending.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl CaptureSources for PlatformSources {
-    fn mic(&self) -> Result<Box<dyn AudioSource>> {
+    fn mic(&self, _preferred_devices: &[String]) -> Result<Box<dyn AudioSource>> {
         anyhow::bail!("Notetaker can only record on macOS and Windows.")
     }
 
     fn system(&self) -> Result<Box<dyn AudioSource>> {
         anyhow::bail!("Notetaker can only record on macOS and Windows.")
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn from_platform(outcome: notetaker_platform::PasteOutcome) -> PasteResult {
+    PasteResult {
+        inserted: outcome.inserted,
+        clipboard_restored: outcome.clipboard_restored,
+        message: outcome.message,
     }
 }
 

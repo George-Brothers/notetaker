@@ -33,7 +33,7 @@
 //! [`SystemProbe`]; B2 swaps the implementations and changes nothing else in
 //! this file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,17 +49,20 @@ use crate::capture::recover::recover_orphans;
 use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
 use crate::capture::{self, CaptureLevels, CaptureState, CaptureStatus, DiskSpace};
+use crate::dictation::{self, DictationState, DictationStatus, PasteResult};
 use crate::index::Index;
 use crate::logging;
 use crate::models::{
+    cache::{LoadedModels, ModelCache, ModelEventSink, ModelLease, ModelPaths},
     detect_tier, ensure_segmentation_unpacked, existing, registry, Downloader, ModelSpec, Tier,
 };
 use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
-use crate::pipeline::diarize::{Diarizer, SherpaDiarizer};
+use crate::pipeline::diarize::SherpaDiarizer;
 use crate::pipeline::llm::LlmClient;
+use crate::pipeline::live::{LiveTranscriptEvent, LiveTranscriptHandle};
 use crate::pipeline::route::{LanguageTranscriber, RoutingTranscriber};
-use crate::pipeline::run::{requeue_stale, PipelineDeps};
-use crate::pipeline::transcribe::{SenseVoiceTranscriber, Transcriber, WhisperTranscriber};
+use crate::pipeline::run::requeue_stale;
+use crate::pipeline::transcribe::{SenseVoiceTranscriber, WhisperTranscriber};
 use crate::power::{PowerPolicy, PowerState, SystemProbe};
 use crate::queue::{IdleSource, Queue, RunOutcome};
 use crate::scheduler;
@@ -77,6 +80,15 @@ pub struct StartUp {
     pub requeued: usize,
     /// Recordings in the rebuilt search index.
     pub indexed: usize,
+}
+
+/// One incremental fragment from an overlay Ask response.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskStreamEvent {
+    pub token: String,
+    pub done: bool,
+    pub error: Option<String>,
 }
 use crate::watch::watcher::Watcher;
 use crate::watch::{AutoRecordPolicy, MeetingEvent};
@@ -207,6 +219,10 @@ pub const COMMANDS: &[Command] = &[
         args: &["id", "notesMd"],
     },
     Command {
+        name: "append_note",
+        args: &["id", "jot"],
+    },
+    Command {
         name: "add_highlight",
         args: &[],
     },
@@ -225,6 +241,14 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "ask_recording",
         args: &["id", "question"],
+    },
+    Command {
+        name: "start_live_ask",
+        args: &["question", "context"],
+    },
+    Command {
+        name: "poll_live_ask",
+        args: &["id"],
     },
     Command {
         name: "audio_path",
@@ -264,6 +288,30 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "capture_levels",
+        args: &[],
+    },
+    Command {
+        name: "live_transcript",
+        args: &[],
+    },
+    Command {
+        name: "start_dictation",
+        args: &[],
+    },
+    Command {
+        name: "stop_dictation",
+        args: &[],
+    },
+    Command {
+        name: "cancel_dictation",
+        args: &[],
+    },
+    Command {
+        name: "dictation_status",
+        args: &[],
+    },
+    Command {
+        name: "copy_last_transcript",
         args: &[],
     },
     Command {
@@ -319,14 +367,27 @@ pub const COMMANDS: &[Command] = &[
 /// session state machine, the pump thread, the queueing on stop — is this file,
 /// and is tested here against [`FakeSources`].
 pub trait CaptureSources: Send + Sync {
-    /// A fresh microphone source for one recording.
-    fn mic(&self) -> Result<Box<dyn AudioSource>>;
+    /// A fresh microphone source for one recording. The names are tried in
+    /// order, then the operating system default is used as a fallback.
+    fn mic(&self, preferred_devices: &[String]) -> Result<Box<dyn AudioSource>>;
 
     /// A fresh system-audio source for one meeting recording. Returning an
     /// error here is how a platform says "I cannot capture the other side of a
     /// call" — meeting mode then refuses to start rather than silently
     /// recording half a conversation.
     fn system(&self) -> Result<Box<dyn AudioSource>>;
+
+    /// Inserts text into the focused application, or returns a structured
+    /// copied-only result when the OS cannot post the paste event.
+    fn paste_text(&self, _text: &str) -> Result<PasteResult> {
+        anyhow::bail!("system-wide paste is not available on this platform")
+    }
+
+    /// Copies text without sending a keystroke. Used by the honest fallback
+    /// and by the tray's "Copy last transcript" action.
+    fn copy_text(&self, _text: &str) -> Result<PasteResult> {
+        anyhow::bail!("clipboard access is not available on this platform")
+    }
 }
 
 /// Scripted sources for tests and for a dev build on a machine with no capture
@@ -338,13 +399,37 @@ pub struct FakeSources {
 }
 
 impl CaptureSources for FakeSources {
-    fn mic(&self) -> Result<Box<dyn AudioSource>> {
+    fn mic(&self, _preferred_devices: &[String]) -> Result<Box<dyn AudioSource>> {
         Ok(Box::new(FakeSource::tone("microphone", self.secs)))
     }
 
     fn system(&self) -> Result<Box<dyn AudioSource>> {
         Ok(Box::new(FakeSource::tone("system audio", self.secs)))
     }
+
+    fn paste_text(&self, _text: &str) -> Result<PasteResult> {
+        Ok(PasteResult::inserted("Inserted into the focused app."))
+    }
+
+    fn copy_text(&self, _text: &str) -> Result<PasteResult> {
+        Ok(PasteResult::copied("Copied to the clipboard."))
+    }
+}
+
+/// Combines the explicit tray choice with the ordered fallback list. Older
+/// settings files only have `input_device`, so that choice stays first after
+/// the Phase 6 priority list is introduced.
+fn preferred_input_devices(settings: &api::Settings) -> Vec<String> {
+    let mut preferred = Vec::new();
+    if let Some(selected) = settings.input_device.as_ref() {
+        preferred.push(selected.clone());
+    }
+    for device in &settings.audio_device_priority {
+        if !preferred.iter().any(|current| current == device) {
+            preferred.push(device.clone());
+        }
+    }
+    preferred
 }
 
 /// What [`Runtime::start_processing`] found when it tried to start.
@@ -359,13 +444,7 @@ pub enum Processing {
     ModelsMissing(Vec<String>),
 }
 
-/// The loaded speech and speaker models the scheduler runs recordings through.
-/// Boxed and owned rather than borrowed, because the scheduler thread outlives
-/// the call that starts it.
-pub struct SchedulerModels {
-    pub transcriber: Box<dyn Transcriber + Send + Sync>,
-    pub diarizer: Box<dyn Diarizer + Send + Sync>,
-}
+pub use crate::models::cache::SchedulerModels;
 
 /// Free space on the volume holding the recordings, read through `sysinfo`.
 ///
@@ -537,6 +616,16 @@ impl Drop for ClearOnDrop<'_> {
     }
 }
 
+/// Owns one system-wide dictation attempt. This slot is deliberately separate
+/// from `session`: dictation status can never make a real meeting recording
+/// look idle, finishing, paused, or unavailable.
+#[derive(Clone)]
+struct DictationControl {
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    status: Arc<Mutex<DictationStatus>>,
+}
+
 // ---------------------------------------------------------------------------
 // The runtime
 // ---------------------------------------------------------------------------
@@ -582,8 +671,19 @@ struct Inner {
     probe: Arc<dyn SystemProbe + Send + Sync>,
     idle: LivePolicy,
     scheduler: Mutex<Option<SchedulerHandle>>,
+    /// Lazily loaded speech/speaker models used by the scheduler.
+    model_cache: Mutex<Option<Arc<ModelCache>>>,
+    /// Optional shell bridge for `model-state-changed` lifecycle events.
+    model_event_sink: Mutex<Option<Arc<ModelEventSink>>>,
+    /// The read-only live-transcript worker for the current capture session.
+    live_transcript: Mutex<Option<LiveTranscriptHandle>>,
+    /// The independent system-wide dictation run, if one is active or has a
+    /// terminal status waiting for the UI to read.
+    dictation: Mutex<Option<Arc<DictationControl>>>,
     /// In-flight and finished model pulls, keyed by model name.
     pulls: Mutex<BTreeMap<String, PullProgress>>,
+    /// Local streaming Ask jobs, keyed by an opaque frontend id.
+    ask_streams: Mutex<BTreeMap<String, Arc<Mutex<VecDeque<AskStreamEvent>>>>>,
     /// Free space for `capture_status` between recordings; a live session has
     /// its own.
     disk: SysinfoDisk,
@@ -682,7 +782,12 @@ impl Runtime {
                 probe,
                 idle: LivePolicy::new(policy),
                 scheduler: Mutex::new(None),
+                model_cache: Mutex::new(None),
+                model_event_sink: Mutex::new(None),
+                live_transcript: Mutex::new(None),
+                dictation: Mutex::new(None),
                 pulls: Mutex::new(BTreeMap::new()),
+                ask_streams: Mutex::new(BTreeMap::new()),
             }),
         })
     }
@@ -762,6 +867,15 @@ impl Runtime {
         self.inner.index_one(&rec)
     }
 
+    /// Appends a quick jot from the expanded overlay. This intentionally
+    /// bypasses the whole-document editor save path: the overlay may be
+    /// writing while the main note editor has a stale snapshot in memory.
+    pub fn append_note(&self, id: &str, jot: &str) -> Result<()> {
+        api::append_note(&self.inner.store, id, jot)?;
+        let rec = self.inner.find(id)?;
+        self.inner.index_one(&rec)
+    }
+
     /// Stars the current moment of the recording that is running right now.
     ///
     /// No arguments on purpose: the caller is a hotkey or an overlay button
@@ -827,6 +941,86 @@ impl Runtime {
             &fs::read_to_string(rec.dir.join(SUMMARY_FILE)).unwrap_or_default(),
             &fs::read_to_string(rec.dir.join(TRANSCRIPT_FILE)).unwrap_or_default(),
         )
+    }
+
+    /// Starts a streamed, local-only question over the rolling live
+    /// transcript. The model receives no recording path and no cloud endpoint.
+    pub fn start_live_ask(&self, question: &str, context: &str) -> Result<String> {
+        let question = question.trim();
+        if question.is_empty() {
+            bail!("Please enter a question first.");
+        }
+        let settings = self.get_settings()?;
+        if !is_local_ollama_url(&settings.llm_base_url) {
+            bail!("Ask is local-only, so Ollama must use a localhost address.");
+        }
+
+        const MAX_CONTEXT_CHARS: usize = 24_000;
+        let context = context.trim();
+        let context = if context.chars().count() > MAX_CONTEXT_CHARS {
+            context
+                .chars()
+                .skip(context.chars().count() - MAX_CONTEXT_CHARS)
+                .collect::<String>()
+        } else {
+            context.to_string()
+        };
+        let user = format!(
+            "=== Rolling live transcript ===\n{context}\n\n=== Question ===\n{question}"
+        );
+        let system = "You answer questions using only the rolling live transcript provided. "
+            .to_string();
+        let id = uuid::Uuid::new_v4().to_string();
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+        lock(&self.inner.ask_streams).insert(id.clone(), Arc::clone(&events));
+
+        let llm = LlmClient {
+            base_url: settings.llm_base_url,
+            model: settings.llm_model,
+        };
+        thread::Builder::new()
+            .name("notetaker-live-ask".to_string())
+            .spawn(move || {
+                let result = llm.chat_stream(&system, &user, |token| {
+                    lock(&events).push_back(AskStreamEvent {
+                        token: token.to_string(),
+                        done: false,
+                        error: None,
+                    });
+                });
+                let terminal = match result {
+                    Ok(_) => AskStreamEvent {
+                        token: String::new(),
+                        done: true,
+                        error: None,
+                    },
+                    Err(error) => AskStreamEvent {
+                        token: String::new(),
+                        done: true,
+                        error: Some(format!("{error:#}")),
+                    },
+                };
+                lock(&events).push_back(terminal);
+            })
+            .context("starting the local Ask stream")?;
+        Ok(id)
+    }
+
+    /// Drains any fragments available for one live Ask job. A terminal poll
+    /// removes the in-memory job; no question or answer is written to disk.
+    pub fn poll_live_ask(&self, id: &str) -> Result<Vec<AskStreamEvent>> {
+        let job = lock(&self.inner.ask_streams)
+            .get(id)
+            .cloned()
+            .with_context(|| format!("no live Ask request named {id}"))?;
+        let mut events = lock(&job);
+        let output: Vec<_> = events.drain(..).collect();
+        let done = output.iter().any(|event| event.done);
+        drop(events);
+        if done {
+            lock(&self.inner.ask_streams).remove(id);
+        }
+        Ok(output)
     }
 
     /// The absolute path to one of a recording's audio tracks, for playback.
@@ -934,7 +1128,20 @@ impl Runtime {
     pub fn set_settings(&self, settings: &Settings) -> Result<()> {
         api::set_settings(&self.inner.settings_path, settings)?;
         self.inner.refresh_policy(settings);
+        if let Some(cache) = lock(&self.inner.model_cache).clone() {
+            cache.set_policy(settings.model_idle_unload);
+        }
         Ok(())
+    }
+
+    /// Bridges core model lifecycle changes to a shell event emitter. The
+    /// callback is optional so the served server and core tests remain
+    /// Tauri-free.
+    pub fn set_model_event_sink(&self, sink: Arc<ModelEventSink>) {
+        *lock(&self.inner.model_event_sink) = Some(Arc::clone(&sink));
+        if let Some(cache) = lock(&self.inner.model_cache).clone() {
+            cache.set_event_sink(sink);
+        }
     }
 
     /// Writes one app's auto-record policy, the way the meeting prompt's
@@ -969,7 +1176,13 @@ impl Runtime {
             bail!("a recording is already in progress — stop it before starting another");
         }
 
-        let mic = self.inner.sources.mic().context("opening the microphone")?;
+        let settings = self.get_settings().unwrap_or_default();
+        let preferred_devices = preferred_input_devices(&settings);
+        let mic = self
+            .inner
+            .sources
+            .mic(&preferred_devices)
+            .context("opening the microphone")?;
         let system = match mode {
             Mode::Meeting => Some(
                 self.inner
@@ -980,15 +1193,25 @@ impl Runtime {
             Mode::InPerson => None,
         };
 
-        let mut session = Session::start(
+        // A missing speech cache must never prevent recording. When models
+        // are ready, the live worker acquires one lease on its own thread and
+        // the capture tee remains a non-blocking clone-and-send operation.
+        let live_handle = lock(&self.inner.model_cache)
+            .clone()
+            .map(LiveTranscriptHandle::start);
+        let live_tee = live_handle.as_ref().map(|handle| handle.sender());
+
+        let mut session = Session::start_with_tee(
             &self.inner.store,
             mode,
             title,
             mic,
             system,
             Box::new(SysinfoDisk::new(&self.inner.store.root)),
+            live_tee,
         )?;
         let status = session.status();
+        *lock(&self.inner.live_transcript) = live_handle;
         *slot = Some(session);
         *lock(&self.inner.last_recording) = None;
         drop(slot);
@@ -1086,6 +1309,140 @@ impl Runtime {
         }
     }
 
+    /// Drains live transcript events produced since the last poll. The main
+    /// webview forwards these to the expanded overlay; the served UI can use
+    /// the same command without getting a second capture path.
+    pub fn live_transcript(&self) -> Vec<LiveTranscriptEvent> {
+        lock(&self.inner.live_transcript)
+            .as_ref()
+            .map_or_else(Vec::new, LiveTranscriptHandle::drain_events)
+    }
+
+    // --- system-wide dictation -------------------------------------------
+
+    /// Starts a microphone-only, in-memory dictation run. No `Session` is
+    /// created and no meeting folder is touched. Model acquisition begins on
+    /// this key-press path in a sibling thread, so a cold native load overlaps
+    /// the user's speech rather than delaying the first word.
+    pub fn start_dictation(&self) -> Result<DictationStatus> {
+        let settings = self.get_settings()?;
+        let cache = lock(&self.inner.model_cache)
+            .clone()
+            .context("speech models are not ready for dictation; download them first")?;
+
+        let status = Arc::new(Mutex::new(DictationStatus {
+            state: DictationState::Recording,
+            ..DictationStatus::default()
+        }));
+        let control = Arc::new(DictationControl {
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            status: Arc::clone(&status),
+        });
+        {
+            let mut slot = lock(&self.inner.dictation);
+            if let Some(existing) = slot.as_ref() {
+                if lock(&existing.status).state.active() {
+                    bail!("a dictation is already in progress")
+                }
+            }
+            *slot = Some(Arc::clone(&control));
+        }
+
+        let preferred_devices = preferred_input_devices(&settings);
+        let source = match self
+            .inner
+            .sources
+            .mic(&preferred_devices)
+            .context("opening the dictation microphone")
+        {
+            Ok(source) => source,
+            Err(error) => {
+                set_dictation_error(&control, error.to_string());
+                return Err(error);
+            }
+        };
+
+        let (lease_tx, lease_rx) = mpsc::sync_channel::<Result<ModelLease>>(1);
+        thread::Builder::new()
+            .name("notetaker-dictation-model".to_string())
+            .spawn(move || {
+                let result = cache.acquire();
+                let _ = lease_tx.send(result);
+            })
+            .context("starting the dictation model loader")?;
+
+        let config = dictation::DictationConfig {
+            cleanup_enabled: settings.dictation_cleanup_enabled,
+            cleanup_model: settings.cleanup_model,
+            llm_base_url: settings.llm_base_url,
+            dictionary: settings.dictation_dictionary,
+            replacements: settings.dictation_replacements,
+            keep_audio: settings.dictation_keep_audio,
+        };
+        let behavior = settings.dictation_paste_behavior;
+        let inner = Arc::clone(&self.inner);
+        let worker_control = Arc::clone(&control);
+        thread::Builder::new()
+            .name("notetaker-dictation".to_string())
+            .spawn(move || {
+                run_dictation(inner, worker_control, source, lease_rx, config, behavior)
+            })
+            .context("starting the dictation capture thread")?;
+
+        let snapshot = lock(&status).clone();
+        Ok(snapshot)
+    }
+
+    /// Releases the push-to-talk run and lets its finalization happen without
+    /// blocking the hotkey callback on whisper or Ollama.
+    pub fn stop_dictation(&self) -> Result<DictationStatus> {
+        let control = lock(&self.inner.dictation)
+            .clone()
+            .context("nothing is being dictated right now")?;
+        if lock(&control.status).state.active() {
+            control.stop.store(true, Ordering::Release);
+        }
+        let snapshot = lock(&control.status).clone();
+        Ok(snapshot)
+    }
+
+    /// Discards captured audio and any model result. Escape uses this path;
+    /// cancellation never writes history and never touches another app's
+    /// clipboard.
+    pub fn cancel_dictation(&self) -> Result<DictationStatus> {
+        let control = lock(&self.inner.dictation)
+            .clone()
+            .context("nothing is being dictated right now")?;
+        if lock(&control.status).state.active() {
+            control.cancel.store(true, Ordering::Release);
+            control.stop.store(true, Ordering::Release);
+        }
+        let snapshot = lock(&control.status).clone();
+        Ok(snapshot)
+    }
+
+    pub fn dictation_status(&self) -> DictationStatus {
+        lock(&self.inner.dictation)
+            .as_ref()
+            .map(|control| lock(&control.status).clone())
+            .unwrap_or_default()
+    }
+
+    /// Copies the newest dictation text without synthesizing a paste event.
+    pub fn copy_last_transcript(&self) -> Result<PasteResult> {
+        let history = dictation::DictationHistory::new(
+            self.inner
+                .settings_path
+                .parent()
+                .context("settings path has no parent")?,
+        );
+        let entry = history
+            .last()?
+            .context("there is no dictation transcript to copy yet")?;
+        self.inner.sources.copy_text(&entry.text)
+    }
+
     /// One step of the capture loop, for a caller that wants to drive capture
     /// itself. The pump thread calls exactly this.
     pub fn pump_once(&self) -> Result<CaptureState> {
@@ -1106,7 +1463,9 @@ impl Runtime {
         // While anything is being captured, a "call started" from the mic is
         // therefore us, and prompting the user to record the recording would
         // be nonsense. App-level events (Zoom seen) still flow.
-        if self.capture_status().state != CaptureState::Idle {
+        let mic_is_owned = self.capture_status().state != CaptureState::Idle
+            || self.dictation_status().state.active();
+        if mic_is_owned {
             events.retain(|e| {
                 !(e.app_id == crate::watch::watcher::MIC_APP_ID
                     && e.kind == crate::watch::MeetingEventKind::Started)
@@ -1337,12 +1696,30 @@ impl Runtime {
     /// the scheduler loads for cannot disagree — a mismatch there would
     /// download the large model and then fail to find the small one.
     fn resolved_tier(&self) -> Tier {
-        self.get_settings()
-            .unwrap_or_default()
-            .tier_override
-            .as_deref()
-            .and_then(tier_from_name)
-            .unwrap_or_else(|| tier_from_name(&self.detected_tier()).unwrap_or(Tier::CpuSmall))
+        let settings = self.get_settings().unwrap_or_default();
+        let detected = || tier_from_name(&self.detected_tier()).unwrap_or(Tier::CpuSmall);
+
+        match settings.performance_mode {
+            // CPU optimized is the one high-level mode with a deterministic
+            // lower-cost target. Keep the platform's small tier name intact
+            // so the model registry and the downloader continue to agree.
+            api::PerformanceMode::CpuOptimized => {
+                if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+                    Tier::AppleSiliconSmall
+                } else {
+                    Tier::CpuSmall
+                }
+            }
+            // Best quality means the largest tier this machine reports. An
+            // explicit legacy tier override remains respected in Auto mode;
+            // both paths keep older settings files meaningful.
+            api::PerformanceMode::BestQuality => detected(),
+            api::PerformanceMode::Auto => settings
+                .tier_override
+                .as_deref()
+                .and_then(tier_from_name)
+                .unwrap_or_else(detected),
+        }
     }
 
     /// The hardware tier detected for this machine, as the same string
@@ -1515,39 +1892,29 @@ impl Runtime {
         let segmentation_path = ensure_segmentation_unpacked(models_dir)?;
         let embedding_path = models_dir.join(registry::DIARIZATION_EMBEDDING.dest);
 
-        let whisper = WhisperTranscriber::load(&speech_path)?;
-
-        // SenseVoice only exists here if the languages this user speaks called
-        // for it — `required_models` decided that, and the missing-file check
-        // above already proved it is present. An English-only user loads one
-        // model, exactly as before routing existed.
-        let sense_voice: Option<Box<dyn LanguageTranscriber + Send + Sync>> =
-            if registry::wants_sense_voice(&settings.languages) {
-                Some(Box::new(SenseVoiceTranscriber::load(
-                    &models_dir.join(registry::SENSE_VOICE_MODEL.dest),
-                    &models_dir.join(registry::SENSE_VOICE_TOKENS.dest),
-                )?))
-            } else {
-                None
-            };
-
-        let transcriber =
-            RoutingTranscriber::new(Box::new(whisper), sense_voice, settings.speech_engine);
-        log::info!(
-            "speech: {}",
-            if transcriber.routes() {
-                "per-segment routing between Whisper and SenseVoice"
-            } else {
-                "one model for everything"
-            }
-        );
-
-        let diarizer = SherpaDiarizer::load(&segmentation_path, &embedding_path)?;
-
-        self.start_scheduler(SchedulerModels {
-            transcriber: Box::new(transcriber),
-            diarizer: Box::new(diarizer),
-        })?;
+        // Startup now keeps only paths and the existing missing-models
+        // decision. Native handles are constructed by the first scheduler
+        // tick that actually has a queued recording to process.
+        let model_paths = ModelPaths {
+            speech: speech_path,
+            segmentation: segmentation_path,
+            embedding: embedding_path,
+            sense_voice: registry::wants_sense_voice(&settings.languages).then(|| {
+                (
+                    models_dir.join(registry::SENSE_VOICE_MODEL.dest),
+                    models_dir.join(registry::SENSE_VOICE_TOKENS.dest),
+                )
+            }),
+            speech_engine: settings.speech_engine,
+        };
+        let event_sink = lock(&self.inner.model_event_sink).clone();
+        let cache = Arc::new(ModelCache::new(
+            model_paths,
+            settings.model_idle_unload,
+            load_models,
+            event_sink,
+        ));
+        self.start_scheduler_with_cache(cache)?;
         Ok(Processing::Started)
     }
 
@@ -1563,10 +1930,26 @@ impl Runtime {
     /// created afterwards is therefore not offered as a suggestion until the
     /// next launch; [`Runtime::tick_once`] has no such limit.
     pub fn start_scheduler(&self, models: SchedulerModels) -> Result<()> {
+        // Compatibility path for tests and callers that already constructed a
+        // model set. Production uses `start_processing`, which passes a lazy
+        // cache and therefore does not load at launch.
+        let settings = self.get_settings().unwrap_or_default();
+        let event_sink = lock(&self.inner.model_event_sink).clone();
+        let cache = Arc::new(ModelCache::from_loaded(
+            models,
+            settings.model_idle_unload,
+            event_sink,
+        ));
+        self.start_scheduler_with_cache(cache)
+    }
+
+    fn start_scheduler_with_cache(&self, cache: Arc<ModelCache>) -> Result<()> {
         let mut slot = lock(&self.inner.scheduler);
         if slot.is_some() {
             bail!("the scheduler is already running");
         }
+
+        *lock(&self.inner.model_cache) = Some(Arc::clone(&cache));
 
         let inner = Arc::clone(&self.inner);
         let stop = Arc::new(AtomicBool::new(false));
@@ -1581,21 +1964,17 @@ impl Runtime {
                 let _ = tx.send(thread::current());
 
                 let settings = api::get_settings(&inner.settings_path).unwrap_or_default();
+                let task_models = settings.task_models.clone();
                 let llm = LlmClient {
                     base_url: settings.llm_base_url,
                     model: settings.llm_model,
                 };
-                let deps = PipelineDeps {
-                    transcriber: &*models.transcriber,
-                    diarizer: &*models.diarizer,
-                    llm: &llm,
-                    tasks: inner.store.list_tasks().unwrap_or_default(),
-                };
+                let tasks = inner.store.list_tasks().unwrap_or_default();
                 let queue = Queue {
                     store: &inner.store,
                 };
 
-                scheduler::run_loop(&queue, &inner.idle, &deps, stop_for_thread, |outcome| {
+                scheduler::run_loop(&queue, &inner.idle, &cache, &llm, &tasks, &task_models, stop_for_thread, |outcome| {
                     if *outcome == RunOutcome::Ran {
                         // Carry-over I3: without this, a just-processed
                         // recording is invisible to search until a rebuild.
@@ -1653,22 +2032,20 @@ impl Runtime {
     /// Unlike the loop, this rebuilds `PipelineDeps` each call, so it always
     /// sees the current LLM settings and task list. Tests drive processing
     /// through it so no test depends on a timer.
-    pub fn tick_once(&self, models: &SchedulerModels) -> Result<RunOutcome> {
+    pub fn tick_once(&self, models: SchedulerModels) -> Result<RunOutcome> {
         let settings = self.get_settings()?;
+        let task_models = settings.task_models.clone();
         let llm = LlmClient {
             base_url: settings.llm_base_url,
             model: settings.llm_model,
         };
-        let deps = PipelineDeps {
-            transcriber: &*models.transcriber,
-            diarizer: &*models.diarizer,
-            llm: &llm,
-            tasks: self.inner.store.list_tasks().unwrap_or_default(),
-        };
+        let event_sink = lock(&self.inner.model_event_sink).clone();
+        let cache = ModelCache::from_loaded(models, settings.model_idle_unload, event_sink);
+        let tasks = self.inner.store.list_tasks().unwrap_or_default();
         let queue = Queue {
             store: &self.inner.store,
         };
-        let outcome = scheduler::tick(&queue, &self.inner.idle, &deps)?;
+        let outcome = scheduler::tick(&queue, &self.inner.idle, &cache, &llm, &tasks, &task_models)?;
         if outcome == RunOutcome::Ran {
             self.inner.index_ready()?;
         }
@@ -1687,6 +2064,63 @@ impl Runtime {
     pub fn storage_root(&self) -> &Path {
         &self.inner.store.root
     }
+}
+
+/// Constructs the complete native model set for one cache generation. This is
+/// intentionally a separate loader: `start_processing` only validates files
+/// and stores paths, while the scheduler invokes this after it has a real job.
+fn load_models(paths: &ModelPaths) -> Result<LoadedModels> {
+    let whisper = WhisperTranscriber::load(&paths.speech)?;
+
+    let sense_voice: Option<Box<dyn LanguageTranscriber + Send + Sync>> =
+        if let Some((model, tokens)) = &paths.sense_voice {
+            Some(Box::new(SenseVoiceTranscriber::load(model, tokens)?))
+        } else {
+            None
+        };
+
+    let transcriber = RoutingTranscriber::new(
+        Box::new(whisper),
+        sense_voice,
+        paths.speech_engine,
+    );
+    log::info!(
+        "speech: {}",
+        if transcriber.routes() {
+            "per-segment routing between Whisper and SenseVoice"
+        } else {
+            "one model for everything"
+        }
+    );
+
+    let diarizer = SherpaDiarizer::load(&paths.segmentation, &paths.embedding)?;
+    Ok(LoadedModels {
+        transcriber: Box::new(transcriber),
+        diarizer: Box::new(diarizer),
+    })
+}
+
+/// The live Ask path is deliberately stricter than the older recording Ask
+/// API: it must never send a rolling transcript to a non-local host.
+fn is_local_ollama_url(base_url: &str) -> bool {
+    let Some((scheme, authority)) = base_url.trim().split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
+    let authority = authority.split('/').next().unwrap_or_default();
+    // Do not treat a user-info prefix as the host. `http://localhost@remote`
+    // is a remote URL even though a naive `split(':')` check sees "localhost".
+    if authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    host.eq_ignore_ascii_case("localhost") || matches!(host, "127.0.0.1" | "::1")
 }
 
 impl Inner {
@@ -1842,6 +2276,11 @@ impl Inner {
             }
         };
         drop(session);
+        if let Some(live) = lock(&self.live_transcript).as_mut() {
+            // The session's sender is gone now, so Finish is ordered after
+            // every packet the recording tee emitted.
+            live.finish();
+        }
         *lock(&self.last_recording) = Some(id.clone());
 
         let mut rec = self.find(&id)?;
@@ -1876,6 +2315,195 @@ fn pump_until_done(inner: &Arc<Inner>) {
         }
         thread::sleep(PUMP_INTERVAL);
     }
+}
+
+fn set_dictation_status(control: &DictationControl, update: impl FnOnce(&mut DictationStatus)) {
+    update(&mut lock(&control.status));
+}
+
+fn set_dictation_error(control: &DictationControl, message: impl Into<String>) {
+    set_dictation_status(control, |status| {
+        status.state = DictationState::Error;
+        status.level = 0.0;
+        status.message = Some(message.into());
+    });
+}
+
+/// The dictation worker owns the mic and the model lease until paste/copy is
+/// complete. It never touches the meeting Session slot or writes a recording
+/// folder, so a failed dictation cannot strand a real recording.
+fn run_dictation(
+    inner: Arc<Inner>,
+    control: Arc<DictationControl>,
+    mut source: Box<dyn AudioSource>,
+    lease_rx: mpsc::Receiver<Result<ModelLease>>,
+    config: dictation::DictationConfig,
+    behavior: api::PasteBehavior,
+) {
+    let vad_path = inner.models_dir.join(registry::SILERO_VAD.dest);
+    let mut gate = match dictation::SileroGate::open(&vad_path) {
+        Ok(gate) => gate,
+        Err(error) => {
+            let _ = source.stop();
+            set_dictation_error(&control, error.to_string());
+            return;
+        }
+    };
+
+    let started = Instant::now();
+    let mut all_samples = Vec::new();
+    while !control.stop.load(Ordering::Acquire) && !source.is_finished() {
+        let mut chunk = Vec::new();
+        if let Err(error) = source.read(&mut chunk) {
+            let _ = source.stop();
+            set_dictation_error(&control, format!("microphone read failed: {error}"));
+            return;
+        }
+        if !chunk.is_empty() {
+            all_samples.extend_from_slice(&chunk);
+            let level = gate.push(&chunk);
+            set_dictation_status(&control, |status| {
+                status.elapsed_s = started.elapsed().as_secs_f64();
+                status.level = level;
+            });
+        } else {
+            set_dictation_status(&control, |status| {
+                status.elapsed_s = started.elapsed().as_secs_f64();
+                status.level = 0.0;
+            });
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    if let Err(error) = source.stop() {
+        set_dictation_error(&control, format!("microphone could not stop cleanly: {error}"));
+        return;
+    }
+
+    if control.cancel.load(Ordering::Acquire) {
+        set_dictation_status(&control, |status| {
+            status.state = DictationState::Idle;
+            status.level = 0.0;
+            status.message = Some("Dictation canceled.".to_string());
+        });
+        return;
+    }
+
+    let voiced = gate.finish();
+    if voiced.is_empty() {
+        set_dictation_status(&control, |status| {
+            status.state = DictationState::Idle;
+            status.level = 0.0;
+            status.message = Some("I didn't hear speech; nothing was pasted.".to_string());
+        });
+        return;
+    }
+
+    set_dictation_status(&control, |status| {
+        status.state = DictationState::Transcribing;
+        status.level = 0.0;
+        status.message = None;
+    });
+    let lease = match lease_rx.recv() {
+        Ok(Ok(lease)) => lease,
+        Ok(Err(error)) => {
+            set_dictation_error(&control, format!("speech models could not load: {error}"));
+            return;
+        }
+        Err(error) => {
+            set_dictation_error(&control, format!("speech model loader stopped: {error}"));
+            return;
+        }
+    };
+
+    let cleaned = match dictation::transcribe_and_clean(lease.transcriber(), &voiced, &config) {
+        Ok(cleaned) => cleaned,
+        Err(error) => {
+            drop(lease);
+            set_dictation_error(&control, error.to_string());
+            return;
+        }
+    };
+    if control.cancel.load(Ordering::Acquire) {
+        drop(lease);
+        set_dictation_status(&control, |status| {
+            status.state = DictationState::Idle;
+            status.text.clear();
+            status.message = Some("Dictation canceled.".to_string());
+        });
+        return;
+    }
+
+    set_dictation_status(&control, |status| {
+        status.state = DictationState::Pasting;
+        status.text = cleaned.text.clone();
+        status.message = cleaned.warning.clone();
+    });
+
+    let paste = match behavior {
+        api::PasteBehavior::Paste => inner.sources.paste_text(&cleaned.text),
+        api::PasteBehavior::CopyOnly => inner.sources.copy_text(&cleaned.text),
+    };
+    let paste = match paste {
+        Ok(result) => result,
+        Err(first_error) => match inner.sources.copy_text(&cleaned.text) {
+            Ok(mut fallback) => {
+                fallback.message = format!(
+                    "Paste failed ({first_error}); the transcript was copied instead. {}",
+                    fallback.message
+                );
+                fallback
+            }
+            Err(second_error) => {
+                drop(lease);
+                set_dictation_error(
+                    &control,
+                    format!("could not paste or copy the transcript: {first_error}; {second_error}"),
+                );
+                return;
+            }
+        },
+    };
+    // The critical lifetime boundary: native speech state is no longer needed
+    // once the text has reached the clipboard/focused app.
+    drop(lease);
+
+    let history = dictation::DictationHistory::new(
+        inner
+            .settings_path
+            .parent()
+            .expect("settings.json always has an app-data parent"),
+    );
+    let entry = match history.append(&cleaned.text, &all_samples, config.keep_audio) {
+        Ok(entry) => entry,
+        Err(error) => {
+            set_dictation_error(
+                &control,
+                format!("text reached the clipboard, but local history could not save it: {error}"),
+            );
+            return;
+        }
+    };
+
+    let mut messages = Vec::new();
+    if let Some(warning) = cleaned.warning {
+        messages.push(warning);
+    }
+    if !paste.message.trim().is_empty() {
+        messages.push(paste.message);
+    }
+    if behavior == api::PasteBehavior::Paste && !paste.inserted {
+        messages.push("Copied — press Cmd-V in the focused app.".to_string());
+    }
+    if config.keep_audio && entry.audio_path.is_some() {
+        messages.push("Audio kept in local dictation history.".to_string());
+    }
+    set_dictation_status(&control, |status| {
+        status.state = DictationState::Idle;
+        status.level = 0.0;
+        status.text = cleaned.text;
+        status.message = (!messages.is_empty()).then(|| messages.join(" "));
+    });
 }
 
 fn build_policy(
@@ -2132,7 +2760,8 @@ fn contract_problems(found: &[Invocation], table: &[Command]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::diarize::SpeakerSpan;
+    use crate::pipeline::diarize::{Diarizer, SpeakerSpan};
+    use crate::pipeline::transcribe::Transcriber;
     use crate::power::probe::FakeProbe;
     use crate::watch::watcher::FakeProcessSource;
 
@@ -2222,6 +2851,18 @@ mod tests {
         settings.llm_model = "test".to_string();
         settings.min_idle_secs = 0;
         rt.set_settings(&settings).unwrap();
+    }
+
+    #[test]
+    fn live_ask_accepts_only_loopback_http_ollama_urls() {
+        assert!(is_local_ollama_url("http://localhost:11434"));
+        assert!(is_local_ollama_url("http://127.0.0.1:11434"));
+        assert!(is_local_ollama_url("http://[::1]:11434"));
+        assert!(!is_local_ollama_url("https://localhost:11434"));
+        assert!(!is_local_ollama_url("http://ollama.example.test:11434"));
+        assert!(!is_local_ollama_url("http://localhost.example.test:11434"));
+        assert!(!is_local_ollama_url("http://localhost@ollama.example.test:11434"));
+        assert!(!is_local_ollama_url("http://localhost:11434@ollama.example.test"));
     }
 
     /// Polls `condition` until it holds or [`PATIENCE`] runs out. No
@@ -2454,7 +3095,7 @@ mod tests {
         );
 
         let outcome = rt
-            .tick_once(&models("we covered photosynthesis today"))
+            .tick_once(models("we covered photosynthesis today"))
             .unwrap();
         assert_eq!(outcome, RunOutcome::Ran);
         assert_eq!(status_of(&rt, &id), Status::Ready);
@@ -2479,7 +3120,7 @@ mod tests {
         use_llm(&rt, &server.base_url());
 
         let id = record(&rt, Mode::InPerson, "Untitled");
-        rt.tick_once(&models("the quarterly amortisation schedule"))
+        rt.tick_once(models("the quarterly amortisation schedule"))
             .unwrap();
 
         // Deliberately no `start_up()` / `Index::rebuild` anywhere after
@@ -2512,7 +3153,7 @@ mod tests {
             "a meeting must capture the other side of the call"
         );
 
-        assert_eq!(rt.tick_once(&models("hello")).unwrap(), RunOutcome::Ran);
+        assert_eq!(rt.tick_once(models("hello")).unwrap(), RunOutcome::Ran);
         assert_eq!(status_of(&rt, &id), Status::Ready);
     }
 
@@ -2641,7 +3282,7 @@ mod tests {
         let server = fake_llm();
         use_llm(&rt, &server.base_url());
         let id = record(&rt, Mode::InPerson, "Budget review");
-        rt.tick_once(&models("the numbers are fine")).unwrap();
+        rt.tick_once(models("the numbers are fine")).unwrap();
 
         // Close the first runtime before touching its files. Windows refuses to
         // delete a file another handle still holds open (`os error 32`), where
@@ -2709,7 +3350,7 @@ mod tests {
         rt.set_settings(&settings).unwrap();
         assert!(!rt.idle_ok(), "the new setting must apply immediately");
         assert_eq!(
-            rt.tick_once(&models("hello")).unwrap(),
+            rt.tick_once(models("hello")).unwrap(),
             RunOutcome::NotIdle,
             "processing must stop the moment the user asks for wall power"
         );
@@ -2717,7 +3358,7 @@ mod tests {
 
         settings.require_ac = false;
         rt.set_settings(&settings).unwrap();
-        assert_eq!(rt.tick_once(&models("hello")).unwrap(), RunOutcome::Ran);
+        assert_eq!(rt.tick_once(models("hello")).unwrap(), RunOutcome::Ran);
         assert_eq!(status_of(&rt, &id), Status::Ready);
     }
 
@@ -3168,7 +3809,7 @@ mod tests {
         use_llm(&rt, &server.base_url());
 
         let id = record(&rt, Mode::InPerson, "Lecture");
-        rt.tick_once(&models("hello")).unwrap();
+        rt.tick_once(models("hello")).unwrap();
         assert_eq!(status_of(&rt, &id), Status::Ready);
 
         // No scheduler running: `process_now` must still mark it, and must not
@@ -3506,6 +4147,8 @@ mod tests {
             format!("{ask:#}").to_lowercase().contains("ollama"),
             "an unreachable model must say so: {ask:#}"
         );
+        assert!(rt.start_live_ask("", "me: hello").is_err());
+        assert!(rt.poll_live_ask("missing-live-ask").is_err());
         assert!(rt.pause_capture().is_err(), "nothing is recording");
         assert!(rt.resume_capture().is_err(), "nothing is recording");
         assert!(
@@ -3550,10 +4193,12 @@ mod tests {
 
         // capture_status, pull_progress, detected_tier, log_path,
         // list_templates, ask_recording, setup_status, pause, resume, start,
-        // stop, find_existing_models, capture_levels, add_highlight —
-        // fourteen not in the list above.
+        // stop, find_existing_models, capture_levels, live_transcript,
+        // start_live_ask, poll_live_ask, the five dictation commands,
+        // add_highlight, and the remaining infallible status calls —
+        // twenty-three not in the list above.
         assert_eq!(
-            called.len() + 14,
+            called.len() + 23,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

@@ -52,8 +52,8 @@ describe("CommandPalette", () => {
     renderPalette();
     expect(screen.queryByText(/Record a meeting/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Record in person/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Stop recording/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/mode/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Stop recording", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("mode", { exact: true })).not.toBeInTheDocument();
   });
 
   it("jumps to a recording", () => {
@@ -81,7 +81,7 @@ describe("CommandPalette", () => {
 
   it("deep-links into a settings section", () => {
     const p = renderPalette();
-    fireEvent.click(screen.getByText("Hotkeys"));
-    expect(p.onOpenSettings).toHaveBeenCalledWith("hotkeys");
+    fireEvent.click(screen.getByText("Shortcuts"));
+    expect(p.onOpenSettings).toHaveBeenCalledWith("shortcuts");
   });
 });

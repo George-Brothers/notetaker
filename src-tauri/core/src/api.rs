@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,10 @@ pub struct Settings {
     pub storage_root: String,
     pub llm_base_url: String,
     pub llm_model: String,
+    /// Optional Ollama model overrides keyed by task-folder name. An absent
+    /// entry uses `llm_model` for that folder.
+    #[serde(default)]
+    pub task_models: BTreeMap<String, String>,
     pub tier_override: Option<String>,
     pub process_when_idle: bool,
 
@@ -180,6 +185,60 @@ pub struct Settings {
     /// served browser UI has no windows to float.
     #[serde(default)]
     pub overlay: OverlayMode,
+
+    // --- Phase 6: Settings audit -----------------------------------------
+    /// The preferred microphone order. The first available entry wins; an
+    /// empty list means that the operating system's default is used.
+    #[serde(default)]
+    pub audio_device_priority: Vec<String>,
+    /// High-level model performance preference. The runtime maps this onto
+    /// the detected/forced model tier while `require_ac` remains the explicit
+    /// battery gate for background work.
+    #[serde(default)]
+    pub performance_mode: PerformanceMode,
+    /// How long speech models may remain resident after their last lease.
+    /// Phase 1 owns the cache behavior; this field is also safe to read before
+    /// that cache is present.
+    #[serde(default)]
+    pub model_idle_unload: ModelIdleUnload,
+    /// Ollama model used by the dictation cleanup pass when that phase is
+    /// enabled.
+    #[serde(default = "default_cleanup_model")]
+    pub cleanup_model: String,
+    /// Whether the local cleanup pass should run for dictation.
+    #[serde(default = "default_true")]
+    pub dictation_cleanup_enabled: bool,
+    /// Words and names that should be available to the dictation recognizer.
+    #[serde(default)]
+    pub dictation_dictionary: Vec<String>,
+    /// Spoken form to corrected form, kept as a map for stable JSON and easy
+    /// editing in Settings.
+    #[serde(default)]
+    pub dictation_replacements: BTreeMap<String, String>,
+    /// The dictation interaction model. It is persisted now so the Phase 4
+    /// workflow can use the same contract without another migration.
+    #[serde(default)]
+    pub dictation_mode: DictationMode,
+    /// What happens after dictation text is produced.
+    #[serde(default)]
+    pub dictation_paste_behavior: PasteBehavior,
+    /// Shortcut reserved for system-wide dictation.
+    #[serde(default = "default_dictation_hotkey")]
+    pub dictation_hotkey: String,
+    /// Keep a lossless WAV copy of dictation audio in local history. Text
+    /// history remains regardless of this switch; there is no auto-delete.
+    #[serde(default)]
+    pub dictation_keep_audio: bool,
+    /// Where the overlay is placed when the desktop shell supports moving it.
+    #[serde(default)]
+    pub overlay_position: OverlayPosition,
+    /// Visual treatment for the overlay.
+    #[serde(default)]
+    pub overlay_style: OverlayStyle,
+    /// Whether the desktop shell should ask the OS to exclude the overlay
+    /// from capture. macOS 15.4+ may still ignore that request.
+    #[serde(default = "default_true")]
+    pub overlay_hide_from_share: bool,
 }
 
 /// When the floating overlay (the little always-on-top recording pill) shows.
@@ -214,6 +273,110 @@ pub enum SpeechEngine {
     /// downloaded, since refusing to transcribe would be worse than
     /// transcribing with the other model.
     SenseVoice,
+}
+
+/// Policy for releasing the native speech and speaker model set.
+///
+/// The wire values are deliberately short because this is persisted in
+/// `settings.json` and exposed to the UI. `15s` exists only in debug builds so
+/// the RAM acceptance run can finish quickly without making a production
+/// setting that would surprise a user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelIdleUnload {
+    #[serde(rename = "never")]
+    Never,
+    #[serde(rename = "afterBatch")]
+    AfterBatch,
+    #[serde(rename = "2m")]
+    TwoMinutes,
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "15m")]
+    FifteenMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+    #[cfg(debug_assertions)]
+    #[serde(rename = "15s")]
+    FifteenSeconds,
+}
+
+impl Default for ModelIdleUnload {
+    fn default() -> Self {
+        Self::FiveMinutes
+    }
+}
+
+impl ModelIdleUnload {
+    /// The idle interval used by the scheduler sweeper. `None` means never.
+    /// `afterBatch` is represented by zero and is still checked only by the
+    /// scheduler tick, so a lease can never be removed mid-job.
+    pub fn idle_window(self) -> Option<Duration> {
+        match self {
+            Self::Never => None,
+            Self::AfterBatch => Some(Duration::ZERO),
+            Self::TwoMinutes => Some(Duration::from_secs(2 * 60)),
+            Self::FiveMinutes => Some(Duration::from_secs(5 * 60)),
+            Self::FifteenMinutes => Some(Duration::from_secs(15 * 60)),
+            Self::OneHour => Some(Duration::from_secs(60 * 60)),
+            #[cfg(debug_assertions)]
+            Self::FifteenSeconds => Some(Duration::from_secs(15)),
+        }
+    }
+}
+
+/// High-level model preference shown in Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PerformanceMode {
+    /// Use the detected hardware tier and the user's battery policy.
+    #[default]
+    Auto,
+    /// Prefer the largest tier this machine can use.
+    BestQuality,
+    /// Prefer the small tier to reduce CPU and memory pressure.
+    CpuOptimized,
+}
+
+/// How dictation begins and ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DictationMode {
+    /// Hold the shortcut while speaking.
+    #[default]
+    PushToTalk,
+    /// Press once to start and again to finish.
+    Toggle,
+}
+
+/// What the dictation workflow does with the resulting text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PasteBehavior {
+    /// Insert text at the active cursor when permissions allow it.
+    #[default]
+    Paste,
+    /// Leave text on the clipboard without sending a paste keystroke.
+    CopyOnly,
+}
+
+/// Desktop overlay placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayPosition {
+    #[default]
+    TopRight,
+    TopCenter,
+    BottomCenter,
+}
+
+/// Desktop overlay skin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayStyle {
+    #[default]
+    Glass,
+    Solid,
 }
 
 /// What the app can and cannot do right now.
@@ -288,12 +451,21 @@ fn default_hotkey_highlight() -> String {
     "CommandOrControl+Alt+H".to_string()
 }
 
+fn default_cleanup_model() -> String {
+    "qwen3:1.7b".to_string()
+}
+
+fn default_dictation_hotkey() -> String {
+    "CommandOrControl+Alt+D".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
             storage_root: String::new(),
             llm_base_url: "http://localhost:11434".to_string(),
             llm_model: "qwen3:8b".to_string(),
+            task_models: BTreeMap::new(),
             tier_override: None,
             process_when_idle: true,
             auto_record: BTreeMap::new(),
@@ -308,6 +480,20 @@ impl Default for Settings {
             hotkey_toggle_record: default_hotkey_toggle_record(),
             hotkey_show_hide: default_hotkey_show_hide(),
             close_to_tray: true,
+            audio_device_priority: Vec::new(),
+            performance_mode: PerformanceMode::Auto,
+            model_idle_unload: ModelIdleUnload::default(),
+            cleanup_model: default_cleanup_model(),
+            dictation_cleanup_enabled: true,
+            dictation_dictionary: Vec::new(),
+            dictation_replacements: BTreeMap::new(),
+            dictation_mode: DictationMode::PushToTalk,
+            dictation_paste_behavior: PasteBehavior::Paste,
+            dictation_hotkey: default_dictation_hotkey(),
+            dictation_keep_audio: false,
+            overlay_position: OverlayPosition::TopRight,
+            overlay_style: OverlayStyle::Glass,
+            overlay_hide_from_share: true,
         }
     }
 }
@@ -377,6 +563,13 @@ pub fn get_recording(store: &Store, id: &str) -> Result<RecordingDetail> {
 pub fn save_notes(store: &Store, id: &str, notes_md: &str) -> Result<()> {
     let rec = find_by_id(store, id)?;
     crate::notes::write(&rec.dir, notes_md)
+}
+
+/// Appends a jot from the floating overlay without rewriting `notes.md`.
+pub fn append_note(store: &Store, id: &str, jot: &str) -> Result<()> {
+    let rec = find_by_id(store, id)?;
+    crate::notes::append(&rec.dir, jot)?;
+    Ok(())
 }
 
 /// Sets which template shapes this recording's summary.
@@ -1087,6 +1280,7 @@ mod tests {
             hotkey_toggle_record: "CommandOrControl+Alt+N".to_string(),
             hotkey_show_hide: "CommandOrControl+Alt+Space".to_string(),
             close_to_tray: false,
+            ..Settings::default()
         };
         set_settings(&path, &settings).unwrap();
 
@@ -1164,6 +1358,10 @@ mod tests {
         assert_eq!(loaded.min_idle_secs, 300);
         assert!(loaded.require_ac);
         assert!(!loaded.keep_wav);
+        assert_eq!(loaded.model_idle_unload, ModelIdleUnload::FiveMinutes);
+        assert_eq!(loaded.performance_mode, PerformanceMode::Auto);
+        assert_eq!(loaded.dictation_hotkey, "CommandOrControl+Alt+D");
+        assert!(loaded.overlay_hide_from_share);
     }
 
     #[test]
@@ -1172,6 +1370,37 @@ mod tests {
         let path = dir.path().join("a").join("b").join("settings.json");
         set_settings(&path, &Settings::default()).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn model_idle_unload_uses_the_persisted_wire_values_and_defaults_to_five_minutes() {
+        assert_eq!(ModelIdleUnload::default(), ModelIdleUnload::FiveMinutes);
+        let values = [
+            (ModelIdleUnload::Never, "never"),
+            (ModelIdleUnload::AfterBatch, "afterBatch"),
+            (ModelIdleUnload::TwoMinutes, "2m"),
+            (ModelIdleUnload::FiveMinutes, "5m"),
+            (ModelIdleUnload::FifteenMinutes, "15m"),
+            (ModelIdleUnload::OneHour, "1h"),
+        ];
+        for (policy, expected) in values {
+            assert_eq!(serde_json::to_value(policy).unwrap(), expected);
+        }
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            serde_json::to_value(ModelIdleUnload::FifteenSeconds).unwrap(),
+            "15s"
+        );
+
+        let old = serde_json::json!({
+            "storageRoot": "/tmp/Notetaker",
+            "llmBaseUrl": "http://localhost:11434",
+            "llmModel": "qwen3:8b",
+            "tierOverride": null,
+            "processWhenIdle": true
+        });
+        let loaded: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.model_idle_unload, ModelIdleUnload::FiveMinutes);
     }
 
     // --- audio_tracks ---------------------------------------------------
@@ -1352,5 +1581,9 @@ mod overhaul_settings_tests {
         assert!(json.contains("\"hotkeyToggleRecord\":\"CommandOrControl+Alt+N\""));
         assert!(json.contains("\"hotkeyShowHide\":\"CommandOrControl+Alt+Space\""));
         assert!(json.contains("\"closeToTray\":true"));
+        assert!(json.contains("\"modelIdleUnload\":\"5m\""));
+        assert!(json.contains("\"performanceMode\":\"auto\""));
+        assert!(json.contains("\"dictationHotkey\":\"CommandOrControl+Alt+D\""));
+        assert!(json.contains("\"overlayHideFromShare\":true"));
     }
 }

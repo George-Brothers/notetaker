@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 
-use super::llm::LlmClient;
+use super::llm::{KeepAlive, LlmClient};
 
 const SYSTEM_PROMPT: &str = "Pick which task this recording belongs to. Reply with ONLY a JSON object {\"task\": string, \"confidence\": number 0-1}. The task MUST be one of the provided list, or \"\" if none fit.";
 
@@ -23,7 +23,15 @@ const MAX_TITLE_CHARS: usize = 70;
 /// transcript, and never worth applying automatically. The user accepts it, the
 /// same way they accept a suggested task.
 pub fn suggest_title(llm: &LlmClient, summary: &str) -> Result<Option<String>> {
-    let reply = llm.chat(TITLE_PROMPT, summary)?;
+    suggest_title_with_keep_alive(llm, summary, KeepAlive::Final)
+}
+
+pub fn suggest_title_with_keep_alive(
+    llm: &LlmClient,
+    summary: &str,
+    keep_alive: KeepAlive,
+) -> Result<Option<String>> {
+    let reply = llm.chat_with_keep_alive(TITLE_PROMPT, summary, keep_alive)?;
     Ok(clean_title(&reply))
 }
 
@@ -100,10 +108,19 @@ struct RawSuggestion {
 }
 
 pub fn suggest_task(llm: &LlmClient, summary: &str, tasks: &[String]) -> Result<Suggestion> {
+    suggest_task_with_keep_alive(llm, summary, tasks, KeepAlive::Final)
+}
+
+pub fn suggest_task_with_keep_alive(
+    llm: &LlmClient,
+    summary: &str,
+    tasks: &[String],
+    keep_alive: KeepAlive,
+) -> Result<Suggestion> {
     let task_list = tasks.join(", ");
     let user = format!("Task list: [{task_list}]\n\nSummary:\n{summary}");
 
-    let reply = llm.chat(SYSTEM_PROMPT, &user)?;
+    let reply = llm.chat_with_keep_alive(SYSTEM_PROMPT, &user, keep_alive)?;
 
     // Parse leniently: the model sometimes wraps JSON in a ```json fence.
     let json_text = reply

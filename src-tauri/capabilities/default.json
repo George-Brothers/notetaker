@@ -4,7 +4,8 @@
   "description": "Capability for the main window",
   "windows": [
     "main",
-    "overlay"
+    "overlay",
+    "tray-panel"
   ],
   "permissions": [
     "core:default",
@@ -26,6 +27,8 @@
     "core:window:allow-close",
     "core:window:allow-hide",
     "core:window:allow-show",
+    "core:window:allow-set-size",
+    "core:window:allow-set-content-protected",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "core:event:allow-listen",

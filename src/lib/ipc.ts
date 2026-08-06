@@ -136,6 +136,8 @@ export interface Settings {
   storageRoot: string;
   llmBaseUrl: string;
   llmModel: string;
+  /** Optional summary-model overrides keyed by note-folder name. */
+  taskModels: Record<string, string>;
   /** null means "use the tier detected from this machine's hardware". */
   tierOverride: string | null;
   processWhenIdle: boolean;
@@ -170,9 +172,44 @@ export interface Settings {
   closeToTray: boolean;
   /** When the floating meeting overlay appears. Desktop-shell-only. */
   overlay: OverlayMode;
+  /** Preferred microphone order; an empty list means the system default. */
+  audioDevicePriority: string[];
+  /** High-level model performance preference. */
+  performanceMode: PerformanceMode;
+  /** When speech models may be unloaded after their last use. */
+  modelIdleUnload: ModelIdleUnload;
+  /** Ollama model for the dictation cleanup pass. */
+  cleanupModel: string;
+  /** Whether the dictation cleanup pass is enabled. */
+  dictationCleanupEnabled: boolean;
+  /** Words/names supplied to the dictation recognizer. */
+  dictationDictionary: string[];
+  /** Spoken form -> corrected form. */
+  dictationReplacements: Record<string, string>;
+  /** Hold the shortcut or press it twice. */
+  dictationMode: DictationMode;
+  /** Insert at the cursor or copy without inserting. */
+  dictationPasteBehavior: PasteBehavior;
+  /** Reserved system-wide dictation accelerator. */
+  dictationHotkey: string;
+  /** Keep a local audio copy of dictation history. */
+  dictationKeepAudio: boolean;
+  /** Desktop overlay placement. */
+  overlayPosition: OverlayPosition;
+  /** Desktop overlay visual treatment. */
+  overlayStyle: OverlayStyle;
+  /** Ask the OS to exclude the overlay from capture where supported. */
+  overlayHideFromShare: boolean;
 }
 
 export type SpeechEngine = "auto" | "whisper" | "senseVoice";
+
+export type PerformanceMode = "auto" | "bestQuality" | "cpuOptimized";
+export type ModelIdleUnload = "never" | "afterBatch" | "15s" | "2m" | "5m" | "15m" | "1h";
+export type DictationMode = "pushToTalk" | "toggle";
+export type PasteBehavior = "paste" | "copyOnly";
+export type OverlayPosition = "topRight" | "topCenter" | "bottomCenter";
+export type OverlayStyle = "glass" | "solid";
 
 /**
  * When the floating overlay (the always-on-top recording pill) shows:
@@ -268,6 +305,38 @@ export interface CaptureLevels {
   systemLevel: number;
 }
 
+/** One chunked-batch transcript update for the expanded overlay. */
+export interface LiveTranscriptEvent {
+  speaker: "me" | "them";
+  text: string;
+  isPartial: boolean;
+  isFinal: boolean;
+}
+
+/** One incremental local-Ollama Ask update for the expanded overlay. */
+export interface LiveAskEvent {
+  token: string;
+  done: boolean;
+  error: string | null;
+}
+
+/** Status of the independent microphone-only dictation slot. */
+export type DictationState = "idle" | "recording" | "transcribing" | "pasting" | "error";
+
+export interface DictationStatus {
+  state: DictationState;
+  elapsedS: number;
+  level: number;
+  text: string;
+  message: string | null;
+}
+
+export interface PasteResult {
+  inserted: boolean;
+  clipboardRestored: boolean;
+  message: string;
+}
+
 export type MeetingEventKind = "started" | "ended";
 
 /** A meeting app appearing or disappearing, after debounce. */
@@ -347,6 +416,8 @@ export const api = {
    */
   saveNotes: (id: string, notesMd: string) =>
     invoke<void>("save_notes", { id, notesMd }),
+  /** Appends a jot from the expanded overlay; it never rewrites notes.md. */
+  appendNote: (id: string, jot: string) => invoke<void>("append_note", { id, jot }),
   /**
    * Stars the current moment of the live recording. No arguments: the
    * runtime knows the live recording and its clock better than any frontend
@@ -376,6 +447,11 @@ export const api = {
    */
   askRecording: (id: string, question: string) =>
     invoke<string>("ask_recording", { id, question }),
+  /** Starts a local-only streamed answer over the rolling live transcript. */
+  startLiveAsk: (question: string, context: string) =>
+    invoke<string>("start_live_ask", { question, context }),
+  /** Drains incremental tokens for one live Ask request. */
+  pollLiveAsk: (id: string) => invoke<LiveAskEvent[]>("poll_live_ask", { id }),
   /**
    * The absolute path to an audio track. Not playable as-is in a browser —
    * pass it through `audioSrc` in transport.ts, which turns it into whatever
@@ -397,6 +473,13 @@ export const api = {
   stopCapture: () => invoke<string>("stop_capture"),
   captureStatus: () => invoke<CaptureStatus>("capture_status"),
   captureLevels: () => invoke<CaptureLevels>("capture_levels"),
+  /** Drains transcript updates produced by the read-only capture tee. */
+  liveTranscript: () => invoke<LiveTranscriptEvent[]>("live_transcript"),
+  startDictation: () => invoke<DictationStatus>("start_dictation"),
+  stopDictation: () => invoke<DictationStatus>("stop_dictation"),
+  cancelDictation: () => invoke<DictationStatus>("cancel_dictation"),
+  dictationStatus: () => invoke<DictationStatus>("dictation_status"),
+  copyLastTranscript: () => invoke<PasteResult>("copy_last_transcript"),
 
   // --- Meeting watcher ---
   /** Drains any debounced meeting events since the last poll. */

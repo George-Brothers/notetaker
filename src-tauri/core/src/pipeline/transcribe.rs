@@ -18,6 +18,19 @@ pub trait Transcriber {
     /// whole file as one span. Returns `(start_s, end_s, text)` tuples with
     /// offsets re-based to the original (full) audio.
     fn transcribe(&self, samples: &[f32], spans: &[(f32, f32)]) -> Result<Vec<(f32, f32, String)>>;
+
+    /// Transcribes with an optional vocabulary prompt. The default keeps all
+    /// existing pipeline implementations source-compatible; interactive
+    /// dictation uses the prompt-aware override on Whisper and routing.
+    fn transcribe_with_prompt(
+        &self,
+        samples: &[f32],
+        spans: &[(f32, f32)],
+        initial_prompt: Option<&str>,
+    ) -> Result<Vec<(f32, f32, String)>> {
+        let _ = initial_prompt;
+        self.transcribe(samples, spans)
+    }
 }
 
 /// A `Transcriber` backed by a local whisper.cpp model via `whisper-rs`.
@@ -40,6 +53,7 @@ impl WhisperTranscriber {
         &self,
         span_samples: &[f32],
         offset_s: f32,
+        initial_prompt: Option<&str>,
     ) -> Result<Vec<(f32, f32, String)>> {
         let mut state = self.ctx.create_state().context("creating whisper state")?;
 
@@ -52,6 +66,9 @@ impl WhisperTranscriber {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+        if let Some(prompt) = initial_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+            params.set_initial_prompt(prompt);
+        }
 
         state
             .full(params, span_samples)
@@ -77,8 +94,17 @@ impl WhisperTranscriber {
 
 impl Transcriber for WhisperTranscriber {
     fn transcribe(&self, samples: &[f32], spans: &[(f32, f32)]) -> Result<Vec<(f32, f32, String)>> {
+        self.transcribe_with_prompt(samples, spans, None)
+    }
+
+    fn transcribe_with_prompt(
+        &self,
+        samples: &[f32],
+        spans: &[(f32, f32)],
+        initial_prompt: Option<&str>,
+    ) -> Result<Vec<(f32, f32, String)>> {
         if spans.is_empty() {
-            return self.transcribe_span(samples, 0.0);
+            return self.transcribe_span(samples, 0.0, initial_prompt);
         }
 
         let mut out = Vec::new();
@@ -88,7 +114,11 @@ impl Transcriber for WhisperTranscriber {
             if end_idx <= start_idx {
                 continue;
             }
-            out.extend(self.transcribe_span(&samples[start_idx..end_idx], start_s)?);
+            out.extend(self.transcribe_span(
+                &samples[start_idx..end_idx],
+                start_s,
+                initial_prompt,
+            )?);
         }
         Ok(out)
     }

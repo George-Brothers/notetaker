@@ -9,7 +9,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
+import { getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
@@ -27,18 +28,22 @@ import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { WindowControls } from "./components/WindowControls";
+import type { TrayModelState, TrayPanelSync } from "./components/TrayPanel";
 import { Button, Dialog, IconButton, Notice, TooltipProvider } from "./components/ui";
 import {
   api,
   type CaptureState,
   type CaptureStatus,
+  type DictationStatus,
+  type LiveTranscriptEvent,
   type Settings as SettingsData,
   type SetupStatus,
 } from "./lib/ipc";
 import { isDesktop } from "./lib/transport";
 import { cn } from "./lib/cn";
 import { duration } from "./lib/format";
-import { isMacDesktop, setAutostart, setTrayStatus } from "./lib/desktop";
+import { isMacDesktop, listInputDevices, setAutostart, setTrayStatus } from "./lib/desktop";
+import type { InputDevice } from "./lib/desktop";
 import { formatAcceleratorParts } from "./lib/hotkeys";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
@@ -58,6 +63,15 @@ const AUTOSTART_DONE = "1";
 const DEFAULT_TOGGLE_RECORD = "CommandOrControl+Alt+N";
 const DEFAULT_SHOW_HIDE = "CommandOrControl+Alt+Space";
 const DEFAULT_HIGHLIGHT = "CommandOrControl+Alt+H";
+const DEFAULT_DICTATION = "CommandOrControl+Alt+D";
+
+const EMPTY_DICTATION_STATUS: DictationStatus = {
+  state: "idle",
+  elapsedS: 0,
+  level: 0,
+  text: "",
+  message: null,
+};
 
 /**
  * True while a take is on the line.
@@ -69,6 +83,38 @@ const DEFAULT_HIGHLIGHT = "CommandOrControl+Alt+H";
  */
 export function isCapturing(state: CaptureState): boolean {
   return state === "recording" || state === "paused";
+}
+
+function isDictating(state: DictationStatus["state"]): boolean {
+  return state !== "idle" && state !== "error";
+}
+
+function dictationStatusLine(status: DictationStatus): string {
+  switch (status.state) {
+    case "recording":
+      return "Listening — release to transcribe";
+    case "transcribing":
+      return "Transcribing locally…";
+    case "pasting":
+      return "Pasting at the active cursor…";
+    case "error":
+      return status.message ?? "Dictation needs attention.";
+    default:
+      return status.message ?? "Dictation ready";
+  }
+}
+
+function captureStatusLine(status: Pick<CaptureStatus, "state" | "elapsedS">): string {
+  switch (status.state) {
+    case "recording":
+      return `Recording — ${duration(status.elapsedS)}`;
+    case "paused":
+      return `Paused — ${duration(status.elapsedS)}`;
+    case "finishing":
+      return "Finishing…";
+    default:
+      return "Not recording";
+  }
 }
 
 /**
@@ -128,10 +174,58 @@ function App() {
   const [settingsVersion, setSettingsVersion] = useState(0);
   const [showTrayNote, setShowTrayNote] = useState(false);
   const [showQuitGuard, setShowQuitGuard] = useState(false);
+  const [inputDevices, setInputDevices] = useState<InputDevice[]>([]);
+  const [modelState, setModelState] = useState<TrayModelState>("sleeping");
+  const [highlights, setHighlights] = useState<string[]>([]);
+  const [dictationStatus, setDictationStatus] = useState<DictationStatus>(EMPTY_DICTATION_STATUS);
+
+  const appSettingsRef = useRef(appSettings);
+  appSettingsRef.current = appSettings;
+  const libraryRef = useRef(lib);
+  libraryRef.current = lib;
+  const dictationStatusRef = useRef(dictationStatus);
+  dictationStatusRef.current = dictationStatus;
+
+  useEffect(() => {
+    if (!isDesktop()) return;
+    void listInputDevices().then((devices) => setInputDevices(devices ?? []));
+  }, []);
 
   // Keep installed copies current without ever restarting during a recording.
   // The updater itself verifies the signed artifact before installation.
   useAutoUpdate(capture.status.state === "idle");
+
+  // Dictation has its own fast status loop: the waveform must reflect the
+  // gated microphone level while the main capture poll remains on its normal
+  // cadence. A failed poll is retained as an honest message rather than
+  // making a live run appear idle.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    let cancelled = false;
+    const poll = () => {
+      void api
+        .dictationStatus()
+        .then((status) => {
+          // Older desktop shells do not expose the dictation status command;
+          // an empty IPC response must not erase the safe idle state.
+          if (!cancelled && status) setDictationStatus(status);
+        })
+        .catch((error) => {
+          if (cancelled || dictationStatusRef.current.state === "idle") return;
+          setDictationStatus((current) => ({
+            ...current,
+            state: "error",
+            message: `Dictation status is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          }));
+        });
+    };
+    poll();
+    const timer = window.setInterval(poll, 100);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // The tray icon is the only thing that says "still recording" once the window
   // is hidden, so it follows capture state rather than being set at start/stop
@@ -141,15 +235,7 @@ function App() {
   // a timer of its own.
   useEffect(() => {
     const s = capture.status;
-    const line =
-      s.state === "recording"
-        ? `Recording — ${duration(s.elapsedS)}`
-        : s.state === "paused"
-          ? `Paused — ${duration(s.elapsedS)}`
-          : s.state === "finishing"
-            ? "Finishing…"
-            : "Not recording";
-    void setTrayStatus(s.state, line);
+    void setTrayStatus(s.state, captureStatusLine(s));
   }, [capture.status]);
 
   // The floating overlay follows the same principle as the tray: this window
@@ -164,18 +250,49 @@ function App() {
     const s = capture.status;
     const capturing = isCapturing(s.state) || s.state === "finishing";
     const prompting = mode === "meeting" && !capturing && capture.pendingMeeting != null;
-    const visible = mode !== "off" && (capturing || prompting);
+    const dictating = mode !== "off" && isDictating(dictationStatus.state);
+    const visible = mode !== "off" && (capturing || prompting || dictating);
 
     void (async () => {
       try {
         const overlay = await WebviewWindow.getByLabel("overlay");
         if (!overlay) return;
         if (visible) {
+          const appName = prompting ? capture.pendingMeeting?.appName ?? null : capture.activeAppName;
+          let liveTranscript: LiveTranscriptEvent[] = [];
+          if (capturing) {
+            try {
+              liveTranscript = await api.liveTranscript();
+            } catch {
+              // The recording remains useful when an older shell has not
+              // shipped the optional live-transcript command yet.
+            }
+          }
+          const monitor = await primaryMonitor();
+          if (monitor) {
+            const size = monitor.size;
+            const scale = monitor.scaleFactor;
+            const logicalWidth = size.width / scale;
+            const logicalHeight = size.height / scale;
+            const x = dictating ? (logicalWidth - 300) / 2 : logicalWidth - 300 - 16;
+            const y = dictating ? logicalHeight - 78 : 48;
+            await overlay.setPosition(new LogicalPosition(x, y));
+          }
           await emit("overlay-sync", {
-            kind: prompting ? "prompt" : "recording",
-            state: s.state === "paused" ? "paused" : s.state === "finishing" ? "finishing" : "recording",
-            elapsedS: s.elapsedS,
-            appName: capture.pendingMeeting?.appName ?? null,
+            kind: dictating ? "dictation" : prompting ? "prompt" : "recording",
+            state: dictating ? "recording" : s.state === "paused" ? "paused" : s.state === "finishing" ? "finishing" : "recording",
+            elapsedS: dictating ? dictationStatus.elapsedS : s.elapsedS,
+            recordingId: prompting || dictating ? null : s.recordingId,
+            micLevel: dictating ? dictationStatus.level : s.micLevel,
+            systemLevel: dictating ? 0 : s.systemLevel,
+            appName,
+            highlights,
+            statusLine: dictating ? dictationStatusLine(dictationStatus) : prompting ? "Meeting detected" : captureStatusLine(s),
+            liveTranscript,
+            style: appSettings?.overlayStyle ?? "glass",
+            dictationState: dictating ? dictationStatus.state : undefined,
+            dictationText: dictating ? dictationStatus.text : undefined,
+            dictationMessage: dictating ? dictationStatus.message : undefined,
           });
           if (!(await overlay.isVisible())) await overlay.show();
         } else if (await overlay.isVisible()) {
@@ -186,7 +303,27 @@ function App() {
         // identically without the pill.
       }
     })();
-  }, [capture.status, capture.pendingMeeting, appSettings?.overlay]);
+  }, [capture.status, capture.pendingMeeting, capture.activeAppName, appSettings?.overlay, appSettings?.overlayStyle, highlights, dictationStatus]);
+
+  // The shell starts the overlay protected, then follows the saved preference
+  // once Settings has loaded. This is a real runtime toggle on platforms that
+  // support it; macOS 15.4+ can still ignore the request, which Settings says
+  // plainly instead of promising invisibility.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    void WebviewWindow.getByLabel("overlay")
+      .then((overlay) => overlay?.setContentProtected(appSettings?.overlayHideFromShare ?? true))
+      .catch(() => undefined);
+  }, [appSettings?.overlayHideFromShare]);
+
+  // Push the same owner snapshot to the tray panel whenever its visible state
+  // changes. The panel's ready event below covers the race where it mounts
+  // after this effect has already fired.
+  useEffect(() => {
+    if (!isDesktop()) return;
+    const snapshot = traySyncRef.current;
+    if (snapshot) void emit("tray-panel-sync", snapshot).catch(() => {});
+  }, [capture.status, capture.activeAppName, lib.recordings, inputDevices, appSettings?.inputDevice, modelState]);
 
   // Loaded for the sidebar's empty-state hotkey hint, and to decide which
   // accelerators are registered OS-wide. Refetched on `settingsVersion`, which
@@ -286,6 +423,44 @@ function App() {
   stopAndOpenRef.current = stopAndOpen;
   const closeToTrayRef = useRef(true);
   closeToTrayRef.current = appSettings?.closeToTray ?? true;
+  const highlightRecordingRef = useRef<string | null>(null);
+  useEffect(() => {
+    const recordingId = capture.status.recordingId;
+    if (recordingId && recordingId !== highlightRecordingRef.current) {
+      highlightRecordingRef.current = recordingId;
+      setHighlights([]);
+    } else if (!recordingId && capture.status.state === "idle") {
+      highlightRecordingRef.current = null;
+      setHighlights([]);
+    }
+  }, [capture.status.recordingId, capture.status.state]);
+  const traySyncRef = useRef<TrayPanelSync | null>(null);
+
+  const recentNotes = lib.recordings
+    .filter((recording) => recording.hasNotes)
+    .slice(0, 5)
+    .map((recording) => ({
+      id: recording.id,
+      title: recording.title,
+      created: recording.created,
+      durationS: recording.durationS,
+    }));
+  traySyncRef.current = {
+    capture: {
+      state: capture.status.state,
+      mode: capture.status.mode,
+      recordingId: capture.status.recordingId,
+      elapsedS: capture.status.elapsedS,
+      micLevel: capture.status.micLevel,
+      systemLevel: capture.status.systemLevel,
+      appName: capture.activeAppName,
+    },
+    recentNotes,
+    inputDevices,
+    selectedInputDevice: appSettings?.inputDevice ?? null,
+    modelState,
+    statusLine: captureStatusLine(capture.status),
+  };
 
   /**
    * Start or stop, whichever the current state calls for.
@@ -306,14 +481,53 @@ function App() {
   }, []);
 
   /**
-   * Stars the current moment of the live recording. Identity-stable for the
-   * same reason as `toggleRecording` — it is a hotkey-registration dependency.
-   * A press with nothing recording is a no-op by the runtime's own refusal;
-   * surfacing that as an error would punish a mis-hit hotkey.
+   * Stars the current moment of the live recording and keeps the owner's
+   * rendering snapshot in step for both floating remotes. The file write is
+   * append-only in core; a failed star is intentionally quiet for a stray
+   * hotkey press when nothing is recording.
    */
-  const starMoment = useCallback(() => {
-    void api.addHighlight().catch(() => undefined);
+  const addHighlight = useCallback(async () => {
+    try {
+      const line = await api.addHighlight();
+      setHighlights((current) => [...current, line]);
+    } catch {
+      // Nothing is recording, or the append failed. The native menu and pill
+      // stay usable without surfacing a transient error dialog.
+    }
   }, []);
+  const addHighlightRef = useRef(addHighlight);
+  addHighlightRef.current = addHighlight;
+  const starMoment = useCallback(() => {
+    void addHighlightRef.current();
+  }, []);
+
+  const showDictationError = useCallback((error: unknown) => {
+    setDictationStatus({
+      ...EMPTY_DICTATION_STATUS,
+      state: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }, []);
+
+  const startDictation = useCallback(() => {
+    if (isDictating(dictationStatusRef.current.state)) return;
+    void api.startDictation().then(setDictationStatus).catch(showDictationError);
+  }, [showDictationError]);
+
+  const stopDictation = useCallback(() => {
+    if (!isDictating(dictationStatusRef.current.state)) return;
+    void api.stopDictation().then(setDictationStatus).catch(showDictationError);
+  }, [showDictationError]);
+
+  const cancelDictation = useCallback(() => {
+    if (!isDictating(dictationStatusRef.current.state)) return;
+    void api.cancelDictation().then(setDictationStatus).catch(showDictationError);
+  }, [showDictationError]);
+
+  const toggleDictation = useCallback(() => {
+    if (isDictating(dictationStatusRef.current.state)) stopDictation();
+    else startDictation();
+  }, [startDictation, stopDictation]);
 
   const hotkeys = useGlobalHotkeys({
     enabled: settingsSettled,
@@ -322,6 +536,13 @@ function App() {
     highlight: appSettings?.hotkeyHighlight ?? DEFAULT_HIGHLIGHT,
     onToggleRecord: toggleRecording,
     onHighlight: starMoment,
+    dictationHotkey: appSettings?.dictationHotkey ?? DEFAULT_DICTATION,
+    dictationMode: appSettings?.dictationMode ?? "pushToTalk",
+    dictating: isDictating(dictationStatus.state),
+    onDictationStart: startDictation,
+    onDictationStop: stopDictation,
+    onDictationToggle: toggleDictation,
+    onDictationCancel: cancelDictation,
   });
 
   // Start with Windows, on by default — asked for exactly once, ever.
@@ -408,6 +629,63 @@ function App() {
       listen("tray-stop", () => {
         if (isCapturing(captureRef.current.status.state)) void stopAndOpenRef.current();
       }),
+      listen("tray-highlight", () => void addHighlightRef.current()),
+      listen("tray-copy-last-transcript", () => {
+        void api
+          .copyLastTranscript()
+          .then((result) => setDictationStatus((current) => ({ ...current, message: result.message })))
+          .catch(showDictationError);
+      }),
+      listen("tray-open", async () => {
+        const win = getCurrentWindow();
+        await win.show();
+        await win.unminimize();
+        await win.setFocus();
+      }),
+      listen<string>("tray-open-note", async (event) => {
+        await libraryRef.current.selectRecording(event.payload);
+        const win = getCurrentWindow();
+        await win.show();
+        await win.unminimize();
+        await win.setFocus();
+      }),
+      listen<string | null>("tray-mic-select", async (event) => {
+        const current = appSettingsRef.current;
+        if (!current) return;
+        const inputDevice = event.payload || null;
+        const priority = inputDevice
+          ? [inputDevice, ...current.audioDevicePriority.filter((id) => id !== inputDevice)]
+          : current.audioDevicePriority;
+        const next = { ...current, inputDevice, audioDevicePriority: priority };
+        try {
+          await api.setSettings(next);
+          setAppSettings(next);
+          setSettingsVersion((version) => version + 1);
+        } catch {
+          // The panel remains usable; Settings will show the previous value on
+          // its next open if the native write was refused.
+        }
+      }),
+      listen("tray-panel-ready", () => {
+        const snapshot = traySyncRef.current;
+        if (snapshot) void emit("tray-panel-sync", snapshot).catch(() => {});
+      }),
+      listen<{ state?: string }>("model-state-changed", (event) => {
+        switch (event.payload?.state) {
+          case "ready":
+            setModelState("ready");
+            break;
+          case "loading":
+            setModelState("loading");
+            break;
+          case "failed":
+            setModelState("error");
+            break;
+          default:
+            setModelState("sleeping");
+            break;
+        }
+      }),
       // The overlay pill's intents — same owners as the tray's, plus the
       // prompt pair. `overlay-record` prefers the pending meeting (it carries
       // the app's name for the title) and falls back to a plain meeting
@@ -418,7 +696,7 @@ function App() {
         else if (c.status.state === "idle") c.start("meeting", "");
       }),
       listen("overlay-dismiss", () => captureRef.current.dismissPendingMeeting()),
-      listen("overlay-highlight", () => void api.addHighlight().catch(() => undefined)),
+      listen("overlay-highlight", () => void addHighlightRef.current()),
       listen("overlay-pause-resume", () => {
         const c = captureRef.current;
         if (c.status.state === "recording") c.pause();
@@ -427,13 +705,33 @@ function App() {
       listen("overlay-stop", () => {
         if (isCapturing(captureRef.current.status.state)) void stopAndOpenRef.current();
       }),
+      listen("overlay-dictation-stop", () => stopDictation()),
+      listen("overlay-dictation-cancel", () => cancelDictation()),
       listen("overlay-open", async () => {
         const win = getCurrentWindow();
         await win.show();
         await win.unminimize();
         await win.setFocus();
       }),
-      listen("tray-open-settings", () => setSettingsOpen(true)),
+      listen<{ recordingId?: string; text?: string }>("overlay-jot", async (event) => {
+        const recordingId = event.payload?.recordingId;
+        const text = event.payload?.text;
+        if (!recordingId || !text?.trim()) return;
+        try {
+          await api.appendNote(recordingId, text);
+          await libraryRef.current.refreshRecordings();
+        } catch {
+          // The overlay explains the append-only behavior; a failed write does
+          // not erase the draft in its own textarea.
+        }
+      }),
+      listen("tray-open-settings", async () => {
+        const win = getCurrentWindow();
+        await win.show();
+        await win.unminimize();
+        await win.setFocus();
+        setSettingsOpen(true);
+      }),
       // The tray's Quit asks rather than exits. It used to call `app.exit(0)`
       // straight from the menu handler, which skips destructors — so quitting
       // mid-recording lost the last unflushed buffer and left the take to be
@@ -456,7 +754,7 @@ function App() {
     // Mounts once: `toggleRecording` is identity-stable and every other live
     // value is read through a ref above. Depending on `capture` here would
     // tear the listeners down and rebuild them on every one-second poll.
-  }, [toggleRecording]);
+  }, [toggleRecording, showDictationError, stopDictation, cancelDictation]);
 
   // "Process now" queues the recording and wakes the scheduler. When there is
   // no scheduler — because the speech models were never downloaded — that call
@@ -544,6 +842,9 @@ function App() {
 
         {capture.captureError && (
           <Notice className="mx-3 mt-2 shrink-0">{capture.captureError}</Notice>
+        )}
+        {dictationStatus.message && (
+          <Notice className="mx-3 mt-2 shrink-0">{dictationStatus.message}</Notice>
         )}
         <SetupNotice onOpenSettings={openSettingsPanel} onStatus={observeSetupStatus} />
         {processBlocked && (

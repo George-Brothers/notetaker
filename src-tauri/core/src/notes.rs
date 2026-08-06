@@ -20,7 +20,8 @@
 //! Nothing here ever deletes: an empty save writes an empty file rather than
 //! removing one, so "my notes vanished" cannot be caused by this module.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write as IoWrite;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -40,6 +41,34 @@ pub fn read(dir: &Path) -> String {
 pub fn write(dir: &Path, notes_md: &str) -> Result<()> {
     let path = dir.join(NOTES_FILE);
     fs::write(&path, notes_md).with_context(|| format!("writing your notes to {}", path.display()))
+}
+
+/// Appends a short jot without ever rewriting the existing notes file.
+///
+/// The expanded overlay is a second, small notepad surface. It must not use
+/// [`write`] because a stale frontend snapshot could erase text typed in the
+/// main window between keystrokes.
+pub fn append(dir: &Path, jot: &str) -> Result<()> {
+    let jot = jot.trim();
+    if jot.is_empty() {
+        return Ok(());
+    }
+
+    let path = dir.join(NOTES_FILE);
+    let needs_separator = fs::read(&path)
+        .map(|contents| !contents.is_empty() && !contents.ends_with(b"\n"))
+        .unwrap_or(false);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening your notes for append at {}", path.display()))?;
+    if needs_separator {
+        file.write_all(b"\n")?;
+    }
+    file.write_all(jot.as_bytes())?;
+    file.write_all(b"\n")
+        .with_context(|| format!("appending your note to {}", path.display()))
 }
 
 /// Starred moments live in their own file, deliberately not in `notes.md`:
@@ -122,6 +151,14 @@ mod tests {
         let notes = "线上会议\n- 价格 15%\n\n最后确认";
         write(dir.path(), notes).unwrap();
         assert_eq!(read(dir.path()), notes);
+    }
+
+    #[test]
+    fn append_preserves_existing_notes_and_adds_a_line() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "first").unwrap();
+        append(dir.path(), "second").unwrap();
+        assert_eq!(read(dir.path()), "first\nsecond\n");
     }
 
     #[test]

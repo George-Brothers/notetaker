@@ -64,6 +64,7 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
 
         // --- the notepad ------------------------------------------------
         "save_notes" => to_json(rt.save_notes(str_arg(args, "id")?, str_arg(args, "notesMd")?)?),
+        "append_note" => to_json(rt.append_note(str_arg(args, "id")?, str_arg(args, "jot")?)?),
         "add_highlight" => to_json(rt.add_highlight()?),
         "list_templates" => to_json(rt.list_templates()),
         "set_template" => {
@@ -77,6 +78,11 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         "ask_recording" => {
             to_json(rt.ask_recording(str_arg(args, "id")?, str_arg(args, "question")?)?)
         }
+        "start_live_ask" => to_json(rt.start_live_ask(
+            str_arg(args, "question")?,
+            str_arg(args, "context")?,
+        )?),
+        "poll_live_ask" => to_json(rt.poll_live_ask(str_arg(args, "id")?)?),
         "audio_path" => to_json(rt.audio_path(str_arg(args, "id")?, str_arg(args, "track")?)?),
         "log_path" => to_json(rt.log_path()),
 
@@ -101,6 +107,12 @@ pub fn dispatch(rt: &Runtime, command: &str, args: &Value) -> Result<Value> {
         "stop_capture" => to_json(rt.stop_capture()?),
         "capture_status" => to_json(rt.capture_status()),
         "capture_levels" => to_json(rt.capture_levels()),
+        "live_transcript" => to_json(rt.live_transcript()),
+        "start_dictation" => to_json(rt.start_dictation()?),
+        "stop_dictation" => to_json(rt.stop_dictation()?),
+        "cancel_dictation" => to_json(rt.cancel_dictation()?),
+        "dictation_status" => to_json(rt.dictation_status()),
+        "copy_last_transcript" => to_json(rt.copy_last_transcript()?),
         "poll_meetings" => to_json(rt.poll_meetings()?),
 
         // --- models and setup -------------------------------------------
@@ -226,11 +238,14 @@ mod tests {
             "delete_recording",
             "rename_speaker",
             "save_notes",
+            "append_note",
             "add_highlight",
             "list_templates",
             "set_template",
             "set_action_done",
             "ask_recording",
+            "start_live_ask",
+            "poll_live_ask",
             "audio_path",
             "log_path",
             "get_settings",
@@ -242,6 +257,12 @@ mod tests {
             "stop_capture",
             "capture_status",
             "capture_levels",
+            "live_transcript",
+            "start_dictation",
+            "stop_dictation",
+            "cancel_dictation",
+            "dictation_status",
+            "copy_last_transcript",
             "poll_meetings",
             "ollama_status",
             "pull_model",

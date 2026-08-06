@@ -15,6 +15,8 @@
 //! loop hidden inside a thread: the app owns the cadence, and every test here
 //! drives capture one step at a time with no sleeping and no timing luck.
 
+use std::sync::mpsc::Sender;
+
 use anyhow::{Context, Result};
 use chrono::Local;
 
@@ -33,6 +35,28 @@ struct Channel {
     /// Set once the source has failed or run dry. The file stays open until
     /// stop regardless, so whatever it captured is still finalized properly.
     done: bool,
+}
+
+/// Which read-only capture track a live consumer is observing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureTrack {
+    Mic,
+    System,
+}
+
+/// A cloned sample packet for the live path. The recording writer never lends
+/// out its buffer: the tee owns this copy and can process it independently.
+#[derive(Debug)]
+pub struct CapturedSamples {
+    pub track: CaptureTrack,
+    pub samples: Vec<f32>,
+}
+
+/// Message sent to a live consumer. `Finish` lets the consumer flush its last
+/// VAD chunk before the recording is considered fully closed.
+pub enum LiveSample {
+    Samples(CapturedSamples),
+    Finish,
 }
 
 /// A live recording: one or two audio sources, their files, and the rules for
@@ -58,6 +82,9 @@ pub struct Session {
     /// state so a stop whose save failed can be retried without closing the
     /// tracks — or releasing the devices — a second time.
     saved: bool,
+    /// Optional read-only tee. Sending is unbounded and only clones the
+    /// samples; a slow recognizer can never back-pressure capture.
+    live_tee: Option<Sender<LiveSample>>,
 }
 
 impl Session {
@@ -74,6 +101,27 @@ impl Session {
         mic_source: Box<dyn AudioSource>,
         system_source: Option<Box<dyn AudioSource>>,
         disk: Box<dyn DiskSpace>,
+    ) -> Result<Session> {
+        Self::start_with_tee(
+            store,
+            mode,
+            title,
+            mic_source,
+            system_source,
+            disk,
+            None,
+        )
+    }
+
+    /// Starts a session with an optional read-only sample tee.
+    pub fn start_with_tee(
+        store: &Store,
+        mode: Mode,
+        title: &str,
+        mic_source: Box<dyn AudioSource>,
+        system_source: Option<Box<dyn AudioSource>>,
+        disk: Box<dyn DiskSpace>,
+        live_tee: Option<Sender<LiveSample>>,
     ) -> Result<Session> {
         // Validate before creating anything, so a bad call leaves no empty
         // folder behind for the recovery sweep to puzzle over.
@@ -110,6 +158,7 @@ impl Session {
             buf: Vec::new(),
             notes: Vec::new(),
             saved: false,
+            live_tee,
         })
     }
 
@@ -134,9 +183,23 @@ impl Session {
 
         let capturing = self.state == CaptureState::Recording;
         let mut buf = std::mem::take(&mut self.buf);
-        drain(&mut self.mic, capturing, &mut buf, &mut self.notes);
+        drain(
+            &mut self.mic,
+            CaptureTrack::Mic,
+            capturing,
+            &mut buf,
+            &mut self.notes,
+            self.live_tee.as_ref(),
+        );
         if let Some(system) = self.system.as_mut() {
-            drain(system, capturing, &mut buf, &mut self.notes);
+            drain(
+                system,
+                CaptureTrack::System,
+                capturing,
+                &mut buf,
+                &mut self.notes,
+                self.live_tee.as_ref(),
+            );
         }
         self.buf = buf;
 
@@ -269,7 +332,14 @@ impl Session {
 /// a file that will not take the audio, is marked done and left alone: its
 /// track is still finalized on stop, because audio already captured is never
 /// worth throwing away over the track that follows it.
-fn drain(ch: &mut Channel, capturing: bool, buf: &mut Vec<f32>, notes: &mut Vec<String>) {
+fn drain(
+    ch: &mut Channel,
+    track: CaptureTrack,
+    capturing: bool,
+    buf: &mut Vec<f32>,
+    notes: &mut Vec<String>,
+    live_tee: Option<&Sender<LiveSample>>,
+) {
     if ch.done {
         return;
     }
@@ -290,6 +360,15 @@ fn drain(ch: &mut Channel, capturing: bool, buf: &mut Vec<f32>, notes: &mut Vec<
     // paused session that stopped reading would hand back the paused audio on
     // resume as if it had been recorded.
     if capturing && !buf.is_empty() {
+        if let Some(tee) = live_tee {
+            // `send` is to an unbounded channel. It cannot wait for model
+            // inference, and the writer still receives the original `buf`
+            // unchanged below.
+            let _ = tee.send(LiveSample::Samples(CapturedSamples {
+                track,
+                samples: buf.clone(),
+            }));
+        }
         if let Err(e) = ch.writer.write(buf) {
             log::warn!("{} write failed: {e:#}", ch.source.label());
             notes.push(format!(
@@ -435,6 +514,49 @@ mod tests {
             "clean capture must not leave a note"
         );
         assert!(meta.error.is_none(), "clean capture must not set an error");
+    }
+
+    #[test]
+    fn read_only_live_tee_keeps_pipeline_wav_byte_identical() {
+        fn run(dir: &Path, tee: bool) -> (Vec<u8>, Vec<f32>) {
+            let store = Store::new(dir);
+            let samples: Vec<f32> = (0..(SAMPLE_RATE as usize / 2))
+                .map(|i| ((i % 97) as f32 - 48.0) / 100.0)
+                .collect();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut session = Session::start_with_tee(
+                &store,
+                Mode::InPerson,
+                "Contract",
+                Box::new(FakeSource::from_samples("microphone", samples, 137)),
+                None,
+                healthy_disk(),
+                tee.then_some(tx),
+            )
+            .unwrap();
+            let path = session.recording().dir.join("audio-mic.wav");
+            pump_until_idle(&mut session);
+            session.stop().unwrap();
+            drop(session);
+
+            let observed = rx
+                .into_iter()
+                .filter_map(|message| match message {
+                    LiveSample::Samples(packet) => Some(packet.samples),
+                    LiveSample::Finish => None,
+                })
+                .flatten()
+                .collect();
+            (std::fs::read(path).unwrap(), observed)
+        }
+
+        let without_dir = tempfile::tempdir().unwrap();
+        let with_dir = tempfile::tempdir().unwrap();
+        let (without, without_observed) = run(without_dir.path(), false);
+        let (with, with_observed) = run(with_dir.path(), true);
+        assert!(without_observed.is_empty());
+        assert!(!with_observed.is_empty());
+        assert_eq!(without, with, "the live path changed pipeline output bytes");
     }
 
     #[test]

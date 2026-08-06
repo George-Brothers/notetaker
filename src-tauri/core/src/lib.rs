@@ -9,6 +9,7 @@
 pub mod actions;
 pub mod api;
 pub mod capture;
+pub mod dictation;
 pub mod dispatch;
 pub mod index;
 pub mod logging;

@@ -15,10 +15,10 @@ use anyhow::{bail, Context, Result};
 
 use crate::pipeline::audio::load_mono_16k;
 use crate::pipeline::diarize::{Diarizer, SpeakerSpan};
-use crate::pipeline::llm::LlmClient;
+use crate::pipeline::llm::{KeepAlive, LlmClient};
 use crate::pipeline::merge::{label_speakers, merge_meeting, to_transcript_md};
-use crate::pipeline::suggest::{suggest_task, suggest_title, Suggestion};
-use crate::pipeline::summarize::summarize;
+use crate::pipeline::suggest::{suggest_task_with_keep_alive, suggest_title_with_keep_alive, Suggestion};
+use crate::pipeline::summarize::summarize_with_keep_alive;
 use crate::pipeline::transcribe::Transcriber;
 use crate::pipeline::Utterance;
 use crate::storage::{Mode, RecordingRef, StageTiming, Status, Store};
@@ -148,16 +148,17 @@ pub fn process_recording(
     }
 
     let summary_md = timed(&mut stages, "summarize", || {
-        summarize(
+        summarize_with_keep_alive(
             deps.llm,
             &transcript_md,
             &notes_md,
             rec.meta.template.as_deref(),
+            KeepAlive::Batch,
         )
     })
     .context("summarization")?;
     let suggestion = timed(&mut stages, "suggest-task", || {
-        suggest_task(deps.llm, &summary_md, &deps.tasks)
+        suggest_task_with_keep_alive(deps.llm, &summary_md, &deps.tasks, KeepAlive::Batch)
     })
     .context("task suggestion")?;
 
@@ -165,7 +166,8 @@ pub fn process_recording(
     // fails the run: the transcript and summary are already good, and a
     // recording with a dull title is a far better outcome than a lost one.
     let suggested_title = timed(&mut stages, "suggest-title", || {
-        Ok(suggest_title(deps.llm, &summary_md).unwrap_or_else(|e| {
+        Ok(suggest_title_with_keep_alive(deps.llm, &summary_md, KeepAlive::Final)
+            .unwrap_or_else(|e| {
             log::warn!("could not suggest a title for {}: {e:#}", rec.meta.id);
             None
         }))

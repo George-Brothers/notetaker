@@ -107,6 +107,20 @@ pub const SENSE_VOICE_TOKENS: ModelSpec = ModelSpec {
     bytes: 315894,
 };
 
+/// Silero VAD exported for sherpa-onnx. It is small enough to ship alongside
+/// the speech models and is required for system-wide dictation's onset,
+/// hangover, meter gating, and silence trimming.
+///
+/// Source: <https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx>
+pub const SILERO_VAD: ModelSpec = ModelSpec {
+    name: "silero-vad",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+    sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+    dest: "silero_vad.onnx",
+    label: "Speech detector for dictation",
+    bytes: 643854,
+};
+
 const REGISTRY: &[ModelSpec] = &[
     WHISPER_LARGE_V3_TURBO,
     WHISPER_SMALL_Q5_1,
@@ -114,6 +128,7 @@ const REGISTRY: &[ModelSpec] = &[
     DIARIZATION_EMBEDDING,
     SENSE_VOICE_MODEL,
     SENSE_VOICE_TOKENS,
+    SILERO_VAD,
 ];
 
 /// The full allowlist — every model the app is ever allowed to download.
@@ -171,6 +186,7 @@ pub fn required_models(tier: &super::Tier, languages: &[String]) -> Vec<&'static
         speech_model(tier),
         &DIARIZATION_SEGMENTATION,
         &DIARIZATION_EMBEDDING,
+        &SILERO_VAD,
     ];
     if wants_sense_voice(languages) {
         specs.push(&SENSE_VOICE_MODEL);
@@ -201,7 +217,7 @@ mod tests {
 
     #[test]
     fn the_allowlist_holds_every_model_the_app_may_fetch() {
-        assert_eq!(all().len(), 6);
+        assert_eq!(all().len(), 7);
     }
 
     #[test]
@@ -216,6 +232,7 @@ mod tests {
                 "whisper-large-v3-turbo",
                 "diarization-segmentation",
                 "diarization-embedding",
+                "silero-vad",
             ]
         );
     }
@@ -232,6 +249,7 @@ mod tests {
                 "whisper-small-q5_1",
                 "diarization-segmentation",
                 "diarization-embedding",
+                "silero-vad",
             ]
         );
     }

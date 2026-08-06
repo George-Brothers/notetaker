@@ -52,6 +52,7 @@ function defaultTitle(mode: Mode): string {
 export function useCapture() {
   const [status, setStatus] = useState<CaptureStatus>(IDLE_STATUS);
   const [pendingMeeting, setPendingMeeting] = useState<MeetingEvent | null>(null);
+  const [activeAppName, setActiveAppName] = useState<string | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const statusTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const levelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -117,9 +118,10 @@ export function useCapture() {
     };
   }, [status.state, refreshLevels]);
 
-  const start = useCallback(async (mode: Mode, title?: string) => {
+  const start = useCallback(async (mode: Mode, title?: string, appName: string | null = null) => {
     try {
       setStatus(await api.startCapture(mode, title?.trim() || defaultTitle(mode)));
+      setActiveAppName(appName);
       setCaptureError(null);
     } catch (err) {
       setCaptureError(describeError(err));
@@ -153,6 +155,7 @@ export function useCapture() {
     try {
       const id = await api.stopCapture();
       setStatus(IDLE_STATUS);
+      setActiveAppName(null);
       return id;
     } catch (err) {
       setCaptureError(describeError(err));
@@ -166,7 +169,7 @@ export function useCapture() {
       for (const ev of events) {
         if (ev.kind !== "started") continue;
         if (ev.autoStart) {
-          await start("meeting", meetingTitle(ev.appName));
+          await start("meeting", meetingTitle(ev.appName), ev.appName);
         } else {
           setPendingMeeting(ev);
         }
@@ -188,7 +191,7 @@ export function useCapture() {
     if (!pendingMeeting) return;
     const ev = pendingMeeting;
     setPendingMeeting(null);
-    await start("meeting", meetingTitle(ev.appName));
+    await start("meeting", meetingTitle(ev.appName), ev.appName);
   }, [pendingMeeting, start]);
 
   const dismissPendingMeeting = useCallback(() => {
@@ -204,7 +207,7 @@ export function useCapture() {
     } catch (err) {
       setCaptureError(describeError(err));
     }
-    await start("meeting", meetingTitle(ev.appName));
+    await start("meeting", meetingTitle(ev.appName), ev.appName);
   }, [pendingMeeting, start]);
 
   const neverRecordPending = useCallback(async () => {
@@ -220,6 +223,7 @@ export function useCapture() {
 
   return {
     status,
+    activeAppName,
     captureError,
     start,
     pause,

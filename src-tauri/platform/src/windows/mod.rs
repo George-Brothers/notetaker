@@ -4,6 +4,7 @@
 //! [`crate::mic`].
 
 pub mod mic_activity;
+pub mod paste;
 pub mod power;
 pub mod speaker;
 

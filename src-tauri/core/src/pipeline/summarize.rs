@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 
-use super::llm::LlmClient;
+use super::llm::{KeepAlive, LlmClient};
 use crate::notes;
 use crate::templates;
 
@@ -40,10 +40,29 @@ pub fn summarize(
     notes_md: &str,
     template_id: Option<&str>,
 ) -> Result<String> {
+    summarize_with_keep_alive(
+        llm,
+        transcript_md,
+        notes_md,
+        template_id,
+        KeepAlive::Final,
+    )
+}
+
+/// Summarizes with an explicit Ollama lifetime. Processing batches use the
+/// warm setting for this first call and release the model on their final call.
+pub fn summarize_with_keep_alive(
+    llm: &LlmClient,
+    transcript_md: &str,
+    notes_md: &str,
+    template_id: Option<&str>,
+    keep_alive: KeepAlive,
+) -> Result<String> {
     let has_notes = notes::has_content(notes_md);
-    llm.chat(
+    llm.chat_with_keep_alive(
         &system_prompt(template_id, has_notes),
         &user_content(transcript_md, notes_md),
+        keep_alive,
     )
 }
 

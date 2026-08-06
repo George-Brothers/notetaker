@@ -8,8 +8,14 @@
 //! tier, and downloads+verifies them with resume support so a crash mid
 //! download never leaves a corrupt "complete" model on disk.
 
+pub mod cache;
 pub mod existing;
 pub mod registry;
+
+pub use cache::{
+    LoadedModels, ModelCache, ModelLease, ModelPaths, ModelState, ModelStateEvent,
+    SchedulerModels,
+};
 
 use std::fs;
 use std::io::{Read, Write};

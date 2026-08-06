@@ -27,7 +27,10 @@ export interface HotkeyIssues {
   toggleRecord: string | null;
   showHide: string | null;
   highlight: string | null;
+  dictation: string | null;
 }
+
+type DictationMode = "pushToTalk" | "toggle";
 
 /**
  * Every field of `HotkeyIssues`, tied to the type rather than copied from it.
@@ -41,6 +44,7 @@ const ISSUE_FIELDS = Object.keys({
   toggleRecord: true,
   showHide: true,
   highlight: true,
+  dictation: true,
 } satisfies Record<keyof HotkeyIssues, true>) as Array<keyof HotkeyIssues>;
 
 function sameIssues(a: HotkeyIssues, b: HotkeyIssues): boolean {
@@ -96,6 +100,13 @@ export function useGlobalHotkeys({
   highlight,
   onToggleRecord,
   onHighlight,
+  dictationHotkey,
+  dictationMode = "pushToTalk",
+  dictating = false,
+  onDictationStart,
+  onDictationStop,
+  onDictationToggle,
+  onDictationCancel,
 }: {
   enabled: boolean;
   toggleRecord: string;
@@ -104,28 +115,37 @@ export function useGlobalHotkeys({
   onToggleRecord: () => void;
   /** Stars the current moment; identity-stable for the same reason as onToggleRecord. */
   onHighlight: () => void;
+  /** Optional until the dictation settings are available to a caller. */
+  dictationHotkey?: string;
+  dictationMode?: DictationMode;
+  dictating?: boolean;
+  onDictationStart?: () => void;
+  onDictationStop?: () => void;
+  onDictationToggle?: () => void;
+  onDictationCancel?: () => void;
 }): { issues: HotkeyIssues } {
   const [issues, setIssues] = useState<HotkeyIssues>({
     toggleRecord: null,
     showHide: null,
     highlight: null,
+    dictation: null,
   });
 
   useEffect(() => {
     if (!enabled || !isDesktop()) return;
     let cancelled = false;
 
-    // `.catch` on the whole thing only so a plugin chunk that fails to load
-    // cannot surface as an unhandled rejection. It leaves both accelerators
-    // unregistered and says nothing, which is a real gap — but the honest
-    // message for it is not one this task has, and inventing "taken by another
-    // app" would be worse than silence.
     void (async () => {
       const { register, unregisterAll } = await shortcuts();
       await unregisterAll().catch(() => undefined);
       if (cancelled) return;
 
-      const next: HotkeyIssues = { toggleRecord: null, showHide: null, highlight: null };
+      const next: HotkeyIssues = {
+        toggleRecord: null,
+        showHide: null,
+        highlight: null,
+        dictation: null,
+      };
 
       // The guard runs here as well as in the capture field because a stored
       // accelerator need not have come from the field: `settings.json` predates
@@ -169,6 +189,38 @@ export function useGlobalHotkeys({
         }
       }
 
+      if (dictationHotkey) {
+        if (!isSafeAccelerator(dictationHotkey)) {
+          next.dictation = UNSAFE_COPY;
+        } else {
+          try {
+            await register(dictationHotkey, (e) => {
+              if (dictationMode === "toggle") {
+                if (e.state === "Pressed") onDictationToggle?.();
+                return;
+              }
+              if (e.state === "Pressed") onDictationStart?.();
+              if (e.state === "Released") onDictationStop?.();
+            });
+          } catch {
+            next.dictation = CONFLICT_COPY;
+          }
+        }
+      }
+
+      // Escape exists only for an active dictation run. Keeping it out of the
+      // normal registration set means Escape remains ordinary text input the
+      // rest of the time.
+      if (dictating) {
+        try {
+          await register("Escape", (e) => {
+            if (e.state === "Pressed") onDictationCancel?.();
+          });
+        } catch {
+          next.dictation ??= "Escape could not be registered; use Stop to end dictation.";
+        }
+      }
+
       // Field by field, and bail out when nothing changed. A fresh object here
       // every time would re-render, and a caller that hands this hook a new
       // `onToggleRecord` each render — one inline arrow where a `useCallback`
@@ -178,7 +230,16 @@ export function useGlobalHotkeys({
       // symptom pointing at the callback. Returning `prev` makes React skip
       // the re-render, which is what ends the cycle.
       if (!cancelled) setIssues((prev) => (sameIssues(prev, next) ? prev : next));
-    })().catch(() => undefined);
+    })().catch(() => {
+      if (!cancelled) {
+        setIssues((prev) => ({
+          ...prev,
+          dictation: dictationHotkey
+            ? "Global shortcut service unavailable; dictation hotkey is not active."
+            : prev.dictation,
+        }));
+      }
+    });
 
     return () => {
       cancelled = true;
@@ -186,7 +247,21 @@ export function useGlobalHotkeys({
         .then((m) => m.unregisterAll())
         .catch(() => undefined);
     };
-  }, [enabled, toggleRecord, showHide, highlight, onToggleRecord, onHighlight]);
+  }, [
+    enabled,
+    toggleRecord,
+    showHide,
+    highlight,
+    onToggleRecord,
+    onHighlight,
+    dictationHotkey,
+    dictationMode,
+    dictating,
+    onDictationStart,
+    onDictationStop,
+    onDictationToggle,
+    onDictationCancel,
+  ]);
 
   return { issues };
 }
