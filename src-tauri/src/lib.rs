@@ -377,7 +377,20 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // DECORATIONS excluded: whether a window has OS chrome is the
+        // platform's decision, made in config — native overlay titlebar on
+        // macOS, our own drawn one on Windows — not user state to remember.
+        // Left in, a `.window-state.json` written by an older build restores
+        // its stale `decorated: false` over the config on every launch, which
+        // is exactly how the macOS traffic lights failed to appear.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::DECORATIONS,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,

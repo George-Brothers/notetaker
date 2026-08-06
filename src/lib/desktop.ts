@@ -127,3 +127,20 @@ export async function setAutostart(on: boolean): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * The desktop shell on macOS specifically.
+ *
+ * There the window keeps its native titlebar — transparent, overlaid on the
+ * app's own header, with the system traffic lights top-left — so anything
+ * that exists to *replace* OS chrome must stand down, and the header makes
+ * room on its left instead of its right.
+ *
+ * UA sniffing is safe in this one spot: inside the Tauri shell the webview is
+ * WKWebView, whose user agent always carries "Mac OS X", and the served
+ * browser build never gets this far because `isDesktop()` is false there.
+ * (jsdom's UA says "darwin", never "Mac", so tests opt in explicitly.)
+ */
+export function isMacDesktop(): boolean {
+  return isDesktop() && navigator.userAgent.includes("Mac");
+}

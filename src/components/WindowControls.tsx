@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isDesktop } from "../lib/transport";
+import { isMacDesktop } from "../lib/desktop";
 import { cn } from "../lib/cn";
 
 export function WindowControls() {
@@ -45,7 +46,10 @@ export function WindowControls() {
    * a stale icon still does the right thing when pressed.
    */
   useEffect(() => {
-    if (!isDesktop()) return;
+    // Same pair of guards as the render below: no window to watch in a
+    // browser, and on macOS this component renders nothing, so subscribing
+    // would only hold a listener nobody reads.
+    if (!isDesktop() || isMacDesktop()) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     /**
@@ -94,6 +98,12 @@ export function WindowControls() {
   }, []);
 
   if (!isDesktop()) return null;
+
+  // On macOS the window keeps its native titlebar (transparent overlay) and
+  // the system traffic lights, top-left where every Mac window has them.
+  // Windows-shaped replacements on the right would be a second, foreign set
+  // of controls — so these exist only where the OS chrome was taken away.
+  if (isMacDesktop()) return null;
 
   /**
    * `close()` is a request, not an exit: the Rust side intercepts

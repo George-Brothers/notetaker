@@ -35,7 +35,8 @@ import {
   type SetupStatus,
 } from "./lib/ipc";
 import { isDesktop } from "./lib/transport";
-import { setAutostart, setTrayStatus } from "./lib/desktop";
+import { cn } from "./lib/cn";
+import { isMacDesktop, setAutostart, setTrayStatus } from "./lib/desktop";
 import { formatAcceleratorParts } from "./lib/hotkeys";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
@@ -400,7 +401,13 @@ function App() {
         */}
         <header
           data-tauri-drag-region="deep"
-          className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-raised/80 py-1.5 pl-3 pr-0"
+          className={cn(
+            "flex shrink-0 items-center justify-between gap-3 border-b border-border bg-raised/80 py-1.5",
+            // macOS keeps its native traffic lights, overlaid top-left on this
+            // strip — so the record bar steps right to clear them, and with no
+            // custom controls in the corner the flush `pr-0` has no job.
+            isMacDesktop() ? "pl-[84px] pr-2" : "pl-3 pr-0",
+          )}
         >
           <RecordBar
             status={capture.status}

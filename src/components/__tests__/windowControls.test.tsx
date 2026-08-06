@@ -93,6 +93,29 @@ describe("WindowControls", () => {
   });
 
   /**
+   * On the macOS shell the window keeps its native titlebar and traffic
+   * lights, so these Windows-shaped replacements must not render a second,
+   * foreign set of controls — and must not subscribe to a window they will
+   * never draw for. jsdom's own UA says "darwin", never "Mac", so the Mac
+   * webview is impersonated explicitly.
+   */
+  it("renders nothing on the macOS shell, where the traffic lights are native", () => {
+    pretendDesktop();
+    const ua = vi
+      .spyOn(navigator, "userAgent", "get")
+      .mockReturnValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
+    try {
+      const { container } = render(<WindowControls />);
+
+      expect(container).toBeEmptyDOMElement();
+      expect(win.isMaximized).not.toHaveBeenCalled();
+      expect(win.onResized).not.toHaveBeenCalled();
+    } finally {
+      ua.mockRestore();
+    }
+  });
+
+  /**
    * Tauri's drag-region script walks the event path and refuses to start a
    * window drag once it meets a `BUTTON`. That rule — not anything written
    * here — is what stops a press on these controls from dragging the window
