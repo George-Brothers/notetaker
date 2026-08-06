@@ -12,8 +12,37 @@ permissions:
   contents: write
 
 jobs:
+  verify-release-version:
+    name: Verify the release tag and app version agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The manifest takes its version from the tag while Tauri takes the
+      # installed app's version from tauri.conf.json. If they differ, a
+      # successful-looking release can make installed copies repeatedly offer
+      # the same update forever. Refuse to publish that split-brain release.
+      - name: Match the tag to the desktop version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'EOF'
+          import json
+          import os
+          import sys
+
+          tag = os.environ["RELEASE_TAG"]
+          with open("src-tauri/tauri.conf.json") as f:
+              version = json.load(f)["version"]
+          expected = f"v{version}"
+          if tag != expected:
+              sys.exit(f"release tag {tag!r} does not match app version {version!r}; expected {expected!r}")
+          print(f"release tag and app version agree: {tag}")
+          EOF
+
   windows-release:
     name: Signed Windows release
+    needs: verify-release-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,6 +123,7 @@ jobs:
 
   macos-release:
     name: Signed macOS release
+    needs: verify-release-version
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4

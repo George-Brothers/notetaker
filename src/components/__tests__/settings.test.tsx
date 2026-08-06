@@ -603,7 +603,7 @@ describe("Settings screen", () => {
     );
   });
 
-  it("renders both hotkey rows with their current accelerator, formatted into Kbd parts", async () => {
+  it("renders all hotkey rows with their current accelerator, formatted into Kbd parts", async () => {
     const dialog = await openSettings({ initialSection: "hotkeys" });
 
     // Each row is an ARIA group labeled with its own row label (HotkeyField
@@ -624,12 +624,21 @@ describe("Settings screen", () => {
     ).toBeInTheDocument();
     expect(within(showHideRow).getByText("Space")).toBeInTheDocument();
 
-    // Both rows share the CommandOrControl+Alt prefix, formatted for display
+    const highlightRow = within(dialog).getByRole("group", { name: "Star this moment" });
+    expect(
+      within(highlightRow).getByText("Bookmarks the current moment of a live recording — the AI treats starred moments as important")
+    ).toBeInTheDocument();
+    expect(
+      within(highlightRow).getByRole("button", { name: "Change shortcut: Star this moment" })
+    ).toBeInTheDocument();
+    expect(within(highlightRow).getByText("H")).toBeInTheDocument();
+
+    // All three rows share the CommandOrControl+Alt prefix, formatted for display
     // via formatAcceleratorParts — under jsdom's non-Mac navigator that's
     // "Ctrl", not the raw stored "CommandOrControl". Assert it renders
-    // twice rather than querying it once and hitting a multi-match error.
-    expect(within(dialog).getAllByText("Ctrl")).toHaveLength(2);
-    expect(within(dialog).getAllByText("Alt")).toHaveLength(2);
+    // three times rather than querying it once and hitting a multi-match error.
+    expect(within(dialog).getAllByText("Ctrl")).toHaveLength(3);
+    expect(within(dialog).getAllByText("Alt")).toHaveLength(3);
     expect(within(dialog).queryByText("CommandOrControl")).not.toBeInTheDocument();
   });
 
