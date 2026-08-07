@@ -665,9 +665,17 @@ pub fn process_now(store: &Store, id: &str) -> Result<()> {
             // (ground rule) — without this, a recording that failed, was
             // retried by hand, and succeeded kept its old error text forever.
             rec.meta.error = None;
+            rec.meta.manual_processing = true;
             store.save_meta(&rec)?;
         }
-        Status::Queued | Status::Processing => {}
+        Status::Queued => {
+            // Queued work normally waits for the idle/power policy. A person
+            // pressing the button is a different instruction: preserve it on
+            // disk so a scheduler wake (or an app restart) cannot lose it.
+            rec.meta.manual_processing = true;
+            store.save_meta(&rec)?;
+        }
+        Status::Processing => {}
     }
     Ok(())
 }
@@ -1094,10 +1102,9 @@ mod tests {
         let recorded = create(&s, "Recorded one");
         assert_eq!(recorded.meta.status, Status::Recorded);
         process_now(&s, &recorded.meta.id).unwrap();
-        assert_eq!(
-            find_by_id(&s, &recorded.meta.id).unwrap().meta.status,
-            Status::Queued
-        );
+        let queued = find_by_id(&s, &recorded.meta.id).unwrap();
+        assert_eq!(queued.meta.status, Status::Queued);
+        assert!(queued.meta.manual_processing);
 
         let mut failed = create(&s, "Failed one");
         failed.meta.status = Status::Failed;
@@ -1110,15 +1117,27 @@ mod tests {
             requeued.meta.error, None,
             "an error describes an attempt and clears on retry"
         );
+        assert!(requeued.meta.manual_processing);
 
         let mut ready = create(&s, "Ready one");
         ready.meta.status = Status::Ready;
         s.save_meta(&ready).unwrap();
         process_now(&s, &ready.meta.id).unwrap();
-        assert_eq!(
-            find_by_id(&s, &ready.meta.id).unwrap().meta.status,
-            Status::Queued
-        );
+        let requeued = find_by_id(&s, &ready.meta.id).unwrap();
+        assert_eq!(requeued.meta.status, Status::Queued);
+        assert!(requeued.meta.manual_processing);
+    }
+
+    #[test]
+    fn process_now_marks_an_already_queued_recording_as_manual() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let mut queued = create(&s, "Queued one");
+        queued.meta.status = Status::Queued;
+        s.save_meta(&queued).unwrap();
+
+        process_now(&s, &queued.meta.id).unwrap();
+        assert!(find_by_id(&s, &queued.meta.id).unwrap().meta.manual_processing);
     }
 
     #[test]

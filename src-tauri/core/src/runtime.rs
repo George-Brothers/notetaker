@@ -1894,6 +1894,12 @@ impl Runtime {
         }
 
         let settings = self.get_settings().unwrap_or_default();
+        // A user should not have to find and open another app before their
+        // meeting can be summarized. This is best-effort: the scheduler still
+        // starts when Ollama is absent so setup can repair that separately.
+        if let Err(error) = ollama::ensure_running(&settings.llm_base_url, &settings.llm_model) {
+            log::warn!("could not start local Ollama before processing: {error:#}");
+        }
         let tier = self.resolved_tier();
         let models_dir = &self.inner.models_dir;
 

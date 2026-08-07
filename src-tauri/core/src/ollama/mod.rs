@@ -21,6 +21,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -35,6 +36,9 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 /// pull moves gigabytes and legitimately runs for many minutes, so only the
 /// "is anything listening" phase is bounded.
 const PULL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Time allowed for a just-launched Ollama service to open its local API.
+const START_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The executable's name, looked up on `PATH` to tell "installed but not
 /// running" apart from "not installed".
@@ -171,6 +175,60 @@ pub fn status(base_url: &str, wanted_model: &str) -> OllamaStatus {
         model_ready,
         install_hint: hint(installed, running),
     }
+}
+
+/// Starts the locally configured Ollama service when it is installed but not
+/// already answering. Remote LLM endpoints are deliberately left alone.
+///
+/// This does not pull a model: starting a local service is immediate and
+/// expected when someone asks to process a meeting; downloading gigabytes is
+/// a separate, visible choice in setup.
+pub fn ensure_running(base_url: &str, wanted_model: &str) -> Result<()> {
+    if !is_local_endpoint(base_url) || status(base_url, wanted_model).running {
+        return Ok(());
+    }
+
+    if !binary_present() {
+        anyhow::bail!("Ollama isn't installed, so Notetaker cannot start the local summary AI.");
+    }
+
+    let launched = if on_path(std::env::var_os("PATH").as_deref()) {
+        Command::new(BINARY_NAME)
+            .arg("serve")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("starting Ollama")?
+    } else {
+        #[cfg(target_os = "macos")]
+        {
+            Command::new("open")
+                .args(["-gja", "/Applications/Ollama.app"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("opening Ollama")?
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Ollama is installed but its executable is not available on PATH.");
+        }
+    };
+    // We intentionally do not wait for the launcher process: `ollama serve`
+    // is the service itself, while `open` returns after handing the app to
+    // macOS. Poll the API instead, which is the real readiness condition.
+    drop(launched);
+
+    let started = std::time::Instant::now();
+    while started.elapsed() < START_TIMEOUT {
+        std::thread::sleep(Duration::from_millis(250));
+        if status(base_url, wanted_model).running {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("Notetaker started Ollama, but its local API did not become ready within 10 seconds.");
 }
 
 /// Downloads `model`, reporting progress as it streams.
@@ -344,6 +402,13 @@ fn fetch_tags(base_url: &str) -> Option<Vec<String>> {
     Some(parsed.models.into_iter().map(|m| m.name).collect())
 }
 
+fn is_local_endpoint(base_url: &str) -> bool {
+    let endpoint = base_url.trim().to_ascii_lowercase();
+    endpoint.starts_with("http://localhost:")
+        || endpoint.starts_with("http://127.0.0.1:")
+        || endpoint.starts_with("http://[::1]:")
+}
+
 /// Whether a tag reported by the server satisfies a requested model name.
 ///
 /// Ollama treats a bare name as `name:latest`, and `/api/tags` always reports
@@ -474,6 +539,14 @@ mod tests {
             hint(s.installed, false),
             "a stopped Ollama should receive the appropriate next-step guidance"
         );
+    }
+
+    #[test]
+    fn only_local_endpoints_are_candidates_for_auto_start() {
+        assert!(is_local_endpoint("http://localhost:11434"));
+        assert!(is_local_endpoint("http://127.0.0.1:11434"));
+        assert!(is_local_endpoint("http://[::1]:11434"));
+        assert!(!is_local_endpoint("https://ollama.example.com"));
     }
 
     #[test]

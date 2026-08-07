@@ -80,8 +80,9 @@ impl<'a> Queue<'a> {
         Ok(())
     }
 
-    /// The oldest `Queued` recording by `Meta.created`, freshly derived
-    /// from disk on every call — there is no in-memory queue to go stale.
+    /// The next `Queued` recording, freshly derived from disk on every call
+    /// — there is no in-memory queue to go stale. A user-requested job comes
+    /// first; ordinary background jobs remain oldest-first.
     pub fn next(&self) -> Result<Option<RecordingRef>> {
         let mut queued: Vec<RecordingRef> = self
             .store
@@ -89,7 +90,7 @@ impl<'a> Queue<'a> {
             .into_iter()
             .filter(|r| r.meta.status == Status::Queued)
             .collect();
-        queued.sort_by_key(created_key);
+        queued.sort_by_key(|rec| (!rec.meta.manual_processing, created_key(rec)));
         Ok(queued.into_iter().next())
     }
 
@@ -104,14 +105,16 @@ impl<'a> Queue<'a> {
     where
         F: FnOnce(&RecordingRef) -> Result<()>,
     {
-        if !idle.ok_to_run() {
-            return Ok(RunOutcome::NotIdle);
-        }
-
         let mut rec = match self.next()? {
             Some(r) => r,
             None => return Ok(RunOutcome::NothingQueued),
         };
+
+        // Idle and wall-power limits govern background work. They do not
+        // override a person who explicitly asked to process this recording.
+        if !rec.meta.manual_processing && !idle.ok_to_run() {
+            return Ok(RunOutcome::NotIdle);
+        }
 
         rec.meta.status = Status::Processing;
         self.store.save_meta(&rec)?;
@@ -124,6 +127,9 @@ impl<'a> Queue<'a> {
         // it with the stale pre-processing snapshot. Reload can fail if the
         // recording folder vanished mid-run; fall back to the in-memory copy.
         let mut rec = self.store.reload(&rec).unwrap_or(rec);
+        // One manual request grants one immediate attempt. Retries return to
+        // the normal background policy instead of keeping a laptop awake.
+        rec.meta.manual_processing = false;
 
         match result {
             Ok(()) => {
@@ -268,6 +274,40 @@ mod tests {
         let outcome = queue.run_one(&AlwaysIdle, |_r| Ok(())).unwrap();
         assert_eq!(outcome, RunOutcome::Ran);
         assert_eq!(store.scan().unwrap()[0].meta.status, Status::Ready);
+    }
+
+    #[test]
+    fn a_manual_request_runs_the_selected_recording_without_waiting_for_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let queue = Queue { store: &store };
+
+        let mut older = recorded(&store, "Older background work", 2026, 8, 4, 9, 0);
+        let mut requested = recorded(&store, "Process this one", 2026, 8, 4, 10, 0);
+        queue.enqueue(&mut older).unwrap();
+        queue.enqueue(&mut requested).unwrap();
+        requested.meta.manual_processing = true;
+        store.save_meta(&requested).unwrap();
+
+        let mut ran = String::new();
+        let outcome = queue
+            .run_one(&NeverIdle, |rec| {
+                ran = rec.meta.id.clone();
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(outcome, RunOutcome::Ran);
+        assert_eq!(ran, requested.meta.id, "the clicked recording wins the queue");
+        let rows = store.scan().unwrap();
+        let requested_on_disk = rows.iter().find(|r| r.meta.id == requested.meta.id).unwrap();
+        assert_eq!(requested_on_disk.meta.status, Status::Ready);
+        assert!(
+            !requested_on_disk.meta.manual_processing,
+            "one explicit attempt must not disable the background policy forever"
+        );
+        let older_on_disk = rows.iter().find(|r| r.meta.id == older.meta.id).unwrap();
+        assert_eq!(older_on_disk.meta.status, Status::Queued);
     }
 
     #[test]

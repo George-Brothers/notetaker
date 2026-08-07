@@ -74,6 +74,11 @@ pub struct Meta {
     /// recording filed under a template a later version drops still opens.
     #[serde(default)]
     pub template: Option<String>,
+    /// Set only by an explicit "Process now" request. Background work still
+    /// observes the user's idle/power policy, but an intentional request must
+    /// not sit queued behind that policy while the user is using the app.
+    #[serde(default)]
+    pub manual_processing: bool,
 }
 
 /// How long one pipeline stage took, for diagnostics.
@@ -156,6 +161,7 @@ impl Store {
             stages: Vec::new(),
             capture_note: None,
             template: None,
+            manual_processing: false,
         };
 
         let rec = RecordingRef {
