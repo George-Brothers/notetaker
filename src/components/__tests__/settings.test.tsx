@@ -203,6 +203,7 @@ const SECTION_HEADINGS: Record<SettingsSection, string> = {
   dictation: "Dictation",
   overlay: "Overlay",
   meetings: "Meetings",
+  templates: "Meeting summary templates",
   storage: "Storage & Privacy",
   updates: "Updates",
 };
@@ -601,7 +602,7 @@ describe("Settings screen", () => {
       }],
     };
     setupApi({ settings });
-    const dialog = await openSettings({ initialSection: "meetings" });
+    const dialog = await openSettings({ initialSection: "templates" });
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Add template" }));
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Sales call" } });
@@ -864,7 +865,7 @@ describe("sectioned navigation", () => {
   it("shows the nine target sections and opens General by default", async () => {
     const dialog = await openSettings();
     const nav = within(dialog).getByRole("navigation", { name: "Settings sections" });
-    for (const label of ["General", "Shortcuts", "Audio", "Models & AI", "Dictation", "Overlay", "Meetings", "Storage & Privacy", "Updates"]) {
+    for (const label of ["General", "Shortcuts", "Audio", "Models & AI", "Dictation", "Overlay", "Meetings", "Templates", "Storage & Privacy", "Updates"]) {
       expect(within(nav).getByRole("button", { name: label })).toBeInTheDocument();
     }
     expect(within(dialog).getByRole("heading", { name: "General" })).toBeInTheDocument();

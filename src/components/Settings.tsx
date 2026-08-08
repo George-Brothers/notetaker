@@ -38,6 +38,7 @@ export type SettingsSection =
   | "dictation"
   | "overlay"
   | "meetings"
+  | "templates"
   | "storage"
   | "updates";
 
@@ -49,6 +50,7 @@ export const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "dictation", label: "Dictation" },
   { id: "overlay", label: "Overlay" },
   { id: "meetings", label: "Meetings" },
+  { id: "templates", label: "Templates" },
   { id: "storage", label: "Storage & Privacy" },
   { id: "updates", label: "Updates" },
 ];
@@ -61,6 +63,7 @@ const SECTION_SEARCH_TERMS: Record<SettingsSection, string> = {
   dictation: "dictionary replacements push to talk toggle paste clipboard",
   overlay: "floating pill position style glass screen share capture",
   meetings: "zoom teams slack webex discord facetime automatic record policy",
+  templates: "meeting summary note format headings action items template add edit delete",
   storage: "folder recordings audio wav logs privacy local",
   updates: "version update download restart",
 };
@@ -1402,59 +1405,62 @@ export function Settings({
                       Google Meet isn't in this list. A browser being open doesn't mean you're on a call, so we can't reliably detect Meet meetings yet — start that recording yourself when you join one.
                     </p>
 
-                    <div className="mt-7 border-t border-border pt-5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <h4 className="text-[14px] font-semibold text-fg">Meeting summary templates</h4>
-                          <p className="settings-hint">Set the headings and instructions the AI uses the next time a meeting is processed.</p>
-                        </div>
-                        {editingTemplateId === null && (
-                          <Button type="button" variant="secondary" size="sm" onClick={resetTemplateEditor}>Add template</Button>
-                        )}
-                      </div>
+                  </section>
+                )}
 
-                      <div className="mt-3 space-y-2">
-                        {settings.templates.map((template) => (
-                          <div key={template.id} className="rounded-[var(--radius-control)] border border-border bg-sunken px-3 py-2">
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div>
-                                <p className="text-[13px] font-medium text-fg">{template.name}</p>
-                                <p className="text-[12px] text-fg-muted">{template.blurb}</p>
-                              </div>
-                              <div className="flex gap-2">
-                                <Button type="button" variant="secondary" size="sm" onClick={() => startTemplateEdit(template)}>Edit</Button>
-                                {template.id !== "default" && (
-                                  <Button type="button" variant="danger" size="sm" onClick={() => void deleteTemplate(template)}>Delete</Button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                {section === "templates" && (
+                  <section aria-labelledby="settings-heading-templates" className="settings-section">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 id="settings-heading-templates">Meeting summary templates</h3>
+                        <p className="settings-section__lede">Create the note formats the AI uses when it processes a meeting.</p>
                       </div>
-
-                      {templateSectionsDraft && (
-                        <div className="mt-3 space-y-3 rounded-[var(--radius-control)] border border-border bg-raised p-3">
-                          <p className="text-[13px] font-medium text-fg">{editingTemplateId ? "Edit template" : "New template"}</p>
-                          <div className="settings-field">
-                            <label htmlFor="settings-template-name">Name</label>
-                            <input id="settings-template-name" value={templateNameDraft} onChange={(e) => setTemplateNameDraft(e.target.value)} />
-                          </div>
-                          <div className="settings-field">
-                            <label htmlFor="settings-template-blurb">Short description</label>
-                            <input id="settings-template-blurb" value={templateBlurbDraft} onChange={(e) => setTemplateBlurbDraft(e.target.value)} />
-                          </div>
-                          <div className="settings-field">
-                            <label htmlFor="settings-template-sections">Summary headings and instructions</label>
-                            <p className="settings-hint">Start each heading with <code>##</code> and include an Action items section.</p>
-                            <textarea id="settings-template-sections" rows={9} value={templateSectionsDraft} onChange={(e) => setTemplateSectionsDraft(e.target.value)} />
-                          </div>
-                          <div className="flex gap-2">
-                            <Button type="button" onClick={() => void saveTemplate()}>Save template</Button>
-                            <Button type="button" variant="secondary" onClick={resetTemplateEditor}>Cancel</Button>
-                          </div>
-                        </div>
+                      {editingTemplateId === null && (
+                        <Button type="button" variant="secondary" size="sm" onClick={resetTemplateEditor}>Add template</Button>
                       )}
                     </div>
+
+                    <div className="mt-3 space-y-2">
+                      {settings.templates.map((template) => (
+                        <div key={template.id} className="rounded-[var(--radius-control)] border border-border bg-sunken px-3 py-2">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <p className="text-[13px] font-medium text-fg">{template.name}</p>
+                              <p className="text-[12px] text-fg-muted">{template.blurb}</p>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button type="button" variant="secondary" size="sm" onClick={() => startTemplateEdit(template)}>Edit</Button>
+                              {template.id !== "default" && (
+                                <Button type="button" variant="danger" size="sm" onClick={() => void deleteTemplate(template)}>Delete</Button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {templateSectionsDraft && (
+                      <div className="mt-3 space-y-3 rounded-[var(--radius-control)] border border-border bg-raised p-3">
+                        <p className="text-[13px] font-medium text-fg">{editingTemplateId ? "Edit template" : "New template"}</p>
+                        <div className="settings-field">
+                          <label htmlFor="settings-template-name">Name</label>
+                          <input id="settings-template-name" value={templateNameDraft} onChange={(e) => setTemplateNameDraft(e.target.value)} />
+                        </div>
+                        <div className="settings-field">
+                          <label htmlFor="settings-template-blurb">Short description</label>
+                          <input id="settings-template-blurb" value={templateBlurbDraft} onChange={(e) => setTemplateBlurbDraft(e.target.value)} />
+                        </div>
+                        <div className="settings-field">
+                          <label htmlFor="settings-template-sections">Summary headings and instructions</label>
+                          <p className="settings-hint">Start each heading with <code>##</code> and include an Action items section.</p>
+                          <textarea id="settings-template-sections" rows={9} value={templateSectionsDraft} onChange={(e) => setTemplateSectionsDraft(e.target.value)} />
+                        </div>
+                        <div className="flex gap-2">
+                          <Button type="button" onClick={() => void saveTemplate()}>Save template</Button>
+                          <Button type="button" variant="secondary" onClick={resetTemplateEditor}>Cancel</Button>
+                        </div>
+                      </div>
+                    )}
                   </section>
                 )}
 
