@@ -149,6 +149,7 @@ const BASE_SETTINGS: SettingsData = {
   llmModel: "qwen2.5:7b",
   taskModels: {},
   templates: [],
+  summaryPrompt: "",
   tierOverride: null,
   processWhenIdle: true,
   autoRecord: {},

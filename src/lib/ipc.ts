@@ -145,6 +145,8 @@ export interface Settings {
   taskModels: Record<string, string>;
   /** Editable formats for generated meeting notes. */
   templates: SummaryTemplate[];
+  /** Free-form instructions sent to the summary model for every meeting. */
+  summaryPrompt: string;
   /** null means "use the tier detected from this machine's hardware". */
   tierOverride: string | null;
   processWhenIdle: boolean;

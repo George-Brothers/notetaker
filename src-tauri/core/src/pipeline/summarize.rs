@@ -40,6 +40,7 @@ pub fn summarize(
     notes_md: &str,
     template_id: Option<&str>,
     templates: &[templates::Template],
+    summary_prompt: &str,
 ) -> Result<String> {
     summarize_with_keep_alive(
         llm,
@@ -47,6 +48,7 @@ pub fn summarize(
         notes_md,
         template_id,
         templates,
+        summary_prompt,
         KeepAlive::Final,
     )
 }
@@ -59,11 +61,12 @@ pub fn summarize_with_keep_alive(
     notes_md: &str,
     template_id: Option<&str>,
     templates: &[templates::Template],
+    summary_prompt: &str,
     keep_alive: KeepAlive,
 ) -> Result<String> {
     let has_notes = notes::has_content(notes_md);
     llm.chat_with_keep_alive(
-        &system_prompt(templates, template_id, has_notes),
+        &system_prompt(templates, template_id, summary_prompt, has_notes),
         &user_content(transcript_md, notes_md),
         keep_alive,
     )
@@ -72,9 +75,13 @@ pub fn summarize_with_keep_alive(
 /// Builds the system prompt. Separate so the composition is testable without a
 /// server — this is where a template silently failing to reach the model would
 /// hide.
-fn system_prompt(templates: &[templates::Template], template_id: Option<&str>, has_notes: bool) -> String {
+fn system_prompt(templates: &[templates::Template], template_id: Option<&str>, summary_prompt: &str, has_notes: bool) -> String {
     let template = templates::find(templates, template_id);
-    let mut out = format!("{BASE}\n{}\n\n{RULES}", template.sections);
+    let mut out = if summary_prompt.trim().is_empty() {
+        format!("{BASE}\n{}\n\n{RULES}", template.sections)
+    } else {
+        format!("{}\n\n{RULES}", summary_prompt.trim())
+    };
     if has_notes {
         out.push_str("\n\n");
         out.push_str(WITH_NOTES);
@@ -138,7 +145,7 @@ mod tests {
         });
 
         let templates = test_templates();
-        let out = summarize(&llm(&server), "Alice: let's ship on Friday.", "", None, &templates).unwrap();
+        let out = summarize(&llm(&server), "Alice: let's ship on Friday.", "", None, &templates, "").unwrap();
 
         assert!(out.starts_with("## TL;DR"));
         assert!(out.contains("## Action items"));
@@ -161,14 +168,14 @@ mod tests {
         });
 
         let templates = test_templates();
-        summarize(&llm(&server), "transcript", "- pricing\n- 15%?", None, &templates).unwrap();
+        summarize(&llm(&server), "transcript", "- pricing\n- 15%?", None, &templates, "").unwrap();
         m.assert();
     }
 
     #[test]
     fn a_recording_with_no_notes_does_not_get_the_notes_instruction() {
         let templates = test_templates();
-        let prompt = system_prompt(&templates, None, false);
+        let prompt = system_prompt(&templates, None, "", false);
         assert!(
             !prompt.contains("user's own notes"),
             "an unused instruction is noise: {prompt}"
@@ -183,7 +190,7 @@ mod tests {
     #[test]
     fn whitespace_only_notes_count_as_no_notes() {
         let templates = test_templates();
-        assert!(!system_prompt(&templates, None, false).contains("user's own notes"));
+        assert!(!system_prompt(&templates, None, "", false).contains("user's own notes"));
         assert_eq!(user_content("t", "\n\t  \n"), "t");
     }
 
@@ -193,11 +200,11 @@ mod tests {
     #[test]
     fn the_chosen_templates_sections_are_the_ones_sent() {
         let templates = test_templates();
-        let lecture = system_prompt(&templates, Some("lecture"), false);
+        let lecture = system_prompt(&templates, Some("lecture"), "", false);
         assert!(lecture.contains("Likely exam material"), "{lecture}");
         assert!(!lecture.contains("What the client asked for"));
 
-        let client = system_prompt(&templates, Some("client_call"), false);
+        let client = system_prompt(&templates, Some("client_call"), "", false);
         assert!(client.contains("What the client asked for"), "{client}");
         assert!(!client.contains("Likely exam material"));
     }
@@ -206,10 +213,24 @@ mod tests {
     fn every_template_produces_a_prompt_with_its_sections_and_the_rules() {
         let templates = test_templates();
         for t in &templates {
-            let prompt = system_prompt(&templates, Some(&t.id), false);
+            let prompt = system_prompt(&templates, Some(&t.id), "", false);
             assert!(prompt.contains(&t.sections), "{} lost its sections", t.id);
             assert!(prompt.contains(RULES), "{} lost the shared rules", t.id);
         }
+    }
+
+    #[test]
+    fn a_custom_prompt_replaces_the_built_in_heading_format() {
+        let templates = test_templates();
+        let prompt = system_prompt(
+            &templates,
+            None,
+            "Write a relationship brief with personal context and a thoughtful follow-up.",
+            false,
+        );
+        assert!(prompt.contains("relationship brief"), "{prompt}");
+        assert!(!prompt.contains("## TL;DR"), "{prompt}");
+        assert!(prompt.contains(RULES), "{prompt}");
     }
 
     /// A `meta.json` naming a template this build dropped must still summarize.
@@ -223,11 +244,12 @@ mod tests {
             "",
             Some("template_from_the_future"),
             &test_templates(),
+            "",
         )
         .unwrap();
         assert!(out.contains("TL;DR"));
         let templates = test_templates();
-        assert!(system_prompt(&templates, Some("template_from_the_future"), false)
+        assert!(system_prompt(&templates, Some("template_from_the_future"), "", false)
             .contains(&templates[0].sections));
     }
 

@@ -30,6 +30,7 @@ pub struct SchedulerConfig {
     pub llm: LlmClient,
     pub task_models: BTreeMap<String, String>,
     pub templates: Vec<crate::templates::Template>,
+    pub summary_prompt: String,
 }
 
 /// One scheduling decision: if the machine is idle, run at most one queued
@@ -45,6 +46,7 @@ pub fn tick(
     tasks: &[String],
     task_models: &BTreeMap<String, String>,
     templates: &[crate::templates::Template],
+    summary_prompt: &str,
 ) -> Result<RunOutcome> {
     let outcome = queue.run_one(idle, |rec| {
         let task_llm = rec
@@ -61,6 +63,7 @@ pub fn tick(
             diarizer: lease.diarizer(),
             llm: task_llm.as_ref().unwrap_or(llm),
             templates,
+            summary_prompt,
             tasks: tasks.to_vec(),
         };
         let result = process_recording(queue.store, &deps, rec).map(|_| ());
@@ -151,7 +154,7 @@ pub fn run_loop_with_interval<F, C>(
 {
     while !stop.load(Ordering::SeqCst) {
         let config = config();
-        match tick(queue, idle, cache, &config.llm, tasks, &config.task_models, &config.templates) {
+        match tick(queue, idle, cache, &config.llm, tasks, &config.task_models, &config.templates, &config.summary_prompt) {
             Ok(outcome) => {
                 let more_now = matches!(outcome, RunOutcome::Ran);
                 on_outcome(&outcome);
@@ -255,6 +258,7 @@ mod tests {
             diarizer,
             llm,
             templates,
+            summary_prompt: "",
             tasks: vec![],
         }
     }
@@ -345,13 +349,13 @@ mod tests {
         let tasks = Vec::new();
         let templates = crate::templates::defaults();
 
-        let outcome = tick(&queue, &NeverIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates).unwrap();
+        let outcome = tick(&queue, &NeverIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates, "").unwrap();
         assert_eq!(outcome, RunOutcome::NotIdle);
         assert_eq!(loads.load(Ordering::SeqCst), 0);
 
         let mut rec = wav_recording(&store, "Lecture");
         queue.enqueue(&mut rec).unwrap();
-        let outcome = tick(&queue, &AlwaysIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates).unwrap();
+        let outcome = tick(&queue, &AlwaysIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates, "").unwrap();
         assert!(matches!(
             outcome,
             RunOutcome::FailedWillRetry | RunOutcome::Ran

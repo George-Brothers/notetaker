@@ -39,6 +39,8 @@ pub struct PipelineDeps<'a> {
     pub llm: &'a LlmClient,
     /// The persisted summary shapes available when this recording is run.
     pub templates: &'a [crate::templates::Template],
+    /// The user's free-form instruction for every meeting summary.
+    pub summary_prompt: &'a str,
     /// Existing task names, for the "which task does this belong to" step.
     pub tasks: Vec<String>,
 }
@@ -156,6 +158,7 @@ pub fn process_recording(
             &notes_md,
             rec.meta.template.as_deref(),
             deps.templates,
+            deps.summary_prompt,
             KeepAlive::Batch,
         )
     })
@@ -350,6 +353,7 @@ mod tests {
             diarizer: &diarizer,
             llm: &llm,
             templates: &templates,
+            summary_prompt: "",
             tasks: vec!["Accounting 302".to_string()],
         };
 
@@ -475,6 +479,7 @@ mod tests {
             diarizer: &diarizer,
             llm: &llm,
             templates: &templates,
+            summary_prompt: "",
             tasks: vec!["Accounting 302".to_string()],
         };
 
@@ -564,6 +569,7 @@ mod tests {
             diarizer: &NeverDiarizer,
             llm: &llm,
             templates: &templates,
+            summary_prompt: "",
             tasks: vec![],
         };
 

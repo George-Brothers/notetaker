@@ -130,6 +130,10 @@ pub struct Settings {
     /// user reconfigure anything.
     #[serde(default = "crate::templates::defaults")]
     pub templates: Vec<crate::templates::Template>,
+    /// Optional free-form instructions prepended to every meeting summary.
+    /// This is intentionally unconstrained: the user owns the prompt.
+    #[serde(default)]
+    pub summary_prompt: String,
     pub tier_override: Option<String>,
     pub process_when_idle: bool,
 
@@ -472,6 +476,7 @@ impl Default for Settings {
             llm_model: "qwen3:8b".to_string(),
             task_models: BTreeMap::new(),
             templates: crate::templates::defaults(),
+            summary_prompt: String::new(),
             tier_override: None,
             process_when_idle: true,
             auto_record: BTreeMap::new(),

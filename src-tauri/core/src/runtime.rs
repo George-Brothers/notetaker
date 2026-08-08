@@ -2003,6 +2003,7 @@ impl Runtime {
                         },
                         task_models: settings.task_models,
                         templates: settings.templates,
+                        summary_prompt: settings.summary_prompt,
                     }
                 }, stop_for_thread, |outcome| {
                     if *outcome == RunOutcome::Ran {
@@ -2066,6 +2067,7 @@ impl Runtime {
         let settings = self.get_settings()?;
         let task_models = settings.task_models.clone();
         let templates = settings.templates.clone();
+        let summary_prompt = settings.summary_prompt.clone();
         let llm = LlmClient {
             base_url: settings.llm_base_url,
             model: settings.llm_model,
@@ -2076,7 +2078,7 @@ impl Runtime {
         let queue = Queue {
             store: &self.inner.store,
         };
-        let outcome = scheduler::tick(&queue, &self.inner.idle, &cache, &llm, &tasks, &task_models, &templates)?;
+        let outcome = scheduler::tick(&queue, &self.inner.idle, &cache, &llm, &tasks, &task_models, &templates, &summary_prompt)?;
         if outcome == RunOutcome::Ran {
             self.inner.index_ready()?;
         }

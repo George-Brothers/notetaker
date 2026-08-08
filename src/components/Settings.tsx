@@ -27,7 +27,6 @@ import type {
   Settings as SettingsData,
   SetupStatus,
   SpeechEngine,
-  SummaryTemplate,
 } from "../lib/ipc";
 
 export type SettingsSection =
@@ -50,7 +49,7 @@ export const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "dictation", label: "Dictation" },
   { id: "overlay", label: "Overlay" },
   { id: "meetings", label: "Meetings" },
-  { id: "templates", label: "Templates" },
+  { id: "templates", label: "AI instructions" },
   { id: "storage", label: "Storage & Privacy" },
   { id: "updates", label: "Updates" },
 ];
@@ -63,7 +62,7 @@ const SECTION_SEARCH_TERMS: Record<SettingsSection, string> = {
   dictation: "dictionary replacements push to talk toggle paste clipboard",
   overlay: "floating pill position style glass screen share capture",
   meetings: "zoom teams slack webex discord facetime automatic record policy",
-  templates: "meeting summary note format headings action items template add edit delete",
+  templates: "meeting summary prompt instructions custom AI meeting notes",
   storage: "folder recordings audio wav logs privacy local",
   updates: "version update download restart",
 };
@@ -120,6 +119,7 @@ function normalizeSettings(value: SettingsData): SettingsData {
     ...value,
     taskModels: candidate.taskModels ?? {},
     templates: candidate.templates ?? [],
+    summaryPrompt: candidate.summaryPrompt ?? "",
     audioDevicePriority: candidate.audioDevicePriority ?? [],
     performanceMode: candidate.performanceMode ?? "auto",
     modelIdleUnload: candidate.modelIdleUnload ?? "5m",
@@ -220,10 +220,7 @@ export function Settings({
   const [modelDraft, setModelDraft] = useState("");
   const [dictionaryDraft, setDictionaryDraft] = useState("");
   const [replacementsDraft, setReplacementsDraft] = useState("");
-  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
-  const [templateNameDraft, setTemplateNameDraft] = useState("");
-  const [templateBlurbDraft, setTemplateBlurbDraft] = useState("");
-  const [templateSectionsDraft, setTemplateSectionsDraft] = useState("");
+  const [summaryPromptDraft, setSummaryPromptDraft] = useState("");
 
   const [micTesting, setMicTesting] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
@@ -258,6 +255,7 @@ export function Settings({
               .map(([from, to]) => `${from} => ${to}`)
               .join("\n"),
           );
+          setSummaryPromptDraft(normalized.summaryPrompt);
         }
       } catch (err) {
         if (!cancelled) setLoadError(describeError(err));
@@ -500,59 +498,17 @@ export function Settings({
     }
   }
 
+  function saveSummaryPrompt() {
+    if (!settings) return;
+    void updateSettings({ ...settings, summaryPrompt: summaryPromptDraft.trim() });
+  }
+
   function handleAutoRecordChange(appId: string, policy: AutoRecordPolicy) {
     if (!settings) return;
     void updateSettings({
       ...settings,
       autoRecord: { ...(settings.autoRecord ?? {}), [appId]: policy },
     });
-  }
-
-  function resetTemplateEditor() {
-    setEditingTemplateId(null);
-    setTemplateNameDraft("");
-    setTemplateBlurbDraft("");
-    setTemplateSectionsDraft("## TL;DR (2-3 sentences)\n## Key points\n## Decisions\n## Action items (checkbox list, each starting with the owner's name and a colon)\n## Open questions");
-  }
-
-  function startTemplateEdit(template: SummaryTemplate) {
-    setEditingTemplateId(template.id);
-    setTemplateNameDraft(template.name);
-    setTemplateBlurbDraft(template.blurb);
-    setTemplateSectionsDraft(template.sections);
-  }
-
-  function templateIdFor(name: string) {
-    const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "meeting_summary";
-    if (!settings?.templates.some((template) => template.id === base)) return base;
-    let suffix = 2;
-    while (settings.templates.some((template) => template.id === `${base}_${suffix}`)) suffix += 1;
-    return `${base}_${suffix}`;
-  }
-
-  async function saveTemplate() {
-    if (!settings) return;
-    const name = templateNameDraft.trim();
-    const blurb = templateBlurbDraft.trim();
-    const sections = templateSectionsDraft.trim();
-    if (!name || !blurb || !sections) {
-      setLoadError("Give the template a name, a short description, and its summary headings.");
-      return;
-    }
-    const id = editingTemplateId ?? templateIdFor(name);
-    const nextTemplate = { id, name, blurb, sections };
-    const templates = editingTemplateId
-      ? settings.templates.map((template) => (template.id === id ? nextTemplate : template))
-      : [...settings.templates, nextTemplate];
-    if (await updateSettings({ ...settings, templates })) resetTemplateEditor();
-  }
-
-  async function deleteTemplate(template: SummaryTemplate) {
-    if (!settings || template.id === "default") return;
-    if (!window.confirm(`Delete the "${template.name}" template? Existing recordings will use General notes if you process them again.`)) return;
-    if (await updateSettings({ ...settings, templates: settings.templates.filter((item) => item.id !== template.id) })) {
-      if (editingTemplateId === template.id) resetTemplateEditor();
-    }
   }
 
   function moveDevice(deviceId: string, direction: -1 | 1) {
@@ -1412,55 +1368,19 @@ export function Settings({
                   <section aria-labelledby="settings-heading-templates" className="settings-section">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <h3 id="settings-heading-templates">Meeting summary templates</h3>
-                        <p className="settings-section__lede">Create the note formats the AI uses when it processes a meeting.</p>
+                        <h3 id="settings-heading-templates">Custom summary prompt</h3>
+                        <p className="settings-section__lede">Tell the AI exactly how you want every meeting summarized. There are no required headings or format rules.</p>
                       </div>
-                      {editingTemplateId === null && (
-                        <Button type="button" variant="secondary" size="sm" onClick={resetTemplateEditor}>Add template</Button>
-                      )}
                     </div>
 
-                    <div className="mt-3 space-y-2">
-                      {settings.templates.map((template) => (
-                        <div key={template.id} className="rounded-[var(--radius-control)] border border-border bg-sunken px-3 py-2">
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div>
-                              <p className="text-[13px] font-medium text-fg">{template.name}</p>
-                              <p className="text-[12px] text-fg-muted">{template.blurb}</p>
-                            </div>
-                            <div className="flex gap-2">
-                              <Button type="button" variant="secondary" size="sm" onClick={() => startTemplateEdit(template)}>Edit</Button>
-                              {template.id !== "default" && (
-                                <Button type="button" variant="danger" size="sm" onClick={() => void deleteTemplate(template)}>Delete</Button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
+                    <div className="mt-4 settings-field">
+                      <label htmlFor="settings-summary-prompt">Your instructions</label>
+                      <p className="settings-hint">For example: “Write a concise relationship brief. Capture personal context, promises, follow-up ideas, and opportunities to help. Use a warm, direct tone.”</p>
+                      <textarea id="settings-summary-prompt" rows={12} value={summaryPromptDraft} onChange={(e) => setSummaryPromptDraft(e.target.value)} placeholder="Write the instructions you want the AI to follow…" />
                     </div>
-
-                    {templateSectionsDraft && (
-                      <div className="mt-3 space-y-3 rounded-[var(--radius-control)] border border-border bg-raised p-3">
-                        <p className="text-[13px] font-medium text-fg">{editingTemplateId ? "Edit template" : "New template"}</p>
-                        <div className="settings-field">
-                          <label htmlFor="settings-template-name">Name</label>
-                          <input id="settings-template-name" value={templateNameDraft} onChange={(e) => setTemplateNameDraft(e.target.value)} />
-                        </div>
-                        <div className="settings-field">
-                          <label htmlFor="settings-template-blurb">Short description</label>
-                          <input id="settings-template-blurb" value={templateBlurbDraft} onChange={(e) => setTemplateBlurbDraft(e.target.value)} />
-                        </div>
-                        <div className="settings-field">
-                          <label htmlFor="settings-template-sections">Summary headings and instructions</label>
-                          <p className="settings-hint">Start each heading with <code>##</code> and include an Action items section.</p>
-                          <textarea id="settings-template-sections" rows={9} value={templateSectionsDraft} onChange={(e) => setTemplateSectionsDraft(e.target.value)} />
-                        </div>
-                        <div className="flex gap-2">
-                          <Button type="button" onClick={() => void saveTemplate()}>Save template</Button>
-                          <Button type="button" variant="secondary" onClick={resetTemplateEditor}>Cancel</Button>
-                        </div>
-                      </div>
-                    )}
+                    <div className="mt-3 flex gap-2">
+                      <Button type="button" onClick={saveSummaryPrompt}>Save prompt</Button>
+                    </div>
                   </section>
                 )}
 
