@@ -148,6 +148,7 @@ const BASE_SETTINGS: SettingsData = {
   llmBaseUrl: "http://localhost:11434",
   llmModel: "qwen2.5:7b",
   taskModels: {},
+  templates: [],
   tierOverride: null,
   processWhenIdle: true,
   autoRecord: {},

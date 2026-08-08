@@ -69,6 +69,7 @@ const BASE_SETTINGS: Settings = {
   llmBaseUrl: "http://localhost:11434",
   llmModel: "qwen2.5:7b",
   taskModels: {},
+  templates: [],
   tierOverride: null,
   processWhenIdle: true,
   autoRecord: {},
@@ -587,6 +588,41 @@ describe("Settings screen", () => {
     const dialog = await openSettings({ initialSection: "meetings" });
     expect(within(dialog).getByText(/Google Meet isn't in this list/)).toBeInTheDocument();
     expect(within(dialog).queryByRole("group", { name: "Google Meet" })).not.toBeInTheDocument();
+  });
+
+  it("adds a meeting-summary template and persists its headings", async () => {
+    const settings = {
+      ...BASE_SETTINGS,
+      templates: [{
+        id: "default",
+        name: "General notes",
+        blurb: "A good default for any conversation.",
+        sections: "## TL;DR\n## Action items",
+      }],
+    };
+    setupApi({ settings });
+    const dialog = await openSettings({ initialSection: "meetings" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add template" }));
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Sales call" } });
+    fireEvent.change(within(dialog).getByLabelText("Short description"), { target: { value: "Capture commitments" } });
+    fireEvent.change(within(dialog).getByLabelText("Summary headings and instructions"), {
+      target: { value: "## TL;DR\n## Commitments\n## Action items" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save template" }));
+
+    await waitFor(() => expect(api.setSettings).toHaveBeenCalledWith({
+      ...settings,
+      templates: [
+        ...settings.templates,
+        {
+          id: "sales_call",
+          name: "Sales call",
+          blurb: "Capture commitments",
+          sections: "## TL;DR\n## Commitments\n## Action items",
+        },
+      ],
+    }));
   });
 
   it("shows Ollama's install hint as guidance when it isn't installed", async () => {

@@ -374,7 +374,10 @@ function App() {
 
   // Stable, because Settings takes it as a prop and threads it through a
   // `useCallback`; a new function each render would churn that callback.
-  const noteSettingsSaved = useCallback(() => setSettingsVersion((v) => v + 1), []);
+  const noteSettingsSaved = useCallback(() => {
+    setSettingsVersion((v) => v + 1);
+    void lib.refreshTemplates();
+  }, [lib.refreshTemplates]);
 
   const observeSetupStatus = useCallback((setup: SetupStatus | null) => {
     setModelsMissing((setup?.missing.length ?? 0) > 0);

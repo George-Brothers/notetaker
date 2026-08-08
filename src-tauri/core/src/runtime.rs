@@ -67,7 +67,6 @@ use crate::power::{PowerPolicy, PowerState, SystemProbe};
 use crate::queue::{IdleSource, Queue, RunOutcome};
 use crate::scheduler;
 use crate::storage::{Mode, RecordingRef, Status, Store};
-use crate::templates;
 
 /// What [`Runtime::start_up`] found and did, so the app can tell the user
 /// "2 interrupted recordings were recovered" rather than silently repairing
@@ -131,8 +130,7 @@ const DISK_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// One note template, as the picker needs it.
 ///
-/// A serializable mirror of [`templates::Template`], which is `&'static str`
-/// throughout and so cannot cross a JSON boundary directly.
+/// The fields the recording template picker needs from an editable template.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateInfo {
@@ -891,14 +889,16 @@ impl Runtime {
         crate::notes::append_highlight(&rec.dir, status.elapsed_s)
     }
 
-    /// Every note template this build knows, for the picker.
+    /// Every note template saved in this user's settings, for the picker.
     pub fn list_templates(&self) -> Vec<TemplateInfo> {
-        templates::TEMPLATES
+        self.get_settings()
+            .unwrap_or_default()
+            .templates
             .iter()
             .map(|t| TemplateInfo {
-                id: t.id.to_string(),
-                name: t.name.to_string(),
-                blurb: t.blurb.to_string(),
+                id: t.id.clone(),
+                name: t.name.clone(),
+                blurb: t.blurb.clone(),
             })
             .collect()
     }
@@ -906,6 +906,10 @@ impl Runtime {
     /// Sets a recording's note template. Takes effect on the next processing
     /// run, not retroactively.
     pub fn set_template(&self, id: &str, template: &str) -> Result<()> {
+        let settings = self.get_settings()?;
+        if !settings.templates.iter().any(|item| item.id == template) {
+            bail!("there is no note template called {template:?}");
+        }
         api::set_template(&self.inner.store, id, template)
     }
 
@@ -1985,18 +1989,22 @@ impl Runtime {
                 // and only the loop can name it.
                 let _ = tx.send(thread::current());
 
-                let settings = api::get_settings(&inner.settings_path).unwrap_or_default();
-                let task_models = settings.task_models.clone();
-                let llm = LlmClient {
-                    base_url: settings.llm_base_url,
-                    model: settings.llm_model,
-                };
                 let tasks = inner.store.list_tasks().unwrap_or_default();
                 let queue = Queue {
                     store: &inner.store,
                 };
 
-                scheduler::run_loop(&queue, &inner.idle, &cache, &llm, &tasks, &task_models, stop_for_thread, |outcome| {
+                scheduler::run_loop(&queue, &inner.idle, &cache, &tasks, || {
+                    let settings = api::get_settings(&inner.settings_path).unwrap_or_default();
+                    scheduler::SchedulerConfig {
+                        llm: LlmClient {
+                            base_url: settings.llm_base_url,
+                            model: settings.llm_model,
+                        },
+                        task_models: settings.task_models,
+                        templates: settings.templates,
+                    }
+                }, stop_for_thread, |outcome| {
                     if *outcome == RunOutcome::Ran {
                         // Carry-over I3: without this, a just-processed
                         // recording is invisible to search until a rebuild.
@@ -2057,6 +2065,7 @@ impl Runtime {
     pub fn tick_once(&self, models: SchedulerModels) -> Result<RunOutcome> {
         let settings = self.get_settings()?;
         let task_models = settings.task_models.clone();
+        let templates = settings.templates.clone();
         let llm = LlmClient {
             base_url: settings.llm_base_url,
             model: settings.llm_model,
@@ -2067,7 +2076,7 @@ impl Runtime {
         let queue = Queue {
             store: &self.inner.store,
         };
-        let outcome = scheduler::tick(&queue, &self.inner.idle, &cache, &llm, &tasks, &task_models)?;
+        let outcome = scheduler::tick(&queue, &self.inner.idle, &cache, &llm, &tasks, &task_models, &templates)?;
         if outcome == RunOutcome::Ran {
             self.inner.index_ready()?;
         }

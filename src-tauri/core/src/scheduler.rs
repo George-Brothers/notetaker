@@ -23,6 +23,15 @@ use crate::queue::{IdleSource, Queue, RunOutcome};
 /// (see [`Waker`]) cuts a sleep short.
 pub const TICK_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The settings a single scheduling decision reads. The scheduler obtains a
+/// fresh copy before each tick so a saved template applies without requiring a
+/// desktop-app restart.
+pub struct SchedulerConfig {
+    pub llm: LlmClient,
+    pub task_models: BTreeMap<String, String>,
+    pub templates: Vec<crate::templates::Template>,
+}
+
 /// One scheduling decision: if the machine is idle, run at most one queued
 /// recording through the pipeline. Models are acquired only after
 /// `Queue::run_one` has passed both the idle gate and the queued-recording
@@ -35,6 +44,7 @@ pub fn tick(
     llm: &LlmClient,
     tasks: &[String],
     task_models: &BTreeMap<String, String>,
+    templates: &[crate::templates::Template],
 ) -> Result<RunOutcome> {
     let outcome = queue.run_one(idle, |rec| {
         let task_llm = rec
@@ -50,6 +60,7 @@ pub fn tick(
             transcriber: lease.transcriber(),
             diarizer: lease.diarizer(),
             llm: task_llm.as_ref().unwrap_or(llm),
+            templates,
             tasks: tasks.to_vec(),
         };
         let result = process_recording(queue.store, &deps, rec).map(|_| ());
@@ -100,25 +111,24 @@ impl Waker {
 /// `on_outcome` is called after every tick (the app uses it to index finished
 /// recordings); tests use it to observe progress. `tick_interval` is separate
 /// from the model idle window and is injectable in tests.
-pub fn run_loop<F>(
+pub fn run_loop<F, C>(
     queue: &Queue,
     idle: &dyn IdleSource,
     cache: &ModelCache,
-    llm: &LlmClient,
     tasks: &[String],
-    task_models: &BTreeMap<String, String>,
+    config: C,
     stop: Arc<AtomicBool>,
     on_outcome: F,
 ) where
     F: FnMut(&RunOutcome),
+    C: Fn() -> SchedulerConfig,
 {
     run_loop_with_interval(
         queue,
         idle,
         cache,
-        llm,
         tasks,
-        task_models,
+        config,
         stop,
         TICK_INTERVAL,
         on_outcome,
@@ -126,21 +136,22 @@ pub fn run_loop<F>(
 }
 
 /// Test-injectable version of [`run_loop`].
-pub fn run_loop_with_interval<F>(
+pub fn run_loop_with_interval<F, C>(
     queue: &Queue,
     idle: &dyn IdleSource,
     cache: &ModelCache,
-    llm: &LlmClient,
     tasks: &[String],
-    task_models: &BTreeMap<String, String>,
+    config: C,
     stop: Arc<AtomicBool>,
     tick_interval: Duration,
     mut on_outcome: F,
 ) where
     F: FnMut(&RunOutcome),
+    C: Fn() -> SchedulerConfig,
 {
     while !stop.load(Ordering::SeqCst) {
-        match tick(queue, idle, cache, llm, tasks, task_models) {
+        let config = config();
+        match tick(queue, idle, cache, &config.llm, tasks, &config.task_models, &config.templates) {
             Ok(outcome) => {
                 let more_now = matches!(outcome, RunOutcome::Ran);
                 on_outcome(&outcome);
@@ -237,11 +248,13 @@ mod tests {
         transcriber: &'a EmptyText,
         diarizer: &'a OneSpeaker,
         llm: &'a LlmClient,
+        templates: &'a [crate::templates::Template],
     ) -> PipelineDeps<'a> {
         PipelineDeps {
             transcriber,
             diarizer,
             llm,
+            templates,
             tasks: vec![],
         }
     }
@@ -262,7 +275,8 @@ mod tests {
             model: "x".to_string(),
         };
         let (t, d) = (EmptyText, OneSpeaker);
-        let deps = deps(&t, &d, &llm);
+        let templates = crate::templates::defaults();
+        let deps = deps(&t, &d, &llm, &templates);
 
         let outcome = tick_with_deps(&queue, &AlwaysIdle, &deps).unwrap();
         // The recording was picked up and attempted (LLM failure → retry).
@@ -288,7 +302,8 @@ mod tests {
             model: "x".to_string(),
         };
         let (t, d) = (EmptyText, OneSpeaker);
-        let deps = deps(&t, &d, &llm);
+        let templates = crate::templates::defaults();
+        let deps = deps(&t, &d, &llm, &templates);
 
         let outcome = tick_with_deps(&queue, &NeverIdle, &deps).unwrap();
         assert_eq!(outcome, RunOutcome::NotIdle);
@@ -328,14 +343,15 @@ mod tests {
             model: "x".to_string(),
         };
         let tasks = Vec::new();
+        let templates = crate::templates::defaults();
 
-        let outcome = tick(&queue, &NeverIdle, &cache, &llm, &tasks, &BTreeMap::new()).unwrap();
+        let outcome = tick(&queue, &NeverIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates).unwrap();
         assert_eq!(outcome, RunOutcome::NotIdle);
         assert_eq!(loads.load(Ordering::SeqCst), 0);
 
         let mut rec = wav_recording(&store, "Lecture");
         queue.enqueue(&mut rec).unwrap();
-        let outcome = tick(&queue, &AlwaysIdle, &cache, &llm, &tasks, &BTreeMap::new()).unwrap();
+        let outcome = tick(&queue, &AlwaysIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates).unwrap();
         assert!(matches!(
             outcome,
             RunOutcome::FailedWillRetry | RunOutcome::Ran

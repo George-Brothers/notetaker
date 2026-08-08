@@ -27,6 +27,7 @@ import type {
   Settings as SettingsData,
   SetupStatus,
   SpeechEngine,
+  SummaryTemplate,
 } from "../lib/ipc";
 
 export type SettingsSection =
@@ -115,6 +116,7 @@ function normalizeSettings(value: SettingsData): SettingsData {
   return {
     ...value,
     taskModels: candidate.taskModels ?? {},
+    templates: candidate.templates ?? [],
     audioDevicePriority: candidate.audioDevicePriority ?? [],
     performanceMode: candidate.performanceMode ?? "auto",
     modelIdleUnload: candidate.modelIdleUnload ?? "5m",
@@ -215,6 +217,10 @@ export function Settings({
   const [modelDraft, setModelDraft] = useState("");
   const [dictionaryDraft, setDictionaryDraft] = useState("");
   const [replacementsDraft, setReplacementsDraft] = useState("");
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [templateNameDraft, setTemplateNameDraft] = useState("");
+  const [templateBlurbDraft, setTemplateBlurbDraft] = useState("");
+  const [templateSectionsDraft, setTemplateSectionsDraft] = useState("");
 
   const [micTesting, setMicTesting] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
@@ -335,8 +341,10 @@ export function Settings({
       try {
         await api.setSettings(next);
         onSaved?.();
+        return true;
       } catch (err) {
         setLoadError(describeError(err));
+        return false;
       }
     },
     [onSaved],
@@ -495,6 +503,53 @@ export function Settings({
       ...settings,
       autoRecord: { ...(settings.autoRecord ?? {}), [appId]: policy },
     });
+  }
+
+  function resetTemplateEditor() {
+    setEditingTemplateId(null);
+    setTemplateNameDraft("");
+    setTemplateBlurbDraft("");
+    setTemplateSectionsDraft("## TL;DR (2-3 sentences)\n## Key points\n## Decisions\n## Action items (checkbox list, each starting with the owner's name and a colon)\n## Open questions");
+  }
+
+  function startTemplateEdit(template: SummaryTemplate) {
+    setEditingTemplateId(template.id);
+    setTemplateNameDraft(template.name);
+    setTemplateBlurbDraft(template.blurb);
+    setTemplateSectionsDraft(template.sections);
+  }
+
+  function templateIdFor(name: string) {
+    const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "meeting_summary";
+    if (!settings?.templates.some((template) => template.id === base)) return base;
+    let suffix = 2;
+    while (settings.templates.some((template) => template.id === `${base}_${suffix}`)) suffix += 1;
+    return `${base}_${suffix}`;
+  }
+
+  async function saveTemplate() {
+    if (!settings) return;
+    const name = templateNameDraft.trim();
+    const blurb = templateBlurbDraft.trim();
+    const sections = templateSectionsDraft.trim();
+    if (!name || !blurb || !sections) {
+      setLoadError("Give the template a name, a short description, and its summary headings.");
+      return;
+    }
+    const id = editingTemplateId ?? templateIdFor(name);
+    const nextTemplate = { id, name, blurb, sections };
+    const templates = editingTemplateId
+      ? settings.templates.map((template) => (template.id === id ? nextTemplate : template))
+      : [...settings.templates, nextTemplate];
+    if (await updateSettings({ ...settings, templates })) resetTemplateEditor();
+  }
+
+  async function deleteTemplate(template: SummaryTemplate) {
+    if (!settings || template.id === "default") return;
+    if (!window.confirm(`Delete the "${template.name}" template? Existing recordings will use General notes if you process them again.`)) return;
+    if (await updateSettings({ ...settings, templates: settings.templates.filter((item) => item.id !== template.id) })) {
+      if (editingTemplateId === template.id) resetTemplateEditor();
+    }
   }
 
   function moveDevice(deviceId: string, direction: -1 | 1) {
@@ -1346,6 +1401,60 @@ export function Settings({
                     <p className="settings-hint">
                       Google Meet isn't in this list. A browser being open doesn't mean you're on a call, so we can't reliably detect Meet meetings yet — start that recording yourself when you join one.
                     </p>
+
+                    <div className="mt-7 border-t border-border pt-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-[14px] font-semibold text-fg">Meeting summary templates</h4>
+                          <p className="settings-hint">Set the headings and instructions the AI uses the next time a meeting is processed.</p>
+                        </div>
+                        {editingTemplateId === null && (
+                          <Button type="button" variant="secondary" size="sm" onClick={resetTemplateEditor}>Add template</Button>
+                        )}
+                      </div>
+
+                      <div className="mt-3 space-y-2">
+                        {settings.templates.map((template) => (
+                          <div key={template.id} className="rounded-[var(--radius-control)] border border-border bg-sunken px-3 py-2">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <p className="text-[13px] font-medium text-fg">{template.name}</p>
+                                <p className="text-[12px] text-fg-muted">{template.blurb}</p>
+                              </div>
+                              <div className="flex gap-2">
+                                <Button type="button" variant="secondary" size="sm" onClick={() => startTemplateEdit(template)}>Edit</Button>
+                                {template.id !== "default" && (
+                                  <Button type="button" variant="danger" size="sm" onClick={() => void deleteTemplate(template)}>Delete</Button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {templateSectionsDraft && (
+                        <div className="mt-3 space-y-3 rounded-[var(--radius-control)] border border-border bg-raised p-3">
+                          <p className="text-[13px] font-medium text-fg">{editingTemplateId ? "Edit template" : "New template"}</p>
+                          <div className="settings-field">
+                            <label htmlFor="settings-template-name">Name</label>
+                            <input id="settings-template-name" value={templateNameDraft} onChange={(e) => setTemplateNameDraft(e.target.value)} />
+                          </div>
+                          <div className="settings-field">
+                            <label htmlFor="settings-template-blurb">Short description</label>
+                            <input id="settings-template-blurb" value={templateBlurbDraft} onChange={(e) => setTemplateBlurbDraft(e.target.value)} />
+                          </div>
+                          <div className="settings-field">
+                            <label htmlFor="settings-template-sections">Summary headings and instructions</label>
+                            <p className="settings-hint">Start each heading with <code>##</code> and include an Action items section.</p>
+                            <textarea id="settings-template-sections" rows={9} value={templateSectionsDraft} onChange={(e) => setTemplateSectionsDraft(e.target.value)} />
+                          </div>
+                          <div className="flex gap-2">
+                            <Button type="button" onClick={() => void saveTemplate()}>Save template</Button>
+                            <Button type="button" variant="secondary" onClick={resetTemplateEditor}>Cancel</Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </section>
                 )}
 

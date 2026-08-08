@@ -37,6 +37,8 @@ pub struct PipelineDeps<'a> {
     pub transcriber: &'a dyn Transcriber,
     pub diarizer: &'a dyn Diarizer,
     pub llm: &'a LlmClient,
+    /// The persisted summary shapes available when this recording is run.
+    pub templates: &'a [crate::templates::Template],
     /// Existing task names, for the "which task does this belong to" step.
     pub tasks: Vec<String>,
 }
@@ -153,6 +155,7 @@ pub fn process_recording(
             &transcript_md,
             &notes_md,
             rec.meta.template.as_deref(),
+            deps.templates,
             KeepAlive::Batch,
         )
     })
@@ -341,10 +344,12 @@ mod tests {
             base_url: server.base_url(),
             model: "test".to_string(),
         };
+        let templates = crate::templates::defaults();
         let deps = PipelineDeps {
             transcriber: &transcriber,
             diarizer: &diarizer,
             llm: &llm,
+            templates: &templates,
             tasks: vec!["Accounting 302".to_string()],
         };
 
@@ -464,10 +469,12 @@ mod tests {
             base_url: server.base_url(),
             model: "test".to_string(),
         };
+        let templates = crate::templates::defaults();
         let deps = PipelineDeps {
             transcriber: &transcriber,
             diarizer: &diarizer,
             llm: &llm,
+            templates: &templates,
             tasks: vec!["Accounting 302".to_string()],
         };
 
@@ -551,10 +558,12 @@ mod tests {
             base_url: "http://127.0.0.1:1".to_string(),
             model: "x".to_string(),
         };
+        let templates = crate::templates::defaults();
         let deps = PipelineDeps {
             transcriber: &NeverTranscriber,
             diarizer: &NeverDiarizer,
             llm: &llm,
+            templates: &templates,
             tasks: vec![],
         };
 

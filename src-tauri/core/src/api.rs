@@ -125,6 +125,11 @@ pub struct Settings {
     /// entry uses `llm_model` for that folder.
     #[serde(default)]
     pub task_models: BTreeMap<String, String>,
+    /// Editable meeting-summary templates. A missing field means this is an
+    /// older settings file, so restore the built-in catalog without making the
+    /// user reconfigure anything.
+    #[serde(default = "crate::templates::defaults")]
+    pub templates: Vec<crate::templates::Template>,
     pub tier_override: Option<String>,
     pub process_when_idle: bool,
 
@@ -466,6 +471,7 @@ impl Default for Settings {
             llm_base_url: "http://localhost:11434".to_string(),
             llm_model: "qwen3:8b".to_string(),
             task_models: BTreeMap::new(),
+            templates: crate::templates::defaults(),
             tier_override: None,
             process_when_idle: true,
             auto_record: BTreeMap::new(),
@@ -579,9 +585,6 @@ pub fn append_note(store: &Store, id: &str, jot: &str) -> Result<()> {
 /// summary in the old shape after the user picked a new template would look
 /// like the picker did nothing.
 pub fn set_template(store: &Store, id: &str, template: &str) -> Result<()> {
-    if !crate::templates::is_known(template) {
-        anyhow::bail!("there is no note template called {template:?}");
-    }
     let mut rec = find_by_id(store, id)?;
     rec.meta.template = Some(template.to_string());
     store.save_meta(&rec)
@@ -773,6 +776,7 @@ pub fn get_settings(path: &Path) -> Result<Settings> {
 }
 
 pub fn set_settings(path: &Path, settings: &Settings) -> Result<()> {
+    crate::templates::validate(&settings.templates)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }

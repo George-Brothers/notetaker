@@ -91,6 +91,11 @@ export interface Template {
   blurb: string;
 }
 
+/** A template as it is stored in Settings, including the actual AI prompt. */
+export interface SummaryTemplate extends Template {
+  sections: string;
+}
+
 export interface RecordingDetail extends RecordingRow {
   transcriptMd: string;
   summaryMd: string;
@@ -138,6 +143,8 @@ export interface Settings {
   llmModel: string;
   /** Optional summary-model overrides keyed by note-folder name. */
   taskModels: Record<string, string>;
+  /** Editable formats for generated meeting notes. */
+  templates: SummaryTemplate[];
   /** null means "use the tier detected from this machine's hardware". */
   tierOverride: string | null;
   processWhenIdle: boolean;

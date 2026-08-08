@@ -292,14 +292,16 @@ export function useLibrary() {
   }, []);
 
   const [templates, setTemplates] = useState<Template[]>([]);
-  useEffect(() => {
-    api
-      .listTemplates()
-      .then(setTemplates)
-      // A picker with nothing in it is a small problem; a shell that fails to
-      // load over it is a large one.
-      .catch((err) => setLoadError(describeError(err)));
+  const refreshTemplates = useCallback(async () => {
+    try {
+      setTemplates(await api.listTemplates());
+    } catch (err) {
+      setLoadError(describeError(err));
+    }
   }, []);
+  useEffect(() => {
+    void refreshTemplates();
+  }, [refreshTemplates]);
 
   const setTemplate = useCallback(
     async (id: string, template: string) => {
@@ -411,6 +413,7 @@ export function useLibrary() {
     toggleAction,
     acceptSuggestedTitle,
     refreshRecordings,
+    refreshTemplates,
     query,
     search,
     searchResults,
