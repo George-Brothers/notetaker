@@ -1,0 +1,415 @@
+/* Shared shell geometry. Breakpoint ownership lives here and in DesktopShell;
+   individual screens only describe their content. */
+
+.app-header {
+  min-width: 0;
+}
+
+.app-header__record {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.app-header__record > * {
+  min-width: 0;
+}
+
+.app-header__brand {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.app-header__actions {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.app-header__secondary {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.app-header__overflow {
+  display: none;
+}
+
+.desktop-shell {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--c-app);
+  grid-template-columns: var(--library-pane) minmax(0, 1fr);
+}
+
+.desktop-shell[data-layout-mode="desktop"][data-ask-open="true"] {
+  grid-template-columns: var(--library-pane) minmax(480px, 1fr) var(--ask-pane);
+}
+
+.desktop-shell[data-layout-mode="ask-overlay"] {
+  grid-template-columns: var(--library-pane) minmax(480px, 1fr);
+}
+
+.desktop-shell[data-layout-mode="single-pane"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.desktop-shell__library,
+.desktop-shell__primary,
+.desktop-shell__ask {
+  min-width: 0;
+  min-height: 0;
+}
+
+.desktop-shell__library {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--c-border);
+}
+
+.desktop-shell__primary {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.desktop-shell__primary > main {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.desktop-shell__ask {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--c-border);
+  background: var(--c-raised);
+}
+
+.desktop-shell__ask > *:first-child {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.desktop-shell__separator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  width: 14px;
+  cursor: col-resize;
+  touch-action: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+}
+
+.desktop-shell__library > .desktop-shell__separator {
+  right: -7px;
+}
+
+.desktop-shell__ask > .desktop-shell__separator {
+  left: -7px;
+}
+
+.desktop-shell__separator-handle {
+  display: block;
+  width: 2px;
+  height: 2rem;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 120ms, height 120ms;
+}
+
+.desktop-shell__separator:hover .desktop-shell__separator-handle,
+.desktop-shell__separator:focus-visible .desktop-shell__separator-handle {
+  height: 3.25rem;
+  background: var(--c-accent);
+}
+
+.desktop-shell__separator:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+.desktop-shell__scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  border: 0;
+  background: color-mix(in srgb, var(--c-app) 46%, transparent);
+  cursor: pointer;
+}
+
+.desktop-shell[data-layout-mode="ask-overlay"] .desktop-shell__ask,
+.desktop-shell[data-layout-mode="single-pane"] .desktop-shell__ask {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: min(var(--ask-pane), calc(100% - 1rem));
+  max-width: calc(100% - 1rem);
+  border-left: 1px solid var(--c-border);
+  box-shadow: var(--shadow-pop);
+}
+
+.desktop-shell[data-layout-mode="single-pane"][data-mobile-pane="library"] .desktop-shell__primary {
+  display: none;
+}
+
+.desktop-shell[data-layout-mode="single-pane"][data-mobile-pane="primary"] .desktop-shell__library {
+  display: none;
+}
+
+.ask-pane__inner {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  padding: 1rem;
+}
+
+.ask-pane__header {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.ask-pane__header h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-view__article {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.note-view__inner {
+  min-width: 0;
+}
+
+.note-view__back-button {
+  display: none;
+}
+
+.note-view__title {
+  max-width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.note-view__toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.note-view__toolbar-actions {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+}
+
+.record-bar {
+  min-width: 0;
+}
+
+.record-bar__main,
+.record-bar__meters,
+.record-bar__warning {
+  min-width: 0;
+}
+
+.record-bar__main,
+.record-bar__meters {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.record-bar__main {
+  flex: 0 1 auto;
+}
+
+.record-bar__meters {
+  flex: 0 1 auto;
+}
+
+.record-bar__status,
+.record-bar__warning {
+  max-width: min(30rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-bar__warning {
+  color: var(--c-warn);
+}
+
+.player-bar {
+  min-width: 0;
+}
+
+.player-bar__transport,
+.player-bar__timeline,
+.player-bar__options {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.player-bar__transport {
+  flex: 0 0 auto;
+}
+
+.player-bar__timeline {
+  min-width: 10rem;
+  flex: 1 1 12rem;
+}
+
+.player-bar__timeline input[type="range"] {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.player-bar__options {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+}
+
+.settings-panel__body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 720px) {
+  .app-header {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+
+  .app-header__record {
+    order: 1;
+    flex: 1 1 100%;
+  }
+
+  .app-header__brand {
+    order: 2;
+    margin-right: auto;
+  }
+
+  .app-header__actions {
+    order: 3;
+  }
+
+  .app-header__secondary {
+    display: none;
+  }
+
+  .app-header__overflow {
+    display: inline-flex;
+  }
+
+  .record-bar--live .record-bar__meters {
+    flex-basis: 100%;
+    padding-left: 0.25rem;
+  }
+
+  .desktop-shell__separator {
+    display: none;
+  }
+
+  .note-view__back-button {
+    display: inline-flex;
+  }
+
+  .note-view__toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .note-view__toolbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .player-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 0.5rem;
+  }
+
+  .player-bar__transport {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .player-bar__options {
+    grid-column: 2;
+    grid-row: 1;
+    max-width: 100%;
+  }
+
+  .player-bar__timeline {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-header {
+    padding-inline: 0.5rem;
+  }
+
+  .desktop-shell__ask {
+    width: calc(100% - 0.75rem);
+    max-width: calc(100% - 0.75rem);
+  }
+
+  .ask-pane__inner {
+    padding: 0.75rem;
+  }
+}

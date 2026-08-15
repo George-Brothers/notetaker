@@ -42,13 +42,15 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 
 use crate::api::{self, RecordingDetail, RecordingRow, SearchHit, Settings};
-use crate::capture::flac::{finalize_to_flac, Finalized};
 use crate::capture::recover::recover_orphans;
 use crate::capture::session::Session;
 use crate::capture::source::{AudioSource, FakeSource};
-use crate::capture::{self, CaptureLevels, CaptureState, CaptureStatus, DiskSpace};
+use crate::capture::{CaptureLevels, CaptureState, CaptureStatus, DiskSpace};
+#[cfg(test)]
+use crate::capture as capture;
 use crate::dictation::{self, DictationState, DictationStatus, PasteResult};
 use crate::index::Index;
 use crate::logging;
@@ -59,7 +61,7 @@ use crate::models::{
 use crate::ollama::{self, OllamaStatus, PullKind, PullProgress};
 use crate::pipeline::diarize::SherpaDiarizer;
 use crate::pipeline::llm::{is_local_ollama_url, LlmClient};
-use crate::pipeline::live::{LiveTranscriptEvent, LiveTranscriptHandle};
+use crate::pipeline::live::{LiveTranscriptEvent, LiveTranscriptHandle, LiveTranscriptStats};
 use crate::pipeline::route::{LanguageTranscriber, RoutingTranscriber};
 use crate::pipeline::run::requeue_stale;
 use crate::pipeline::transcribe::{SenseVoiceTranscriber, WhisperTranscriber};
@@ -96,7 +98,6 @@ use crate::watch::{AutoRecordPolicy, MeetingEvent};
 /// keeps its own copies private.
 const TRANSCRIPT_FILE: &str = "transcript.md";
 const SUMMARY_FILE: &str = "summary.md";
-const WAV_KEPT_NOTE: &str = "This recording is saved twice — a compressed copy and the original. Both play fine; the original just takes more space. You can delete the .wav file if you want the room back.";
 
 /// File names inside the app's own data directory.
 const SETTINGS_FILE: &str = "settings.json";
@@ -109,20 +110,24 @@ const MODELS_DIR: &str = "Models";
 /// How often the capture thread moves audio from the sources into their files.
 ///
 /// Sources buffer between reads, so this is a latency/wakeups trade-off rather
-/// than a correctness one: twenty pumps a second makes the record bar track
-/// normal speech without a visibly delayed response, while still leaving the
-/// capture thread essentially idle between audio callbacks.
-const PUMP_INTERVAL: Duration = Duration::from_millis(50);
+/// than a correctness one. Durable audio is written in source-sized batches;
+/// the UI meters have their own low-cost cadence and do not require a 20 Hz
+/// model/capture polling loop.
+const PUMP_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How long a free-space reading is reused before the volume is measured
 /// again.
 ///
-/// The disk guard runs on every pump — ten times a second — and enumerating
+/// The disk guard runs on every pump — roughly four times a second — and enumerating
 /// mounted volumes is a syscall per mount. Capture writes about 32 KB/s per
 /// track, so five seconds of staleness is well under a megabyte against a
 /// `MIN_FREE_MB` floor of 500: the guard still trips with hundreds of megabytes
 /// of headroom.
 const DISK_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// A newly stopped recording gets a quiet window before automatic model work
+/// starts. Manual "Process now" marks the job explicit and bypasses this.
+const POST_STOP_IDLE_INTERVAL: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // The contract with the UI
@@ -290,6 +295,10 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "live_transcript",
+        args: &[],
+    },
+    Command {
+        name: "live_transcript_stats",
         args: &[],
     },
     Command {
@@ -546,23 +555,56 @@ impl SystemProbe for SharedProbe {
 /// the very next tick gates on it.
 struct LivePolicy {
     current: Mutex<Box<dyn IdleSource>>,
+    capture_active: Arc<AtomicBool>,
+    last_stop: Mutex<Option<Instant>>,
 }
 
 impl LivePolicy {
     fn new(policy: Box<dyn IdleSource>) -> Self {
         LivePolicy {
             current: Mutex::new(policy),
+            capture_active: Arc::new(AtomicBool::new(false)),
+            last_stop: Mutex::new(None),
         }
     }
 
     fn replace(&self, policy: Box<dyn IdleSource>) {
         *lock(&self.current) = policy;
     }
+
+    fn set_capture_active(&self, active: bool) {
+        self.capture_active.store(active, Ordering::Release);
+        if !active {
+            *lock(&self.last_stop) = Some(Instant::now());
+        }
+    }
 }
 
 impl IdleSource for LivePolicy {
     fn ok_to_run(&self) -> bool {
-        lock(&self.current).ok_to_run()
+        !self.capture_active.load(Ordering::Acquire) && lock(&self.current).ok_to_run()
+    }
+
+    fn ok_to_run_for(&self, recording: &RecordingRef) -> bool {
+        if !self.ok_to_run() {
+            return false;
+        }
+        if let Some(stopped_at) = *lock(&self.last_stop) {
+            if stopped_at.elapsed() < POST_STOP_IDLE_INTERVAL {
+                return false;
+            }
+        }
+
+        // After a restart there is no in-memory Instant. The durable queuedAt
+        // timestamp preserves the same quiet-window rule across crashes.
+        let Some(queued_at) = recording.meta.queued_at.as_deref() else {
+            return true;
+        };
+        let Ok(queued_at) = DateTime::parse_from_rfc3339(queued_at) else {
+            return true;
+        };
+        let elapsed = Utc::now().signed_duration_since(queued_at.with_timezone(&Utc));
+        elapsed.to_std().is_ok_and(|duration| duration >= POST_STOP_IDLE_INTERVAL)
     }
 }
 
@@ -645,24 +687,24 @@ struct Inner {
     last_recording: Mutex<Option<String>>,
     /// Held for the whole of [`Inner::finish_session`].
     ///
-    /// Closing out a recording is not instant — it finalizes the audio,
-    /// re-encodes both tracks to FLAC, queues, and indexes. The pump thread
-    /// and the user's Stop both arrive here, and taking the session out of its
-    /// slot is only the first step, so "the slot is empty" does not mean "the
-    /// recording is ready". Without this, `stop_capture` could return an id
-    /// for a recording that is not yet queued and whose audio file is halfway
-    /// through being replaced — and the UI would refresh its list a moment too
-    /// early and show nothing.
+    /// Closing out a recording is not instant — it finalizes and syncs the WAV,
+    /// atomically saves metadata, and registers the downstream queue work. The
+    /// pump thread and the user's Stop both arrive here, and taking the session
+    /// out of its slot is only the first step, so "the slot is empty" does not
+    /// mean "the recording is ready". Without this, `stop_capture` could return
+    /// an id for a recording that is not yet queued and whose audio file is
+    /// halfway through being finalized — and the UI would refresh its list a
+    /// moment too early and show nothing.
     finishing: Mutex<()>,
     /// The recording being closed out right now, for anyone *polling* rather
     /// than waiting.
     ///
     /// The `finishing` lock above serializes the closers; it does nothing for
-    /// [`Runtime::capture_status`], which must never block the UI thread on a
-    /// FLAC encode. So the same window is also published here, and a poll
-    /// during it reads [`CaptureState::Finishing`] rather than "idle" — the
-    /// difference between the record bar saying "Saving…" and it re-arming
-    /// while the previous recording is still being written.
+    /// [`Runtime::capture_status`], which must never block the UI thread on
+    /// close-out. So the same window is also published here, and a poll during
+    /// it reads [`CaptureState::Finishing`] rather than "idle" — the difference
+    /// between the record bar saying "Saving…" and it re-arming while the
+    /// previous recording is still being written.
     closing: Mutex<Option<Closing>>,
     watcher: Mutex<Watcher>,
     sources: Box<dyn CaptureSources>,
@@ -1197,13 +1239,17 @@ impl Runtime {
             Mode::InPerson => None,
         };
 
-        // A missing speech cache must never prevent recording. When models
-        // are ready, the live worker acquires one lease on its own thread and
-        // the capture tee remains a non-blocking clone-and-send operation.
-        let live_handle = lock(&self.inner.model_cache)
-            .clone()
-            .map(LiveTranscriptHandle::start);
-        let live_tee = live_handle.as_ref().map(|handle| handle.sender());
+        // Live transcription is an explicit, substantial-processing opt-in.
+        // The default path creates no live handle, sender, model lease, or
+        // live queue at all; capture only writes durable WAV data.
+        let live_handle = if settings.live_transcription_during_recording {
+            lock(&self.inner.model_cache)
+                .clone()
+                .map(LiveTranscriptHandle::start)
+        } else {
+            None
+        };
+        let live_tee = live_handle.as_ref().and_then(LiveTranscriptHandle::sender);
 
         let mut session = Session::start_with_tee(
             &self.inner.store,
@@ -1216,6 +1262,7 @@ impl Runtime {
         )?;
         let status = session.status();
         *lock(&self.inner.live_transcript) = live_handle;
+        self.inner.idle.set_capture_active(true);
         *slot = Some(session);
         *lock(&self.inner.last_recording) = None;
         drop(slot);
@@ -1263,7 +1310,8 @@ impl Runtime {
 
     /// A snapshot for the record bar. Cheap enough to poll while recording,
     /// and deliberately never blocks on the close-out: a poll that waited for
-    /// a FLAC encode would freeze the window it is drawing.
+    /// downstream compression or model work would freeze the window it is
+    /// drawing.
     ///
     /// Reports [`CaptureState::Finishing`] for the whole stretch between the
     /// last sample and the recording being queued. Reporting idle there was a
@@ -1304,7 +1352,7 @@ impl Runtime {
     }
 
     /// Meter readings only. This skips elapsed-time and disk work because the
-    /// record bar reads it twenty times per second.
+    /// record bar reads it on its independent low-cost cadence.
     pub fn capture_levels(&self) -> CaptureLevels {
         let mut slot = lock(&self.inner.session);
         match slot.as_mut() {
@@ -1320,6 +1368,15 @@ impl Runtime {
         lock(&self.inner.live_transcript)
             .as_ref()
             .map_or_else(Vec::new, LiveTranscriptHandle::drain_events)
+    }
+
+    /// Reports live-only backpressure. A disabled/default recording has no
+    /// worker and therefore returns zero counters without polling IPC from the
+    /// frontend.
+    pub fn live_transcript_stats(&self) -> LiveTranscriptStats {
+        lock(&self.inner.live_transcript)
+            .as_ref()
+            .map_or_else(LiveTranscriptStats::default, LiveTranscriptHandle::stats)
     }
 
     // --- system-wide dictation -------------------------------------------
@@ -2004,6 +2061,7 @@ impl Runtime {
                         task_models: settings.task_models,
                         templates: settings.templates,
                         summary_prompt: settings.summary_prompt,
+                        keep_wav: settings.keep_wav,
                     }
                 }, stop_for_thread, |outcome| {
                     if *outcome == RunOutcome::Ran {
@@ -2078,7 +2136,17 @@ impl Runtime {
         let queue = Queue {
             store: &self.inner.store,
         };
-        let outcome = scheduler::tick(&queue, &self.inner.idle, &cache, &llm, &tasks, &task_models, &templates, &summary_prompt)?;
+        let outcome = scheduler::tick(
+            &queue,
+            &self.inner.idle,
+            &cache,
+            &llm,
+            &tasks,
+            &task_models,
+            &templates,
+            &summary_prompt,
+            settings.keep_wav,
+        )?;
         if outcome == RunOutcome::Ran {
             self.inner.index_ready()?;
         }
@@ -2181,6 +2249,12 @@ impl Inner {
         lock(&self.index).upsert(rec)
     }
 
+    fn wake_scheduler(&self) {
+        if let Some(handle) = lock(&self.scheduler).as_ref() {
+            handle.wake();
+        }
+    }
+
     /// Re-indexes every finished recording. Returns how many.
     ///
     /// Carry-over I3. `run_loop`'s callback reports *what happened*, not *which
@@ -2202,42 +2276,6 @@ impl Inner {
         Ok(ready.len())
     }
 
-    /// Re-encodes a finished recording's tracks as FLAC — same audio, about
-    /// half the disk.
-    ///
-    /// Deliberately infallible from the caller's point of view. A failed
-    /// encode leaves the WAV exactly where it is, and `pipeline::run` opens
-    /// either extension, so the recording still transcribes normally; the only
-    /// cost is the space. Failing the stop over it would be trading a lecture
-    /// for a compression ratio.
-    fn compress_tracks(&self, rec: &mut RecordingRef) {
-        self.compress_tracks_with(rec, finalize_to_flac);
-    }
-
-    fn compress_tracks_with<F>(&self, rec: &mut RecordingRef, mut finalize: F)
-    where
-        F: FnMut(&Path, bool) -> Result<Finalized>,
-    {
-        let keep_wav = api::get_settings(&self.settings_path)
-            .unwrap_or_default()
-            .keep_wav;
-        for stem in [capture::MIC_TRACK, capture::SYSTEM_TRACK] {
-            let wav = rec.dir.join(format!("{stem}.wav"));
-            if !wav.exists() {
-                continue;
-            }
-            match finalize(&wav, keep_wav) {
-                Ok(done) => {
-                    if let Some(kept) = done.wav_kept {
-                        append_capture_note(rec, WAV_KEPT_NOTE);
-                        log::warn!("could not remove {} after verified FLAC", kept.display());
-                    }
-                }
-                Err(e) => log::warn!("keeping {} as wav: {e:#}", wav.display()),
-            }
-        }
-    }
-
     /// One step of the capture loop. The pump thread and
     /// [`Runtime::pump_once`] both call exactly this.
     fn pump_once(&self) -> Result<CaptureState> {
@@ -2248,8 +2286,9 @@ impl Inner {
         }
     }
 
-    /// Closes out the live session: finalize the audio, queue the recording,
-    /// index it, and remember its id. Returns `None` when there was no session
+    /// Closes out the live session: finalize and sync the WAV, atomically mark
+    /// it queued, and remember its id. FLAC, decoding, models, and indexing
+    /// are downstream queue work. Returns `None` when there was no session
     /// — the user's Stop raced the disk guard's, and the other one won.
     fn finish_session(&self) -> Result<Option<String>> {
         // Taken before the session slot: a caller that loses the race waits
@@ -2287,18 +2326,20 @@ impl Inner {
         };
         drop(session);
         if let Some(live) = lock(&self.live_transcript).as_mut() {
-            // The session's sender is gone now, so Finish is ordered after
-            // every packet the recording tee emitted.
+            // The session's sender is gone now. Cancellation is atomic and the
+            // worker handle is detached; Stop never waits for model teardown.
             live.finish();
         }
+        // Capture sources and durable WAV metadata are complete. Automatic
+        // work still cannot run until Queue::enqueue commits `Queued` below.
+        self.idle.set_capture_active(false);
         *lock(&self.last_recording) = Some(id.clone());
 
         let mut rec = self.find(&id)?;
-        self.compress_tracks(&mut rec);
         Queue { store: &self.store }.enqueue(&mut rec)?;
-        // Index it now so a brand-new recording is findable by title
-        // immediately; the transcript follows when processing finishes.
-        self.index_one(&rec)?;
+        // Only wake after the durable queue commit. The post-stop idle gate
+        // will still hold automatic model work for its quiet interval.
+        self.wake_scheduler();
         Ok(Some(id))
     }
 }
@@ -2571,22 +2612,6 @@ fn tier_from_name(name: &str) -> Option<Tier> {
 /// advisory, so recovering the guard beats taking the app down with it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Adds a durable fact about the captured audio without overwriting another
-/// reason a recording deserves attention.
-fn append_capture_note(rec: &mut RecordingRef, note: &str) {
-    match &mut rec.meta.capture_note {
-        Some(existing) if !existing.is_empty() => {
-            if existing.contains(note) {
-                return;
-            }
-            existing.push(' ');
-            existing.push_str(note);
-        }
-        Some(existing) => *existing = note.to_string(),
-        None => rec.meta.capture_note = Some(note.to_string()),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2924,6 +2949,20 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Makes a queued fixture old enough to exercise the ordinary automatic
+    /// scheduler without waiting through the production post-stop quiet
+    /// window. The production path never backdates queue metadata.
+    fn age_queue(rt: &Runtime, id: &str) {
+        let mut rec = rt.inner.find(id).unwrap();
+        rec.meta.queued_at = Some("2020-01-01T00:00:00Z".to_string());
+        rt.inner.store.save_meta(&rec).unwrap();
+        // The production policy also keeps an in-memory monotonic stop time,
+        // which is the stronger source while this process is alive. This test
+        // helper simulates a post-restart/elapsed quiet window, so clear that
+        // clock as well as backdating the durable timestamp.
+        *lock(&rt.inner.idle.last_stop) = None;
+    }
+
     /// Records `secs` of fake audio end to end and returns the recording id.
     fn record(rt: &Runtime, mode: Mode, title: &str) -> String {
         rt.start_capture(mode, title).unwrap();
@@ -2935,12 +2974,10 @@ mod tests {
         rt.stop_capture().unwrap()
     }
 
-    /// Stopping a recording must leave FLAC on disk, not the WAV capture wrote.
-    /// The saving is roughly half the space of every lecture ever recorded, so
-    /// "the call is wired up" is worth pinning: an unwired `compress_tracks`
-    /// leaves a `.wav` here and no test elsewhere would notice.
+    /// Stop returns after the durable capture boundary, not after any model or
+    /// compression work. The WAV is the recoverable source at this point.
     #[test]
-    fn stopping_a_recording_leaves_a_verified_flac_in_place_of_the_wav() {
+    fn stopping_a_recording_leaves_a_durable_wav_and_no_flac_work_on_the_stop_path() {
         let dir = tempfile::tempdir().unwrap();
         let rt = runtime(dir.path(), 0.3);
         let id = record(&rt, Mode::InPerson, "Lecture");
@@ -2948,50 +2985,82 @@ mod tests {
         let rec = rt.inner.find(&id).unwrap();
         let wav = rec.dir.join(format!("{}.wav", capture::MIC_TRACK));
         let flac = rec.dir.join(format!("{}.flac", capture::MIC_TRACK));
-        assert!(flac.exists(), "the mic track should have been compressed");
-        assert!(!wav.exists(), "the wav should have been reclaimed");
-        // And it is still readable audio, not just a file with the right name.
-        let samples = crate::pipeline::audio::load_mono_16k(&flac).unwrap();
+        assert!(wav.exists(), "Stop must retain the recoverable WAV");
+        assert!(!flac.exists(), "compression must not run synchronously on Stop");
+        let samples = crate::pipeline::audio::load_mono_16k(&wav).unwrap();
         assert!(!samples.is_empty());
+        assert_eq!(rec.meta.status, Status::Queued);
+        assert!(rec.meta.queued_at.is_some(), "queue registration is durable");
     }
 
     #[test]
-    fn a_wav_left_after_verified_compression_reaches_the_recordings_capture_note() {
+    fn deferred_compression_publishes_flac_atomically_and_retires_wav_after_verify() {
         let dir = tempfile::tempdir().unwrap();
         let rt = runtime(dir.path(), 0.3);
+        let id = record(&rt, Mode::InPerson, "Lecture");
+        let rec = rt.inner.find(&id).unwrap();
+        let wav = rec.dir.join(format!("{}.wav", capture::MIC_TRACK));
+        let flac = rec.dir.join(format!("{}.flac", capture::MIC_TRACK));
+        assert!(wav.exists());
+        assert!(!flac.exists());
+
+        let compressed = crate::capture::flac::finalize_recording_tracks(
+            &rt.inner.store,
+            &rec,
+            false,
+        )
+        .unwrap();
+        assert_eq!(compressed.meta.compression, crate::storage::CompressionStatus::Complete);
+        assert!(flac.exists());
+        assert!(!wav.exists());
+        assert!(!crate::pipeline::audio::load_mono_16k(&flac)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn compression_failure_keeps_wav_and_records_a_retryable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 0.2);
         let mut rec = rt
             .inner
             .store
             .create_recording("Lecture", Mode::InPerson, chrono::Local::now())
             .unwrap();
         let wav = rec.dir.join(format!("{}.wav", capture::MIC_TRACK));
-        std::fs::write(&wav, b"a placeholder is enough for the injected finalizer").unwrap();
-
-        rt.inner.compress_tracks_with(&mut rec, |path, _| {
-            Ok(crate::capture::flac::Finalized {
-                flac: path.with_extension("flac"),
-                wav_kept: Some(path.to_path_buf()),
-            })
-        });
+        fs::write(&wav, b"not audio").unwrap();
+        rec.meta.status = Status::Queued;
         rt.inner.store.save_meta(&rec).unwrap();
 
-        let detail = rt.get_recording(&rec.meta.id).unwrap();
-        assert!(
-            detail
-                .capture_note
-                .unwrap_or_default()
-                .contains("saved twice"),
-            "a surviving WAV is a fact about the capture, not a hidden log line"
-        );
+        let failed = crate::capture::flac::finalize_recording_tracks(
+            &rt.inner.store,
+            &rec,
+            false,
+        )
+        .unwrap();
+        assert_eq!(failed.meta.compression, crate::storage::CompressionStatus::Failed);
+        assert!(failed.meta.compression_error.is_some());
+        assert!(wav.exists(), "compression failure must preserve the only copy");
+
+        let samples = vec![0.2f32; crate::capture::SAMPLE_RATE as usize / 10];
+        let mut writer = crate::capture::track::TrackWriter::create(&wav).unwrap();
+        writer.write(&samples).unwrap();
+        writer.finalize().unwrap();
+        let retried = rt.inner.find(&rec.meta.id).unwrap();
+        let complete = crate::capture::flac::finalize_recording_tracks(
+            &rt.inner.store,
+            &retried,
+            false,
+        )
+        .unwrap();
+        assert_eq!(complete.meta.compression, crate::storage::CompressionStatus::Complete);
+        assert!(rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
+        assert!(!wav.exists());
     }
 
-    /// When `stop_capture` returns an id, that recording must be *ready* —
-    /// queued, indexed, and its audio finished being rewritten.
-    ///
-    /// The pump thread and the user's Stop both close a session out, and the
-    /// loser used to return as soon as it found the session slot empty, while
-    /// the winner was still re-encoding the audio. The UI would then refresh
-    /// its list on a recording that was not in the queue yet.
+    /// When `stop_capture` returns an id, the recording must be queued and its
+    /// audio/header must already be durable, while downstream work remains
+    /// retryable.
     #[test]
     fn stop_capture_returns_only_once_the_recording_is_actually_ready() {
         let dir = tempfile::tempdir().unwrap();
@@ -3002,15 +3071,12 @@ mod tests {
         // must already be true.
         assert_eq!(status_of(&rt, &id), Status::Queued);
         let rec = rt.inner.find(&id).unwrap();
-        assert!(rec
-            .dir
-            .join(format!("{}.flac", capture::MIC_TRACK))
-            .exists());
-        assert!(!rec.dir.join(format!("{}.wav", capture::MIC_TRACK)).exists());
+        assert!(rec.dir.join(format!("{}.wav", capture::MIC_TRACK)).exists());
+        assert!(!rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
+        assert!(rec.meta.queued_at.is_some());
     }
 
-    /// The same, with `keep_wav` on: both files survive. This is the setting a
-    /// user turns on when they want the uncompressed master.
+    /// The same, with `keep_wav` on: deferred compression keeps both files.
     #[test]
     fn keep_wav_keeps_both_copies_of_a_finished_recording() {
         let dir = tempfile::tempdir().unwrap();
@@ -3021,11 +3087,15 @@ mod tests {
 
         let id = record(&rt, Mode::InPerson, "Lecture");
         let rec = rt.inner.find(&id).unwrap();
+        let compressed = crate::capture::flac::finalize_recording_tracks(
+            &rt.inner.store,
+            &rec,
+            true,
+        )
+        .unwrap();
+        assert_eq!(compressed.meta.compression, crate::storage::CompressionStatus::Complete);
         assert!(rec.dir.join(format!("{}.wav", capture::MIC_TRACK)).exists());
-        assert!(rec
-            .dir
-            .join(format!("{}.flac", capture::MIC_TRACK))
-            .exists());
+        assert!(rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
     }
 
     /// Start-up must repair a recording whose writer died mid-capture. The
@@ -3037,22 +3107,21 @@ mod tests {
         let rt = runtime(dir.path(), 0.3);
         let id = record(&rt, Mode::InPerson, "Lecture");
 
-        // Undo the finalize so the recording looks mid-capture again: a lone
-        // wav, no flac, status Recorded.
+        // Undo the queue commit so the recording looks mid-capture again: a
+        // lone wav, no flac, status Recorded.
         let rec = rt.inner.find(&id).unwrap();
-        let flac = rec.dir.join(format!("{}.flac", capture::MIC_TRACK));
         let wav = rec.dir.join(format!("{}.wav", capture::MIC_TRACK));
-        let samples = crate::pipeline::audio::load_mono_16k(&flac).unwrap();
+        let samples = crate::pipeline::audio::load_mono_16k(&wav).unwrap();
         write_wav_with_short_header(&wav, &samples);
-        fs::remove_file(&flac).unwrap();
         let mut rec = rt.inner.find(&id).unwrap();
         rec.meta.status = Status::Recorded;
         rt.inner.store.save_meta(&rec).unwrap();
 
         let started = rt.start_up().unwrap();
         assert_eq!(started.recovered, 1, "the interrupted recording");
-        assert!(flac.exists(), "recovery should have finalized it");
-        let recovered = crate::pipeline::audio::load_mono_16k(&flac).unwrap();
+        assert!(wav.exists(), "recovery must preserve the WAV source");
+        assert!(!rec.dir.join(format!("{}.flac", capture::MIC_TRACK)).exists());
+        let recovered = crate::pipeline::audio::load_mono_16k(&wav).unwrap();
         assert_eq!(
             recovered.len(),
             samples.len(),
@@ -3119,6 +3188,7 @@ mod tests {
             "nothing is transcribed yet, so the word cannot be findable"
         );
 
+        rt.process_now(&id).unwrap();
         let outcome = rt
             .tick_once(models("we covered photosynthesis today"))
             .unwrap();
@@ -3145,6 +3215,7 @@ mod tests {
         use_llm(&rt, &server.base_url());
 
         let id = record(&rt, Mode::InPerson, "Untitled");
+        rt.process_now(&id).unwrap();
         rt.tick_once(models("the quarterly amortisation schedule"))
             .unwrap();
 
@@ -3178,6 +3249,7 @@ mod tests {
             "a meeting must capture the other side of the call"
         );
 
+        rt.process_now(&id).unwrap();
         assert_eq!(rt.tick_once(models("hello")).unwrap(), RunOutcome::Ran);
         assert_eq!(status_of(&rt, &id), Status::Ready);
     }
@@ -3196,6 +3268,7 @@ mod tests {
         use_llm(&rt, "http://127.0.0.1:1");
 
         let id = record(&rt, Mode::InPerson, "Lecture");
+        age_queue(&rt, &id);
         rt.start_scheduler(models("hello")).unwrap();
 
         // The loop ticks once on entry, fails, and parks for thirty seconds.
@@ -3218,6 +3291,7 @@ mod tests {
         use_llm(&rt, &server.base_url());
 
         let id = record(&rt, Mode::InPerson, "Lecture");
+        age_queue(&rt, &id);
         rt.start_scheduler(models("mitochondria are the powerhouse"))
             .unwrap();
 
@@ -3307,6 +3381,7 @@ mod tests {
         let server = fake_llm();
         use_llm(&rt, &server.base_url());
         let id = record(&rt, Mode::InPerson, "Budget review");
+        rt.process_now(&id).unwrap();
         rt.tick_once(models("the numbers are fine")).unwrap();
 
         // Close the first runtime before touching its files. Windows refuses to
@@ -3383,6 +3458,7 @@ mod tests {
 
         settings.require_ac = false;
         rt.set_settings(&settings).unwrap();
+        rt.process_now(&id).unwrap();
         assert_eq!(rt.tick_once(models("hello")).unwrap(), RunOutcome::Ran);
         assert_eq!(status_of(&rt, &id), Status::Ready);
     }
@@ -3422,8 +3498,51 @@ mod tests {
         assert_eq!(rt.capture_status().state, CaptureState::Idle);
     }
 
-    /// Review finding 2. Closing a recording out — finalize, FLAC-encode both
-    /// tracks, queue, index — takes real time, and `capture_status` used to
+    #[test]
+    fn default_capture_does_not_create_a_live_transcription_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime(dir.path(), 600.0);
+
+        rt.start_capture(Mode::InPerson, "Lecture").unwrap();
+        assert!(
+            lock(&rt.inner.live_transcript).is_none(),
+            "the default recording path must not create a live worker"
+        );
+        assert_eq!(rt.live_transcript_stats().dropped_packets, 0);
+        rt.stop_capture().unwrap();
+    }
+
+    #[test]
+    fn automatic_processing_waits_after_stop_but_manual_process_now_bypasses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let policy = LivePolicy::new(Box::new(crate::queue::AlwaysIdle));
+        let queue = Queue { store: &store };
+        let mut rec = store
+            .create_recording("Lecture", Mode::InPerson, chrono::Local::now())
+            .unwrap();
+        queue.enqueue(&mut rec).unwrap();
+
+        policy.set_capture_active(true);
+        assert!(!policy.ok_to_run_for(&rec));
+        policy.set_capture_active(false);
+        assert!(!policy.ok_to_run_for(&rec));
+        assert_eq!(
+            queue.run_one(&policy, |_| Ok(())).unwrap(),
+            RunOutcome::NotIdle
+        );
+
+        let mut manual = store.reload(&rec).unwrap();
+        manual.meta.manual_processing = true;
+        store.save_meta(&manual).unwrap();
+        assert_eq!(
+            queue.run_one(&policy, |_| Ok(())).unwrap(),
+            RunOutcome::Ran
+        );
+    }
+
+    /// Review finding 2. Closing a recording out — finalize WAV headers, sync,
+    /// atomically queue — takes time, and `capture_status` used to
     /// answer "idle" for all of it. The record bar therefore re-armed while
     /// the library still had nothing new in it, and on an auto-stop (disk
     /// guard, dead mic) that is the only signal the UI gets.
@@ -3626,14 +3745,16 @@ mod tests {
     }
 
     #[test]
-    fn a_new_recording_is_findable_by_title_before_it_is_processed() {
+    fn a_new_recording_is_not_indexed_before_it_is_processed() {
         let dir = tempfile::tempdir().unwrap();
         let rt = runtime(dir.path(), 0.2);
 
         let id = record(&rt, Mode::InPerson, "Thermodynamics");
         let hits = rt.search("Thermodynamics").unwrap();
-        assert_eq!(hits.len(), 1, "got {hits:?}");
-        assert_eq!(hits[0].id, id);
+        assert!(
+            !hits.iter().any(|hit| hit.id == id),
+            "indexing is downstream of the durable queue: got {hits:?}"
+        );
     }
 
     // --- library commands -------------------------------------------------
@@ -3676,6 +3797,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rt = runtime(dir.path(), 0.2);
         let id = record(&rt, Mode::InPerson, "Lecture");
+        let before = rt.inner.find(&id).unwrap().dir;
 
         // What matters is that it is refused and nothing on disk moved — the
         // storage layer owns the wording, and asserting on its exact sentence
@@ -3687,8 +3809,11 @@ mod tests {
             "the refusal must be about the title: {message}"
         );
         assert_eq!(rt.get_recording(&id).unwrap().title, "Lecture");
-        // And search still points at the untouched folder.
-        assert_eq!(rt.search("Lecture").unwrap().len(), 1);
+        assert_eq!(
+            rt.inner.find(&id).unwrap().dir,
+            before,
+            "the rejected rename must not move the recording folder"
+        );
     }
 
     /// Review finding 1. Renaming moves the recording's folder, and a live
@@ -3834,6 +3959,7 @@ mod tests {
         use_llm(&rt, &server.base_url());
 
         let id = record(&rt, Mode::InPerson, "Lecture");
+        rt.process_now(&id).unwrap();
         rt.tick_once(models("hello")).unwrap();
         assert_eq!(status_of(&rt, &id), Status::Ready);
 
@@ -4153,6 +4279,8 @@ mod tests {
         // The infallible ones, plus the capture lifecycle.
         let _ = rt.capture_status();
         let _ = rt.capture_levels();
+        let _ = rt.live_transcript();
+        let _ = rt.live_transcript_stats();
         let _ = rt.pull_progress();
         let _ = rt.find_existing_models_from(&[]);
         let _ = rt.detected_tier();
@@ -4219,11 +4347,12 @@ mod tests {
         // capture_status, pull_progress, detected_tier, log_path,
         // list_templates, ask_recording, setup_status, pause, resume, start,
         // stop, find_existing_models, capture_levels, live_transcript,
+        // live_transcript_stats,
         // start_live_ask, poll_live_ask, the five dictation commands,
         // add_highlight, and the remaining infallible status calls —
-        // twenty-three not in the list above.
+        // twenty-four not in the list above.
         assert_eq!(
-            called.len() + 23,
+            called.len() + 24,
             COMMANDS.len(),
             "every command in COMMANDS must be exercised here; called {called:?}"
         );

@@ -18,6 +18,7 @@ import { invoke } from "./transport";
 
 export type Status = "recorded" | "queued" | "processing" | "ready" | "failed";
 export type Mode = "meeting" | "in_person";
+export type CompressionStatus = "pending" | "complete" | "failed";
 
 export interface RecordingRow {
   id: string;
@@ -51,6 +52,9 @@ export interface RecordingRow {
    * because the disk filled up."
    */
   captureNote: string | null;
+  /** Whether the derived FLAC is verified; capture remains durable if it is pending/failed. */
+  compressionStatus?: CompressionStatus;
+  compressionError?: string | null;
   /** True only in the Archive view; archived recordings are not searched. */
   archived?: boolean;
 }
@@ -158,6 +162,8 @@ export interface Settings {
   requireAc: boolean;
   /** Keep the intermediate WAV after the lossless FLAC finalize. */
   keepWav: boolean;
+  /** Opt-in live speech recognition while recording; false keeps capture model-free. */
+  liveTranscriptionDuringRecording: boolean;
   /**
    * The languages spoken in this user's recordings, as ISO-639-1 codes.
    * First run asks; this is the answer, and it decides which speech models
@@ -209,6 +215,10 @@ export interface Settings {
   overlayStyle: OverlayStyle;
   /** Ask the OS to exclude the overlay from capture where supported. */
   overlayHideFromShare: boolean;
+  /** Preferred desktop library rail width in CSS pixels. Optional for old shells. */
+  libraryPaneWidth?: number;
+  /** Preferred desktop Ask rail width in CSS pixels. Optional for old shells. */
+  askPaneWidth?: number;
 }
 
 export type SpeechEngine = "auto" | "whisper" | "senseVoice";
@@ -320,6 +330,13 @@ export interface LiveTranscriptEvent {
   text: string;
   isPartial: boolean;
   isFinal: boolean;
+}
+
+/** Live-only backpressure counters; dropped packets never affect the WAV. */
+export interface LiveTranscriptStats {
+  droppedPackets: number;
+  droppedEvents: number;
+  queueCapacity: number;
 }
 
 /** One incremental local-Ollama Ask update for the expanded overlay. */
@@ -478,12 +495,13 @@ export const api = {
     invoke<CaptureStatus>("start_capture", { mode, title }),
   pauseCapture: () => invoke<CaptureStatus>("pause_capture"),
   resumeCapture: () => invoke<CaptureStatus>("resume_capture"),
-  /** Stops, finalizes to FLAC, and queues the recording. Returns its id. */
+  /** Stops, durably saves WAV/metadata, and queues downstream work. Returns its id. */
   stopCapture: () => invoke<string>("stop_capture"),
   captureStatus: () => invoke<CaptureStatus>("capture_status"),
   captureLevels: () => invoke<CaptureLevels>("capture_levels"),
   /** Drains transcript updates produced by the read-only capture tee. */
   liveTranscript: () => invoke<LiveTranscriptEvent[]>("live_transcript"),
+  liveTranscriptStats: () => invoke<LiveTranscriptStats>("live_transcript_stats"),
   startDictation: () => invoke<DictationStatus>("start_dictation"),
   stopDictation: () => invoke<DictationStatus>("stop_dictation"),
   cancelDictation: () => invoke<DictationStatus>("cancel_dictation"),

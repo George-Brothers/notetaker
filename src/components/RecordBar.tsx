@@ -123,57 +123,59 @@ export function RecordBar({ status, onStart, onPause, onResume, onStop }: Record
 
   if (idle || finishing) {
     return (
-      <div className="flex items-center gap-2">
-        <Button variant="primary" size="md" onClick={() => start(mode)} disabled={!idle}>
-          <Circle size={13} fill="currentColor" />
-          Record
-        </Button>
+      <div className="record-bar record-bar--idle flex flex-wrap items-center gap-2">
+        <div className="record-bar__main">
+          <Button variant="primary" size="md" onClick={() => start(mode)} disabled={!idle}>
+            <Circle size={13} fill="currentColor" />
+            Record
+          </Button>
 
-        <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-          <PopoverTrigger asChild>
-            <Button
-              variant="secondary"
-              size="icon"
-              disabled={!idle}
-              aria-label="Choose what to record"
-            >
-              <ChevronDown size={14} />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-64">
-            <fieldset>
-              <legend className="sr-only">Recording mode</legend>
-              {MODES.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => start(m)}
-                  className="flex w-full items-start gap-2.5 rounded-[var(--radius-control)] px-2 py-2 text-left transition-colors hover:bg-hover"
-                >
-                  <span className="mt-0.5 shrink-0 text-fg-faint">{MODE_COPY[m].icon}</span>
-                  <span className="flex flex-col">
-                    <span className="text-[13px] font-medium text-fg">{MODE_COPY[m].label}</span>
-                    <span className="text-[12px] leading-snug text-fg-muted">
-                      {MODE_COPY[m].hint}
+          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="secondary"
+                size="icon"
+                disabled={!idle}
+                aria-label="Choose what to record"
+              >
+                <ChevronDown size={14} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64">
+              <fieldset>
+                <legend className="sr-only">Recording mode</legend>
+                {MODES.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => start(m)}
+                    className="flex w-full items-start gap-2.5 rounded-[var(--radius-control)] px-2 py-2 text-left transition-colors hover:bg-hover"
+                  >
+                    <span className="mt-0.5 shrink-0 text-fg-faint">{MODE_COPY[m].icon}</span>
+                    <span className="flex flex-col">
+                      <span className="text-[13px] font-medium text-fg">{MODE_COPY[m].label}</span>
+                      <span className="text-[12px] leading-snug text-fg-muted">
+                        {MODE_COPY[m].hint}
+                      </span>
                     </span>
-                  </span>
-                </button>
-              ))}
-            </fieldset>
-          </PopoverContent>
-        </Popover>
+                  </button>
+                ))}
+              </fieldset>
+            </PopoverContent>
+          </Popover>
 
-        {finishing && (
-          <span role="status" className="text-[12px] text-fg-muted">
-            Saving your recording — it appears in the library in a moment.
-          </span>
-        )}
+          {finishing && (
+            <span role="status" className="record-bar__status text-[12px] text-fg-muted">
+              Saving your recording — it appears in the library in a moment.
+            </span>
+          )}
+        </div>
 
         {/* Shown while idle too, not only mid-recording: the useful moment to
             learn the disk is nearly full is before a two-hour lecture, not
             ninety minutes into one. */}
         {status.diskFreeMb < LOW_DISK_MB && (
-          <span role="status" className="text-[12px] text-warn">
+          <span role="status" className="record-bar__warning text-[12px]">
             Low on disk space — free up room so this recording isn't cut short.
           </span>
         )}
@@ -184,62 +186,64 @@ export function RecordBar({ status, onStart, onPause, onResume, onStop }: Record
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-full border px-2 py-1",
+        "record-bar record-bar--live flex flex-wrap items-center gap-3 rounded-full border px-2 py-1",
         paused ? "border-border bg-sunken" : "border-recording/30 bg-recording-soft",
       )}
     >
-      <span className="flex items-center gap-1.5 pl-1">
-        <span
-          aria-hidden
-          className={cn(
-            "h-2 w-2 rounded-full",
-            paused ? "bg-fg-faint" : "animate-pulse bg-recording",
-          )}
-        />
-        <span
-          className={cn("text-[12px] font-medium", paused ? "text-fg-muted" : "text-recording")}
-        >
-          {stateLabel(status.state)}
+      <div className="record-bar__main">
+        <span className="flex items-center gap-1.5 pl-1">
+          <span
+            aria-hidden
+            className={cn(
+              "h-2 w-2 rounded-full",
+              paused ? "bg-fg-faint" : "animate-pulse bg-recording",
+            )}
+          />
+          <span
+            className={cn("text-[12px] font-medium", paused ? "text-fg-muted" : "text-recording")}
+          >
+            {stateLabel(status.state)}
+          </span>
         </span>
-      </span>
 
-      <span
-        aria-label="Elapsed recording time"
-        className="font-mono text-[13px] tabular-nums text-fg"
-      >
-        {duration(status.elapsedS)}
-      </span>
+        <span
+          aria-label="Elapsed recording time"
+          className="font-mono text-[13px] tabular-nums text-fg"
+        >
+          {duration(status.elapsedS)}
+        </span>
+
+        <span className="flex items-center gap-0.5">
+          <IconButton
+            label={paused ? "Resume" : "Pause"}
+            onClick={paused ? onResume : onPause}
+            disabled={!capturing}
+          >
+            {paused ? <Play size={14} /> : <Pause size={14} />}
+          </IconButton>
+          <Tip label="Stop and save">
+            <Button variant="danger" size="sm" onClick={onStop} className="rounded-full">
+              <Square size={11} fill="currentColor" />
+              Stop
+            </Button>
+          </Tip>
+        </span>
+      </div>
 
       {/* Meters only while a session is live. A meter pinned at zero because
           nothing is being captured reads as "your microphone is dead", which is
           the one thing it must never say by accident. `status.mode` drives the
           system meter rather than the picker's local state: what matters is
           what the running session is actually capturing. */}
-      <span className="hidden items-center gap-2.5 sm:flex">
+      <div className="record-bar__meters">
         <LevelMeter label="Microphone" short="Mic" level={status.micLevel} />
         {status.mode === "meeting" && (
           <LevelMeter label="System audio" short="Call" level={status.systemLevel} />
         )}
-      </span>
-
-      <span className="flex items-center gap-0.5">
-        <IconButton
-          label={paused ? "Resume" : "Pause"}
-          onClick={paused ? onResume : onPause}
-          disabled={!capturing}
-        >
-          {paused ? <Play size={14} /> : <Pause size={14} />}
-        </IconButton>
-        <Tip label="Stop and save">
-          <Button variant="danger" size="sm" onClick={onStop} className="rounded-full">
-            <Square size={11} fill="currentColor" />
-            Stop
-          </Button>
-        </Tip>
-      </span>
+      </div>
 
       {status.diskFreeMb < LOW_DISK_MB && (
-        <span role="status" className="text-[12px] text-warn">
+        <span role="status" className="record-bar__warning text-[12px]">
           Low on disk space — free up room so this recording isn't cut short.
         </span>
       )}

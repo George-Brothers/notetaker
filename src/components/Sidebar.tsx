@@ -237,8 +237,8 @@ export function Sidebar({
     <nav
       aria-label="Library"
       className={cn(
-        "h-full shrink-0 flex-col border-r border-border bg-app",
-        className ?? "flex w-[264px]",
+        "h-full min-w-0 min-h-0 flex-col bg-app",
+        className ?? "flex",
       )}
     >
       <div className="flex flex-col gap-1.5 px-3 pb-2 pt-3">

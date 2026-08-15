@@ -15,7 +15,8 @@
 //! loop hidden inside a thread: the app owns the cadence, and every test here
 //! drives capture one step at a time with no sleeping and no timing luck.
 
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc::{SyncSender, TrySendError}, Arc};
 
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -52,11 +53,53 @@ pub struct CapturedSamples {
     pub samples: Vec<f32>,
 }
 
-/// Message sent to a live consumer. `Finish` lets the consumer flush its last
-/// VAD chunk before the recording is considered fully closed.
+/// Message sent to a live consumer. `Finish` is available to graceful test or
+/// future producers; the runtime's Stop path uses atomic cancellation instead
+/// so it never waits for a model worker to flush.
 pub enum LiveSample {
     Samples(CapturedSamples),
     Finish,
+}
+
+/// The capture-side end of the opt-in live pipeline. It is deliberately a
+/// bounded, try-send-only queue: model inference may lag or be cancelled, but
+/// microphone writes must never wait for it.
+#[derive(Clone)]
+pub struct LiveSampleSender {
+    sender: SyncSender<LiveSample>,
+    dropped_packets: Arc<AtomicU64>,
+}
+
+impl LiveSampleSender {
+    pub(crate) fn new(
+        sender: SyncSender<LiveSample>,
+        dropped_packets: Arc<AtomicU64>,
+    ) -> LiveSampleSender {
+        LiveSampleSender {
+            sender,
+            dropped_packets,
+        }
+    }
+
+    /// Attempts to hand one packet to live transcription without ever
+    /// blocking the capture thread.
+    pub fn try_send(&self, sample: LiveSample) -> bool {
+        match self.sender.try_send(sample) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                let dropped = self.dropped_packets.fetch_add(1, Ordering::Relaxed) + 1;
+                if dropped == 1 || dropped.is_power_of_two() {
+                    log::warn!("live transcription is behind; dropped {dropped} live packets");
+                }
+                false
+            }
+            Err(TrySendError::Disconnected(_)) => false,
+        }
+    }
+
+    pub fn dropped_packets(&self) -> u64 {
+        self.dropped_packets.load(Ordering::Relaxed)
+    }
 }
 
 /// A live recording: one or two audio sources, their files, and the rules for
@@ -82,9 +125,10 @@ pub struct Session {
     /// state so a stop whose save failed can be retried without closing the
     /// tracks — or releasing the devices — a second time.
     saved: bool,
-    /// Optional read-only tee. Sending is unbounded and only clones the
-    /// samples; a slow recognizer can never back-pressure capture.
-    live_tee: Option<Sender<LiveSample>>,
+    /// Optional read-only tee. It is bounded and try-send-only; a slow
+    /// recognizer can lose live-only packets but can never back-pressure the
+    /// durable capture writer.
+    live_tee: Option<LiveSampleSender>,
 }
 
 impl Session {
@@ -121,7 +165,7 @@ impl Session {
         mic_source: Box<dyn AudioSource>,
         system_source: Option<Box<dyn AudioSource>>,
         disk: Box<dyn DiskSpace>,
-        live_tee: Option<Sender<LiveSample>>,
+        live_tee: Option<LiveSampleSender>,
     ) -> Result<Session> {
         // Validate before creating anything, so a bad call leaves no empty
         // folder behind for the recovery sweep to puzzle over.
@@ -338,7 +382,7 @@ fn drain(
     capturing: bool,
     buf: &mut Vec<f32>,
     notes: &mut Vec<String>,
-    live_tee: Option<&Sender<LiveSample>>,
+    live_tee: Option<&LiveSampleSender>,
 ) {
     if ch.done {
         return;
@@ -361,10 +405,9 @@ fn drain(
     // resume as if it had been recorded.
     if capturing && !buf.is_empty() {
         if let Some(tee) = live_tee {
-            // `send` is to an unbounded channel. It cannot wait for model
-            // inference, and the writer still receives the original `buf`
-            // unchanged below.
-            let _ = tee.send(LiveSample::Samples(CapturedSamples {
+            // `try_send` cannot wait for model inference, and the writer still
+            // receives the original `buf` unchanged below.
+            let _ = tee.try_send(LiveSample::Samples(CapturedSamples {
                 track,
                 samples: buf.clone(),
             }));
@@ -523,7 +566,13 @@ mod tests {
             let samples: Vec<f32> = (0..(SAMPLE_RATE as usize / 2))
                 .map(|i| ((i % 97) as f32 - 48.0) / 100.0)
                 .collect();
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::sync_channel(256);
+            let live_tee = tee.then(|| {
+                LiveSampleSender::new(
+                    tx,
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                )
+            });
             let mut session = Session::start_with_tee(
                 &store,
                 Mode::InPerson,
@@ -531,7 +580,7 @@ mod tests {
                 Box::new(FakeSource::from_samples("microphone", samples, 137)),
                 None,
                 healthy_disk(),
-                tee.then_some(tx),
+                live_tee,
             )
             .unwrap();
             let path = session.recording().dir.join("audio-mic.wav");

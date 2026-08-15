@@ -69,3 +69,4 @@ whisper-rs = { version = "0.16.0", features = ["metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 cpal = "0.16.0"
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }

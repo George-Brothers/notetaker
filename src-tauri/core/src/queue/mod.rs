@@ -7,7 +7,7 @@
 //! `Processing` status on disk, and a later startup sweep can requeue it.
 
 use anyhow::Result;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::storage::{RecordingRef, Status, Store};
 
@@ -17,6 +17,13 @@ use crate::storage::{RecordingRef, Status, Store};
 /// Linux/tests.
 pub trait IdleSource: Send + Sync {
     fn ok_to_run(&self) -> bool;
+
+    /// A queued recording can have an additional quiet window after Stop.
+    /// Implementations that do not need that distinction inherit the normal
+    /// idle decision.
+    fn ok_to_run_for(&self, _recording: &RecordingRef) -> bool {
+        self.ok_to_run()
+    }
 }
 
 /// Reports idle unconditionally. Used on Linux (no idle-time API) and in
@@ -73,6 +80,7 @@ impl<'a> Queue<'a> {
                 // would leave the user with a 20-minute file of a 40-minute
                 // class and no explanation.
                 rec.meta.error = None;
+                rec.meta.queued_at = Some(Utc::now().to_rfc3339());
                 self.store.save_meta(rec)?;
             }
             Status::Queued | Status::Processing | Status::Ready => {}
@@ -112,7 +120,7 @@ impl<'a> Queue<'a> {
 
         // Idle and wall-power limits govern background work. They do not
         // override a person who explicitly asked to process this recording.
-        if !rec.meta.manual_processing && !idle.ok_to_run() {
+        if !rec.meta.manual_processing && !idle.ok_to_run_for(&rec) {
             return Ok(RunOutcome::NotIdle);
         }
 

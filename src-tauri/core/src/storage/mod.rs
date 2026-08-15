@@ -3,7 +3,8 @@
 //! task, at which point they move to `<root>/Tasks/<task>/`.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -29,6 +30,18 @@ pub enum Status {
     Queued,
     Processing,
     Ready,
+    Failed,
+}
+
+/// Compression is downstream of capture. A pending/failed value never makes
+/// the recording or its WAV disposable; it only tells the queue whether there
+/// is derived work left to retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionStatus {
+    #[default]
+    Pending,
+    Complete,
     Failed,
 }
 
@@ -79,6 +92,17 @@ pub struct Meta {
     /// not sit queued behind that policy while the user is using the app.
     #[serde(default)]
     pub manual_processing: bool,
+    /// The durable commit time for downstream work. Older recordings have no
+    /// value and remain eligible under the pre-queue behavior.
+    #[serde(default)]
+    pub queued_at: Option<String>,
+    /// Whether the derived FLAC copy has been verified. The WAV remains the
+    /// recovery source until verification succeeds.
+    #[serde(default)]
+    pub compression: CompressionStatus,
+    /// A compression failure is retryable and distinct from a pipeline error.
+    #[serde(default)]
+    pub compression_error: Option<String>,
 }
 
 /// How long one pipeline stage took, for diagnostics.
@@ -162,6 +186,9 @@ impl Store {
             capture_note: None,
             template: None,
             manual_processing: false,
+            queued_at: None,
+            compression: CompressionStatus::Pending,
+            compression_error: None,
         };
 
         let rec = RecordingRef {
@@ -178,7 +205,8 @@ impl Store {
     pub fn save_meta(&self, rec: &RecordingRef) -> Result<()> {
         let path = rec.dir.join(META_FILE);
         let json = serde_json::to_string_pretty(&rec.meta)?;
-        fs::write(&path, json).with_context(|| format!("writing {}", path.display()))
+        atomic_write(&path, json.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))
     }
 
     /// Walks `Tasks/*/*` and `Unsorted/*`, parsing every `meta.json` found.
@@ -352,6 +380,116 @@ impl Store {
         load_ref(&rec.dir, rec.task.clone(), rec.archived)
     }
 }
+
+/// Replaces one file without exposing a partially written JSON document to a
+/// crash, another process, or the next startup scan. The temporary file lives
+/// beside its destination so `rename` is atomic on the recording volume.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("file"));
+    let temporary = parent.join(format!(".{file_name}.tmp-{}", uuid::Uuid::new_v4()));
+
+    let write_result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .with_context(|| format!("creating {}", temporary.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", temporary.display()))?;
+        replace_atomically(&temporary, path)?;
+        sync_directory(parent);
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result
+}
+
+/// Replaces the destination atomically on the filesystems this app supports.
+/// Windows' ordinary `rename` refuses an existing destination, so use the
+/// replace-existing, write-through Win32 primitive there instead.
+#[cfg(unix)]
+pub(crate) fn replace_atomically(temporary: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temporary, destination).with_context(|| {
+        format!(
+            "atomically replacing {} with {}",
+            destination.display(),
+            temporary.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn replace_atomically(temporary: &Path, destination: &Path) -> Result<()> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let temporary_w: Vec<u16> = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+    let destination_w: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+    let result = unsafe {
+        MoveFileExW(
+            temporary_w.as_ptr(),
+            destination_w.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "atomically replacing {} with {}",
+                destination.display(),
+                temporary.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn replace_atomically(temporary: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temporary, destination).with_context(|| {
+        format!(
+            "atomically replacing {} with {}",
+            destination.display(),
+            temporary.display()
+        )
+    })
+}
+
+/// A directory sync is meaningful on Unix filesystems. Windows does not let
+/// ordinary file handles open directories, so this becomes a no-op there.
+#[cfg(unix)]
+fn sync_directory(path: &Path) {
+    if let Err(error) = File::open(path).and_then(|directory| directory.sync_all()) {
+        log::warn!("could not sync directory {}: {error}", path.display());
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) {}
 
 /// Validates a user-supplied task name and returns a filesystem-safe form.
 /// Rejects names that would escape or restructure the `Tasks/` tree — the
@@ -721,6 +859,41 @@ mod tests {
         assert_eq!(all[0].meta.duration_s, 12.5);
         assert_eq!(all[0].meta.capture_note, None);
         assert!(all[0].meta.stages.is_empty());
+        assert_eq!(all[0].meta.queued_at, None);
+        assert_eq!(all[0].meta.compression, CompressionStatus::Pending);
+        assert_eq!(all[0].meta.compression_error, None);
+    }
+
+    #[test]
+    fn meta_save_publishes_a_complete_document_without_temp_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::new(dir.path());
+        let created = chrono::Local
+            .with_ymd_and_hms(2026, 8, 4, 10, 2, 0)
+            .unwrap();
+        let mut rec = s
+            .create_recording("Lecture", Mode::InPerson, created)
+            .unwrap();
+        rec.meta.status = Status::Queued;
+        rec.meta.queued_at = Some("2026-08-04T15:02:00Z".to_string());
+        s.save_meta(&rec).unwrap();
+
+        let reloaded = s.reload(&rec).unwrap();
+        assert_eq!(reloaded.meta.status, Status::Queued);
+        assert_eq!(
+            reloaded.meta.queued_at.as_deref(),
+            Some("2026-08-04T15:02:00Z")
+        );
+        assert!(
+            fs::read_dir(&rec.dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".meta.json.tmp-")),
+            "atomic metadata saves must not leave replacement temps behind"
+        );
     }
 
     #[test]

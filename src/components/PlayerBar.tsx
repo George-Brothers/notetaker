@@ -53,11 +53,11 @@ export interface PlayerBarProps {
 }
 
 const SHELL =
-  "mt-3 flex flex-wrap items-center gap-2 rounded-[var(--radius-card)] border border-border bg-raised px-3 py-2";
+  "player-bar mt-3 flex flex-wrap items-center gap-2 rounded-[var(--radius-card)] border border-border bg-raised px-3 py-2";
 
 function Minimise({ onCollapse }: { onCollapse: () => void }) {
   return (
-    <IconButton label="Minimise the player" onClick={onCollapse} className="ml-auto shrink-0">
+    <IconButton label="Minimise the player" onClick={onCollapse} className="shrink-0">
       <ChevronDown size={15} />
     </IconButton>
   );
@@ -119,98 +119,104 @@ export function PlayerBar({
 
   return (
     <div className={SHELL} role="group" aria-label="Playback" onKeyDown={onKeyDown}>
-      <IconButton label="Back to the start" onClick={() => audio.seek(0)}>
-        <SkipBack size={15} />
-      </IconButton>
-      <IconButton label={`Back ${SKIP_SECONDS} seconds`} onClick={() => audio.skip(-SKIP_SECONDS)}>
-        <RotateCcw size={15} />
-      </IconButton>
-      <Button
-        variant="primary"
-        size="icon"
-        onClick={audio.toggle}
-        aria-label={audio.playing ? "Pause" : "Play"}
-      >
-        {audio.playing ? <Pause size={15} /> : <Play size={15} />}
-      </Button>
-      <IconButton
-        label={`Forward ${SKIP_SECONDS} seconds`}
-        onClick={() => audio.skip(SKIP_SECONDS)}
-      >
-        <RotateCw size={15} />
-      </IconButton>
+      <div className="player-bar__transport">
+        <IconButton label="Back to the start" onClick={() => audio.seek(0)}>
+          <SkipBack size={15} />
+        </IconButton>
+        <IconButton label={`Back ${SKIP_SECONDS} seconds`} onClick={() => audio.skip(-SKIP_SECONDS)}>
+          <RotateCcw size={15} />
+        </IconButton>
+        <Button
+          variant="primary"
+          size="icon"
+          onClick={audio.toggle}
+          aria-label={audio.playing ? "Pause" : "Play"}
+        >
+          {audio.playing ? <Pause size={15} /> : <Play size={15} />}
+        </Button>
+        <IconButton
+          label={`Forward ${SKIP_SECONDS} seconds`}
+          onClick={() => audio.skip(SKIP_SECONDS)}
+        >
+          <RotateCw size={15} />
+        </IconButton>
+      </div>
 
-      <input
-        type="range"
-        min={0}
-        max={Math.max(1, durationS)}
-        step={0.5}
-        value={Math.min(audio.currentTime, Math.max(1, durationS))}
-        onChange={(e) => audio.seek(Number(e.target.value))}
-        aria-label="Position in the recording"
-        className="h-1 min-w-[8rem] flex-1 cursor-pointer appearance-none rounded-full bg-sunken accent-[var(--c-accent)]"
-      />
+      <div className="player-bar__timeline">
+        <input
+          type="range"
+          min={0}
+          max={Math.max(1, durationS)}
+          step={0.5}
+          value={Math.min(audio.currentTime, Math.max(1, durationS))}
+          onChange={(e) => audio.seek(Number(e.target.value))}
+          aria-label="Position in the recording"
+          className="h-1 cursor-pointer appearance-none rounded-full bg-sunken accent-[var(--c-accent)]"
+        />
 
-      <span className="shrink-0 font-mono text-[12px] tabular-nums text-fg-muted">
-        {duration(audio.currentTime)} / {duration(durationS)}
-      </span>
+        <span className="shrink-0 font-mono text-[12px] tabular-nums text-fg-muted">
+          {duration(audio.currentTime)} / {duration(durationS)}
+        </span>
+      </div>
 
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button size="sm" variant="ghost" aria-label="Playback speed">
-            <Gauge size={13} />
-            {audio.rate}×
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="w-32">
-          {RATES.map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => audio.setRate(r)}
-              className={cn(
-                "w-full rounded-[var(--radius-control)] px-2 py-1.5 text-left text-[13px] hover:bg-hover",
-                r === audio.rate ? "bg-selected font-medium text-fg" : "text-fg-muted",
-              )}
-            >
-              {r}×
-            </button>
-          ))}
-        </PopoverContent>
-      </Popover>
-
-      {tracks.length > 1 ? (
+      <div className="player-bar__options">
         <Popover>
           <PopoverTrigger asChild>
-            <Button size="sm" variant="ghost" aria-label="Which track you are hearing">
-              <Volume2 size={13} />
-              {TRACK_LABEL[track ?? ""] ?? track}
+            <Button size="sm" variant="ghost" aria-label="Playback speed">
+              <Gauge size={13} />
+              {audio.rate}×
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="end" className="w-48">
-            {tracks.map((t) => (
+          <PopoverContent align="end" className="w-32">
+            {RATES.map((r) => (
               <button
-                key={t}
+                key={r}
                 type="button"
-                onClick={() => onTrackChange(t)}
+                onClick={() => audio.setRate(r)}
                 className={cn(
                   "w-full rounded-[var(--radius-control)] px-2 py-1.5 text-left text-[13px] hover:bg-hover",
-                  t === track ? "bg-selected font-medium text-fg" : "text-fg-muted",
+                  r === audio.rate ? "bg-selected font-medium text-fg" : "text-fg-muted",
                 )}
               >
-                {TRACK_LABEL[t] ?? t}
+                {r}×
               </button>
             ))}
           </PopoverContent>
         </Popover>
-      ) : (
-        <span className="flex shrink-0 items-center gap-1 text-[12px] text-fg-muted">
-          <Volume2 size={13} className="text-fg-faint" aria-hidden />
-          {TRACK_LABEL[track ?? ""] ?? track}
-        </span>
-      )}
 
-      <Minimise onCollapse={onCollapse} />
+        {tracks.length > 1 ? (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="ghost" aria-label="Which track you are hearing" className="max-w-36 min-w-0">
+                <Volume2 size={13} />
+                <span className="truncate">{TRACK_LABEL[track ?? ""] ?? track}</span>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-48">
+              {tracks.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => onTrackChange(t)}
+                  className={cn(
+                    "w-full rounded-[var(--radius-control)] px-2 py-1.5 text-left text-[13px] hover:bg-hover",
+                    t === track ? "bg-selected font-medium text-fg" : "text-fg-muted",
+                  )}
+                >
+                  {TRACK_LABEL[t] ?? t}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <span className="flex max-w-36 min-w-0 shrink items-center gap-1 text-[12px] text-fg-muted">
+            <Volume2 size={13} className="shrink-0 text-fg-faint" aria-hidden />
+            <span className="truncate">{TRACK_LABEL[track ?? ""] ?? track}</span>
+          </span>
+        )}
+
+        <Minimise onCollapse={onCollapse} />
+      </div>
 
       {audio.error && (
         <Notice tone="warn" className="w-full">

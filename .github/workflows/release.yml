@@ -144,13 +144,10 @@ jobs:
           cargo clean -p sherpa-rs-sys || true
           cargo clean -p sherpa-rs-sys --release || true
 
-      # The same certificate every local build signs with. TCC on macOS ties
-      # the Screen Recording grant to `certificate leaf`, so an update signed
-      # with any OTHER identity would silently orphan the user's permission —
-      # the exact bug this certificate exists to end. CI must therefore sign
-      # with the identical cert, imported from secrets into a throwaway
-      # keychain. The runner has passwordless sudo, so the self-signed cert
-      # can be trusted at the system level (headless — no GUI prompt exists).
+      # The stable owner-created identity is supplied outside tracked source
+      # through APPLE_SIGNING_IDENTITY. It must resolve to the certificate
+      # imported below; local development may remain ad-hoc when no identity
+      # is available.
       - name: Import the signing certificate
         env:
           CERT_P12: ${{ secrets.MACOS_SIGNING_CERT_P12 }}
@@ -186,13 +183,19 @@ jobs:
 
       - name: Build signed updater artifacts
         env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build
 
       - name: Check the bundle signature and updater artifact
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           codesign --verify --deep --strict src-tauri/target/release/bundle/macos/Notetaker.app
-          codesign -dvv src-tauri/target/release/bundle/macos/Notetaker.app 2>&1 | grep "Authority=Notetaker Local Signing"
+          authority="$(codesign -dvv src-tauri/target/release/bundle/macos/Notetaker.app 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+          test -n "$APPLE_SIGNING_IDENTITY"
+          test "$authority" = "$APPLE_SIGNING_IDENTITY"
+          echo "codesign identity: $authority"
           test -f src-tauri/target/release/bundle/macos/Notetaker.app.tar.gz
           test -f src-tauri/target/release/bundle/macos/Notetaker.app.tar.gz.sig
 

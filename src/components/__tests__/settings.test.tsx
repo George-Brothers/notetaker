@@ -77,6 +77,7 @@ const BASE_SETTINGS: Settings = {
   minIdleSecs: 300,
   requireAc: true,
   keepWav: false,
+  liveTranscriptionDuringRecording: false,
   languages: ["en"],
   speechEngine: "auto",
   inputDevice: null,
@@ -304,6 +305,19 @@ describe("App integration", () => {
 });
 
 describe("Settings screen", () => {
+  it("keeps long settings forms inside their own scroll region at 600x700", async () => {
+    const previousWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    const dialog = await openSettings({ initialSection: "models" });
+    const body = dialog.querySelector(".settings-panel__body");
+
+    expect(body).toBeInTheDocument();
+    expect(body).toHaveClass("settings-panel__body");
+    expect(dialog.querySelector(".settings-nav__list")).toBeInTheDocument();
+
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: previousWidth });
+  });
+
   it("checks for a desktop update only when asked", async () => {
     vi.mocked(checkForUpdate).mockResolvedValue({ kind: "current" });
     const dialog = await openSettings({ initialSection: "updates" });
@@ -433,6 +447,22 @@ describe("Settings screen", () => {
     });
     await waitFor(() =>
       expect(lastSetSettings()).toMatchObject({ modelIdleUnload: "15m" }),
+    );
+  });
+
+  it("keeps live transcription opt-in and warns about its processing cost", async () => {
+    const dialog = await openSettings({ initialSection: "models" });
+    const checkbox = within(dialog).getByLabelText("Transcribe live while recording");
+    expect(checkbox).not.toBeChecked();
+    expect(within(dialog).getByText(/substantial CPU\/GPU, memory, and battery/i)).toBeInTheDocument();
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith({
+        ...BASE_SETTINGS,
+        liveTranscriptionDuringRecording: true,
+      }),
     );
   });
 

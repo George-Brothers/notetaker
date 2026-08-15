@@ -2,9 +2,9 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./styles/theme.css";
 import "./styles/panels.css";
+import "./styles/layout.css";
 import App from "./App";
 import { Overlay } from "./components/Overlay";
-import { TrayPanel } from "./components/TrayPanel";
 import { applyThemeParam } from "./lib/themeParam";
 
 applyThemeParam(window.location.search, window.localStorage);
@@ -14,13 +14,12 @@ applyThemeParam(window.location.search, window.localStorage);
 // runtime polling, no capture flow. All of that stays in the main window,
 // which drives the overlay over events.
 const isOverlay = window.location.hash === "#overlay";
-const isTrayPanel = window.location.hash === "#tray-panel";
-if (isOverlay || isTrayPanel) {
+if (isOverlay) {
   document.documentElement.dataset.surface = "floating";
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {isOverlay ? <Overlay /> : isTrayPanel ? <TrayPanel /> : <App />}
+    {isOverlay ? <Overlay /> : <App />}
   </React.StrictMode>,
 );

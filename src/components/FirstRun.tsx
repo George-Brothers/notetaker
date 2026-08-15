@@ -382,9 +382,6 @@ export function FirstRun({ onDismiss }: FirstRunProps) {
                     ? "Granted. Notetaker can post the layout-aware Cmd-V event."
                     : "Allow Notetaker under Privacy & Security → Accessibility. Without it, text stays on the clipboard and the app tells you to press Cmd-V."}
               </p>
-              <p className="first-run__item-hint">
-                Signed identity: <strong>Notetaker Local Signing</strong>. Re-check this row after every rebuild or update; Accessibility persistence across rebuilds is still a hardware verification item.
-              </p>
               {permissions?.microphone && !permissions.accessibility && (
                 <button type="button" onClick={() => void openPermissionPane("accessibility")}>
                   Open Accessibility settings

@@ -3,7 +3,7 @@ import { api } from "../lib/ipc";
 import type { CaptureLevels, CaptureStatus, MeetingEvent, Mode } from "../lib/ipc";
 
 const STATUS_POLL_MS = 1000;
-const LEVEL_POLL_MS = 50;
+const LEVEL_POLL_MS = 250;
 const MEETING_POLL_MS = 3000;
 
 const IDLE_STATUS: CaptureStatus = {
@@ -99,8 +99,9 @@ export function useCapture() {
   }, [status.state, refreshStatus]);
 
   // The full status includes elapsed time and a disk-space read. The meters
-  // need neither, so poll their small dedicated command at 20 Hz. Chaining the
-  // reads means a slow IPC response cannot pile up behind more interval ticks.
+  // need neither, so poll their small dedicated command at roughly 4 Hz.
+  // Chaining the reads means a slow IPC response cannot pile up behind more
+  // interval ticks.
   useEffect(() => {
     if (status.state === "idle" || status.state === "finishing") return;
     let cancelled = false;

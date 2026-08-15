@@ -55,13 +55,13 @@ pub enum CaptureState {
     /// Holding the files open, discarding incoming audio.
     Paused,
     /// Audio capture is over, but the recording is not put away yet: the
-    /// tracks are still being re-encoded, queued and indexed.
+    /// tracks are still being finalized, synced, and durably queued.
     ///
     /// A state of its own because that stretch is neither recording nor idle,
     /// and calling it idle is a lie the user can catch — the record bar would
     /// re-arm while the library still shows nothing new. Long enough to matter
-    /// (a whole FLAC encode), so the UI says "Saving…" instead of pretending
-    /// the recording has landed.
+    /// (WAV finalization, metadata persistence, and queue registration), so the
+    /// UI says "Saving…" instead of pretending the recording has landed.
     Finishing,
 }
 

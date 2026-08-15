@@ -1,18 +1,11 @@
-//! Native configuration shared by the tray popover and the recording overlay.
+//! Native configuration for the optional recording overlay.
 //!
-//! The webviews remain ordinary Tauri windows on Windows. On macOS they are
-//! converted to panels by tauri-nspanel so showing a control does not activate
-//! Notetaker or steal the meeting app's focus. Keeping the conversion here is
-//! important: a hand-cast objc2 style mask is an easy way to reintroduce the
-//! crash fixed by tauri-nspanel issue #19.
+//! The main window remains an ordinary decorated Tauri window. Only the
+//! recording overlay is converted to a non-activating macOS panel, so it can
+//! stay above a meeting without making Notetaker feel like a menu-bar-only
+//! accessory or stealing the meeting app's focus.
 
-use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
-
-#[derive(Clone, Copy)]
-pub enum FloatingWindow {
-    TrayPanel,
-    Overlay,
-}
+use tauri::{Runtime, WebviewWindow};
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -30,11 +23,8 @@ mod macos {
     }
 }
 
-/// Apply the non-activating panel behavior on macOS.
-pub fn configure_panel<R: Runtime>(
-    window: &WebviewWindow<R>,
-    kind: FloatingWindow,
-) -> tauri::Result<()> {
+/// Configure the optional overlay as a non-activating panel on macOS.
+pub fn configure_overlay_panel<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt};
@@ -51,14 +41,11 @@ pub fn configure_panel<R: Runtime>(
                 .ignores_cycle()
                 .into(),
         );
-        panel.set_level(match kind {
-            FloatingWindow::TrayPanel => PanelLevel::PopUpMenu.value(),
-            FloatingWindow::Overlay => PanelLevel::ScreenSaver.value(),
-        });
+        panel.set_level(PanelLevel::ScreenSaver.value());
     }
 
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, kind);
+    let _ = window;
 
     Ok(())
 }
@@ -87,22 +74,4 @@ pub fn apply_vibrancy<R: Runtime>(window: &WebviewWindow<R>) {
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = window;
-}
-
-/// Show a floating window without routing through the activating main-window
-/// path. On macOS the panel's `orderFrontRegardless` is the plugin-supported
-/// non-activating operation; Windows uses the ordinary flyout show behavior.
-pub fn show_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri_nspanel::ManagerExt;
-        if let Ok(panel) = app.get_webview_panel(label) {
-            panel.show();
-            return;
-        }
-    }
-
-    if let Some(window) = app.get_webview_window(label) {
-        let _ = window.show();
-    }
 }

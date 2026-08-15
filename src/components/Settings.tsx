@@ -120,6 +120,7 @@ function normalizeSettings(value: SettingsData): SettingsData {
     taskModels: candidate.taskModels ?? {},
     templates: candidate.templates ?? [],
     summaryPrompt: candidate.summaryPrompt ?? "",
+    liveTranscriptionDuringRecording: candidate.liveTranscriptionDuringRecording ?? false,
     audioDevicePriority: candidate.audioDevicePriority ?? [],
     performanceMode: candidate.performanceMode ?? "auto",
     modelIdleUnload: candidate.modelIdleUnload ?? "5m",
@@ -1010,6 +1011,26 @@ export function Settings({
                       </select>
                       <p className="settings-hint">Automatic uses the model that best fits each language.</p>
                     </div>
+
+                    <div className="settings-field settings-field--checkbox">
+                      <input
+                        type="checkbox"
+                        id="settings-live-transcription"
+                        checked={settings.liveTranscriptionDuringRecording}
+                        onChange={(e) =>
+                          void updateSettings({
+                            ...settings,
+                            liveTranscriptionDuringRecording: e.target.checked,
+                          })
+                        }
+                      />
+                      <label htmlFor="settings-live-transcription">
+                        Transcribe live while recording
+                      </label>
+                    </div>
+                    <p className="settings-hint settings-hint--warning">
+                      Uses substantial CPU/GPU, memory, and battery while you record. Off keeps recording lightweight; the saved audio is still processed afterward.
+                    </p>
 
                     <div className="settings-field">
                       <label htmlFor="settings-model-idle-unload">Keep speech models loaded</label>

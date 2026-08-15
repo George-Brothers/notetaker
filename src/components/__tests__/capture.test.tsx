@@ -114,7 +114,7 @@ const PAUSED_STATUS: CaptureStatus = {
 };
 
 /**
- * Capture is over but the recording is still being encoded and queued. The
+ * Capture is over but the recording is still being durably finalized and queued. The
  * meters read flat and there is no mode, because nothing is being captured.
  */
 const FINISHING_STATUS: CaptureStatus = {
@@ -156,6 +156,7 @@ const BASE_SETTINGS: SettingsData = {
   minIdleSecs: 300,
   requireAc: true,
   keepWav: false,
+  liveTranscriptionDuringRecording: false,
   languages: ["en"],
   speechEngine: "auto",
   inputDevice: null,

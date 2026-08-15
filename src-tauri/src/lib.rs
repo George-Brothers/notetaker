@@ -30,8 +30,6 @@ mod tray;
 mod windowing;
 
 use std::path::Path;
-use std::sync::Arc;
-
 use notetaker_core::capture::platform::PlatformSources;
 use notetaker_core::dispatch::dispatch;
 use notetaker_core::logging;
@@ -288,6 +286,11 @@ fn live_transcript(rt: State<'_, Runtime>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn live_transcript_stats(rt: State<'_, Runtime>) -> Result<Value, String> {
+    call(&rt, "live_transcript_stats", json!({}))
+}
+
+#[tauri::command]
 fn start_dictation(rt: State<'_, Runtime>) -> Result<Value, String> {
     call(&rt, "start_dictation", json!({}))
 }
@@ -472,7 +475,6 @@ pub fn run() {
     let builder = builder;
 
     builder
-        .plugin(tauri_plugin_positioner::init())
         // DECORATIONS excluded: whether a window has OS chrome is the
         // platform's decision, made in config — native overlay titlebar on
         // macOS, our own drawn one on Windows — not user state to remember.
@@ -496,11 +498,6 @@ pub fn run() {
             let app_dir = app.path().app_data_dir()?;
             logging::install(&app_dir);
             let runtime = open_runtime(&app_dir)?;
-            let event_app = app.handle().clone();
-            runtime.set_model_event_sink(Arc::new(move |event| {
-                let _ = event_app.emit("model-state-changed", event);
-            }));
-
             // Recovers what a crash left behind, rebuilds the search index, and
             // starts transcribing in the background. One call, shared with
             // `notetaker-serve`, because this crate never compiles on the
@@ -515,31 +512,6 @@ pub fn run() {
             // icon in its resource table, and `tray_by_id` is how it is reached
             // again.
             tray::build(&app.handle().clone())?;
-
-            // The tray popover is a third dumb remote. It is created by Rust
-            // so the native tray can position it before showing it; its
-            // controls send the same intent events as the menu below.
-            {
-                let panel = tauri::WebviewWindowBuilder::new(
-                    app,
-                    "tray-panel",
-                    tauri::WebviewUrl::App("index.html#tray-panel".into()),
-                )
-                .title("Notetaker")
-                .inner_size(360.0, 420.0)
-                .resizable(false)
-                .maximizable(false)
-                .minimizable(false)
-                .decorations(false)
-                .transparent(true)
-                .always_on_top(true)
-                .visible_on_all_workspaces(true)
-                .skip_taskbar(true)
-                .visible(false)
-                .build()?;
-                windowing::configure_panel(&panel, windowing::FloatingWindow::TrayPanel)?;
-                windowing::apply_vibrancy(&panel);
-            }
 
             // The floating overlay: a small always-on-top pill the main
             // webview shows and hides (its visibility policy lives in
@@ -571,7 +543,7 @@ pub fn run() {
                 .skip_taskbar(true)
                 .visible(false)
                 .build()?;
-                windowing::configure_panel(&overlay, windowing::FloatingWindow::Overlay)?;
+                windowing::configure_overlay_panel(&overlay)?;
                 windowing::apply_vibrancy(&overlay);
                 // Top-right of the primary screen, clear of the menu bar and
                 // the notch, mirroring where every OS puts its own overlays.
@@ -620,6 +592,7 @@ pub fn run() {
             capture_status,
             capture_levels,
             live_transcript,
+            live_transcript_stats,
             start_dictation,
             stop_dictation,
             cancel_dictation,
@@ -639,23 +612,6 @@ pub fn run() {
             permission_status,
         ])
         .on_window_event(|window, event| {
-            // The tray popover is dismissed when it loses focus or receives a
-            // close request. On macOS it is a non-activating panel; on Windows
-            // the focus change is the platform's normal flyout behavior.
-            if window.label() == "tray-panel" {
-                match event {
-                    tauri::WindowEvent::Focused(false) => {
-                        let _ = window.hide();
-                    }
-                    tauri::WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
-                    _ => {}
-                }
-                return;
-            }
-
             // The overlay is persistent while recording. Closing it means
             // hide, never destroy; the main owner will show it again on the
             // next sync if the setting still allows it.

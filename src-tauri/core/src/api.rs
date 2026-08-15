@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::index::Index;
-use crate::storage::{Mode, RecordingRef, Status, Store};
+use crate::storage::{CompressionStatus, Mode, RecordingRef, Status, Store};
 use crate::watch::AutoRecordPolicy;
 
 /// Sidecar file name, inside a recording's own directory, holding the AI's
@@ -58,6 +58,10 @@ pub struct RecordingRow {
     /// `error` because it outlives every processing attempt: a `Ready` row can
     /// still need to say "this lecture is short because the disk filled up".
     pub capture_note: Option<String>,
+    /// State of the derived FLAC copy. Capture itself is durable even while
+    /// this remains pending or failed.
+    pub compression_status: CompressionStatus,
+    pub compression_error: Option<String>,
     /// True if the user typed notes during or after this recording. Just the
     /// flag, not the text — the list shows a marker, and shipping every
     /// recording's full notes to render one icon would be wasteful.
@@ -81,6 +85,8 @@ pub struct RecordingDetail {
     pub suggested_title: Option<String>,
     pub error: Option<String>,
     pub capture_note: Option<String>,
+    pub compression_status: CompressionStatus,
+    pub compression_error: Option<String>,
     pub transcript_md: String,
     pub summary_md: String,
     pub speakers: BTreeMap<String, String>,
@@ -156,6 +162,11 @@ pub struct Settings {
     /// is lossless, so the WAV is pure duplication.
     #[serde(default)]
     pub keep_wav: bool,
+    /// Opt-in only: run the live speech model while audio is being captured.
+    /// The default recording path deliberately does not initialize Whisper or
+    /// enqueue live samples.
+    #[serde(default)]
+    pub live_transcription_during_recording: bool,
 
     // --- Plan C: which languages this user actually speaks.
     /// The languages spoken in this user's recordings, as ISO-639-1 codes
@@ -248,6 +259,14 @@ pub struct Settings {
     /// from capture. macOS 15.4+ may still ignore that request.
     #[serde(default = "default_true")]
     pub overlay_hide_from_share: bool,
+    /// Preferred desktop library rail width. This is disposable app UI state,
+    /// never part of the user recording layout.
+    #[serde(default = "default_library_pane_width")]
+    pub library_pane_width: u16,
+    /// Preferred desktop Ask rail width. This is disposable app UI state,
+    /// never part of the user recording layout.
+    #[serde(default = "default_ask_pane_width")]
+    pub ask_pane_width: u16,
 }
 
 /// When the floating overlay (the little always-on-top recording pill) shows.
@@ -468,6 +487,14 @@ fn default_dictation_hotkey() -> String {
     "CommandOrControl+Alt+D".to_string()
 }
 
+fn default_library_pane_width() -> u16 {
+    264
+}
+
+fn default_ask_pane_width() -> u16 {
+    340
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -485,6 +512,7 @@ impl Default for Settings {
             min_idle_secs: default_min_idle_secs(),
             require_ac: default_true(),
             keep_wav: false,
+            live_transcription_during_recording: false,
             overlay: OverlayMode::default(),
             hotkey_highlight: default_hotkey_highlight(),
             input_device: None,
@@ -505,6 +533,8 @@ impl Default for Settings {
             overlay_position: OverlayPosition::TopRight,
             overlay_style: OverlayStyle::Glass,
             overlay_hide_from_share: true,
+            library_pane_width: default_library_pane_width(),
+            ask_pane_width: default_ask_pane_width(),
         }
     }
 }
@@ -553,6 +583,8 @@ pub fn get_recording(store: &Store, id: &str) -> Result<RecordingDetail> {
         suggested_title: row.suggested_title,
         error: row.error,
         capture_note: row.capture_note,
+        compression_status: row.compression_status,
+        compression_error: row.compression_error,
         actions: crate::actions::parse(&summary_md),
         segments: crate::transcript::parse(&transcript_md, rec.meta.duration_s),
         transcript_md,
@@ -674,6 +706,7 @@ pub fn process_now(store: &Store, id: &str) -> Result<()> {
             // retried by hand, and succeeded kept its old error text forever.
             rec.meta.error = None;
             rec.meta.manual_processing = true;
+            rec.meta.queued_at = Some(chrono::Utc::now().to_rfc3339());
             store.save_meta(&rec)?;
         }
         Status::Queued => {
@@ -681,6 +714,9 @@ pub fn process_now(store: &Store, id: &str) -> Result<()> {
             // pressing the button is a different instruction: preserve it on
             // disk so a scheduler wake (or an app restart) cannot lose it.
             rec.meta.manual_processing = true;
+            if rec.meta.queued_at.is_none() {
+                rec.meta.queued_at = Some(chrono::Utc::now().to_rfc3339());
+            }
             store.save_meta(&rec)?;
         }
         Status::Processing => {}
@@ -786,7 +822,8 @@ pub fn set_settings(path: &Path, settings: &Settings) -> Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(settings)?;
-    fs::write(path, json).with_context(|| format!("writing settings to {}", path.display()))
+    crate::storage::atomic_write(path, json.as_bytes())
+        .with_context(|| format!("writing settings to {}", path.display()))
 }
 
 fn find_by_id(store: &Store, id: &str) -> Result<RecordingRef> {
@@ -815,6 +852,8 @@ fn to_row(rec: &RecordingRef) -> RecordingRow {
             .filter(|t| t != &rec.meta.title),
         error: rec.meta.error.clone(),
         capture_note: rec.meta.capture_note.clone(),
+        compression_status: rec.meta.compression,
+        compression_error: rec.meta.compression_error.clone(),
         has_notes: crate::notes::has_content(&crate::notes::read(&rec.dir)),
         archived: rec.archived,
     }
@@ -1599,6 +1638,7 @@ mod overhaul_settings_tests {
         assert_eq!(s.hotkey_toggle_record, "CommandOrControl+Alt+N");
         assert_eq!(s.hotkey_show_hide, "CommandOrControl+Alt+Space");
         assert!(s.close_to_tray);
+        assert!(!s.live_transcription_during_recording);
     }
 
     /// Round-trip: the new fields serialize camelCase, matching ipc.ts.
@@ -1613,5 +1653,8 @@ mod overhaul_settings_tests {
         assert!(json.contains("\"performanceMode\":\"auto\""));
         assert!(json.contains("\"dictationHotkey\":\"CommandOrControl+Alt+D\""));
         assert!(json.contains("\"overlayHideFromShare\":true"));
+        assert!(json.contains("\"liveTranscriptionDuringRecording\":false"));
+        assert!(json.contains("\"libraryPaneWidth\":264"));
+        assert!(json.contains("\"askPaneWidth\":340"));
     }
 }

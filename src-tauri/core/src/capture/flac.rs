@@ -14,8 +14,9 @@
 //! the caller rather than to this module reading settings behind its back.
 //!
 //! A failed encode leaves the WAV exactly where it was and takes the
-//! half-written FLAC away, because a stray `.flac` beside a `.wav` is how
-//! [`crate::capture::recover`] decides a track is already finished.
+//! half-written temporary FLAC away. A verified FLAC is published only after
+//! the decode check, so a crash cannot expose a partial derived file as if it
+//! were complete.
 
 use std::path::{Path, PathBuf};
 
@@ -23,8 +24,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use flacenc::component::BitRepr;
 use flacenc::error::Verify;
 
-use crate::capture::SAMPLE_RATE;
+use crate::capture::{MIC_TRACK, SAMPLE_RATE, SYSTEM_TRACK};
 use crate::pipeline::audio::load_mono_16k;
+use crate::storage::{CompressionStatus, Mode, RecordingRef, Store};
 
 /// The divisor `pipeline::audio` uses to turn 16-bit PCM into `f32`. Going
 /// back the other way with the same constant is exact — it is a power of two,
@@ -65,6 +67,14 @@ where
     F: FnMut(&Path) -> std::io::Result<()>,
 {
     let flac_path = wav_path.with_extension("flac");
+    let temporary_flac = wav_path.with_file_name(format!(
+        ".{}.tmp-{}.flac",
+        wav_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("audio"),
+        uuid::Uuid::new_v4()
+    ));
 
     let source = load_mono_16k(wav_path)
         .with_context(|| format!("reading {} to encode it as FLAC", wav_path.display()))?;
@@ -75,13 +85,16 @@ where
         );
     }
 
-    if let Err(e) = encode(&source, &flac_path).and_then(|()| verify(&source, &flac_path)) {
+    if let Err(e) = encode(&source, &temporary_flac)
+        .and_then(|()| verify(&source, &temporary_flac))
+        .and_then(|()| replace_verified_flac(&temporary_flac, &flac_path))
+    {
         // Whatever landed is not trustworthy, and leaving it behind would let
         // the next recovery sweep mistake it for a finished track.
-        if let Err(cleanup) = remove_if_file(&flac_path) {
+        if let Err(cleanup) = remove_if_file(&temporary_flac) {
             log::warn!(
-                "could not remove the unusable {}: {cleanup:#}",
-                flac_path.display()
+                "could not remove the unusable temporary FLAC {}: {cleanup:#}",
+                temporary_flac.display()
             );
         }
         return Err(e);
@@ -109,6 +122,89 @@ where
         flac: flac_path,
         wav_kept,
     })
+}
+
+/// Publishes a verified FLAC in one same-directory rename. The destination is
+/// derived data, so replacing an older copy is safe only after the new copy
+/// has already decoded byte-for-byte against the WAV.
+fn replace_verified_flac(temporary: &Path, destination: &Path) -> Result<()> {
+    crate::storage::replace_atomically(temporary, destination)
+        .with_context(|| format!("publishing verified FLAC {}", destination.display()))?;
+
+    if let Some(parent) = destination.parent() {
+        #[cfg(unix)]
+        if let Err(error) = std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
+            log::warn!("could not sync FLAC directory {}: {error}", parent.display());
+        }
+    }
+    Ok(())
+}
+
+/// Finalizes the audio tracks for a queued recording. This is deliberately a
+/// queue operation, never a capture/Stop operation: the WAV is already
+/// durable before this function can run, and a failed encode leaves that WAV
+/// available for the pipeline and a later retry.
+pub fn finalize_recording_tracks(
+    store: &Store,
+    recording: &RecordingRef,
+    keep_wav: bool,
+) -> Result<RecordingRef> {
+    let mut rec = recording.clone();
+    let expected = match rec.meta.mode {
+        Mode::InPerson => [MIC_TRACK, ""],
+        Mode::Meeting => [MIC_TRACK, SYSTEM_TRACK],
+    };
+    let mut failures = Vec::new();
+    let mut durations = Vec::new();
+
+    for stem in expected.into_iter().filter(|stem| !stem.is_empty()) {
+        let wav = rec.dir.join(format!("{stem}.wav"));
+        let flac = rec.dir.join(format!("{stem}.flac"));
+        if wav.is_file() {
+            match finalize_to_flac(&wav, keep_wav) {
+                Ok(finalized) => {
+                    if let Some(kept_wav) = finalized.wav_kept {
+                        failures.push(format!(
+                            "{stem}: verified FLAC published but WAV cleanup failed ({})",
+                            kept_wav.display()
+                        ));
+                    }
+                    match load_mono_16k(&finalized.flac) {
+                        Ok(samples) => durations.push(samples.len() as f64 / SAMPLE_RATE as f64),
+                        Err(error) => failures.push(format!(
+                            "{stem}: published FLAC could not be decoded ({error:#})"
+                        )),
+                    }
+                }
+                Err(error) => failures.push(format!("{stem}: {error:#}")),
+            }
+        } else if flac.is_file() {
+            match load_mono_16k(&flac) {
+                Ok(samples) => durations.push(samples.len() as f64 / SAMPLE_RATE as f64),
+                Err(error) => failures.push(format!("{stem}: {error:#}")),
+            }
+        } else {
+            failures.push(format!("{stem}: no WAV or FLAC track exists"));
+        }
+    }
+
+    if let Some(longest) = durations.into_iter().reduce(f64::max) {
+        rec.meta.duration_s = longest;
+    }
+    if failures.is_empty() {
+        rec.meta.compression = CompressionStatus::Complete;
+        rec.meta.compression_error = None;
+    } else {
+        rec.meta.compression = CompressionStatus::Failed;
+        rec.meta.compression_error = Some(failures.join("; "));
+        log::warn!(
+            "derived audio for {} needs retry: {}",
+            rec.meta.id,
+            rec.meta.compression_error.as_deref().unwrap_or_default()
+        );
+    }
+    store.save_meta(&rec)?;
+    Ok(rec)
 }
 
 /// Removes a file, retrying once after a short pause.

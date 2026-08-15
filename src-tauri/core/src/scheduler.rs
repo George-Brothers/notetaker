@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::capture::flac::finalize_recording_tracks;
+use crate::models::ModelCache;
 use crate::pipeline::llm::LlmClient;
 use crate::pipeline::run::{process_recording, PipelineDeps};
-use crate::models::ModelCache;
 use crate::queue::{IdleSource, Queue, RunOutcome};
 
 /// How long the loop sleeps between ticks when it has nothing to do. A wake
@@ -31,6 +32,7 @@ pub struct SchedulerConfig {
     pub task_models: BTreeMap<String, String>,
     pub templates: Vec<crate::templates::Template>,
     pub summary_prompt: String,
+    pub keep_wav: bool,
 }
 
 /// One scheduling decision: if the machine is idle, run at most one queued
@@ -47,8 +49,14 @@ pub fn tick(
     task_models: &BTreeMap<String, String>,
     templates: &[crate::templates::Template],
     summary_prompt: &str,
+    keep_wav: bool,
 ) -> Result<RunOutcome> {
     let outcome = queue.run_one(idle, |rec| {
+        // Compression is durable downstream work. It runs only after
+        // Queue::run_one has persisted Processing and passed the idle/quiet
+        // gate; a failure leaves the WAV and still allows transcription to
+        // proceed from it.
+        let rec = finalize_recording_tracks(queue.store, rec, keep_wav)?;
         let task_llm = rec
             .task
             .as_deref()
@@ -66,7 +74,7 @@ pub fn tick(
             summary_prompt,
             tasks: tasks.to_vec(),
         };
-        let result = process_recording(queue.store, &deps, rec).map(|_| ());
+        let result = process_recording(queue.store, &deps, &rec).map(|_| ());
         // Keep the lease across every pipeline stage, including the final
         // metadata write, then release it before the tick's idle sweep.
         drop(lease);
@@ -85,7 +93,8 @@ pub fn tick_with_deps(
     deps: &PipelineDeps,
 ) -> Result<RunOutcome> {
     queue.run_one(idle, |rec| {
-        process_recording(queue.store, deps, rec).map(|_| ())
+        let rec = finalize_recording_tracks(queue.store, rec, false)?;
+        process_recording(queue.store, deps, &rec).map(|_| ())
     })
 }
 
@@ -154,7 +163,17 @@ pub fn run_loop_with_interval<F, C>(
 {
     while !stop.load(Ordering::SeqCst) {
         let config = config();
-        match tick(queue, idle, cache, &config.llm, tasks, &config.task_models, &config.templates, &config.summary_prompt) {
+        match tick(
+            queue,
+            idle,
+            cache,
+            &config.llm,
+            tasks,
+            &config.task_models,
+            &config.templates,
+            &config.summary_prompt,
+            config.keep_wav,
+        ) {
             Ok(outcome) => {
                 let more_now = matches!(outcome, RunOutcome::Ran);
                 on_outcome(&outcome);
@@ -349,13 +368,39 @@ mod tests {
         let tasks = Vec::new();
         let templates = crate::templates::defaults();
 
-        let outcome = tick(&queue, &NeverIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates, "").unwrap();
-        assert_eq!(outcome, RunOutcome::NotIdle);
+        let outcome = tick(
+            &queue,
+            &NeverIdle,
+            &cache,
+            &llm,
+            &tasks,
+            &BTreeMap::new(),
+            &templates,
+            "",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            RunOutcome::NothingQueued,
+            "without queued work the scheduler should not consult the idle policy"
+        );
         assert_eq!(loads.load(Ordering::SeqCst), 0);
 
         let mut rec = wav_recording(&store, "Lecture");
         queue.enqueue(&mut rec).unwrap();
-        let outcome = tick(&queue, &AlwaysIdle, &cache, &llm, &tasks, &BTreeMap::new(), &templates, "").unwrap();
+        let outcome = tick(
+            &queue,
+            &AlwaysIdle,
+            &cache,
+            &llm,
+            &tasks,
+            &BTreeMap::new(),
+            &templates,
+            "",
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             outcome,
             RunOutcome::FailedWillRetry | RunOutcome::Ran

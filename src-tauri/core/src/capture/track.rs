@@ -111,9 +111,15 @@ impl TrackWriter {
     /// Writes the final header and closes the file. Idempotent.
     pub fn finalize(&mut self) -> Result<()> {
         match self.writer.take() {
-            Some(writer) => writer
-                .finalize()
-                .with_context(|| format!("finalizing {}", self.path.display())),
+            Some(writer) => {
+                writer
+                    .finalize()
+                    .with_context(|| format!("finalizing {}", self.path.display()))?;
+                File::open(&self.path)
+                    .with_context(|| format!("reopening {} to sync it", self.path.display()))?
+                    .sync_all()
+                    .with_context(|| format!("syncing {}", self.path.display()))
+            }
             None => Ok(()),
         }
     }

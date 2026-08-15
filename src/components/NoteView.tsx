@@ -26,7 +26,6 @@ import {
   Sparkles,
   Trash2,
   Wand2,
-  X,
 } from "lucide-react";
 import type { RecordingDetail as RecordingDetailData, Template } from "../lib/ipc";
 import { useAudio } from "../hooks/useAudio";
@@ -37,11 +36,9 @@ import { Notepad, type SaveState } from "./Notepad";
 import { Markdown } from "./Markdown";
 import { ActionItems } from "./ActionItems";
 import { TranscriptPanel } from "./TranscriptPanel";
-import { AskPanel } from "./AskPanel";
 import { PlayerBar } from "./PlayerBar";
 import {
   Button,
-  IconButton,
   Notice,
   Popover,
   PopoverContent,
@@ -208,17 +205,17 @@ export function NoteView({
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-1">
+    <div className="note-view flex h-full min-w-0 flex-1">
       <article
         aria-label="Recording"
-        className="min-w-0 flex-1 overflow-y-auto"
+        className="note-view__article"
       >
-        <div className="mx-auto w-full max-w-[46rem] px-4 py-6 sm:px-8 sm:py-8">
+        <div className="note-view__inner mx-auto w-full max-w-[46rem] px-4 py-6 sm:px-8 sm:py-8">
           {/* --- header ------------------------------------------------- */}
           <header className="mb-5">
             {/* Narrow only: on a phone the rail and the note are two screens,
                 and this is how you get back to the list. */}
-            <Button variant="ghost" size="sm" onClick={onBack} className="mb-2 -ml-2 md:hidden">
+            <Button variant="ghost" size="sm" onClick={onBack} className="note-view__back-button mb-2 -ml-2">
               <ChevronLeft size={14} />
               All recordings
             </Button>
@@ -238,14 +235,14 @@ export function NoteView({
                     endTitleEdit();
                   }
                 }}
-                className="w-full border-0 border-b border-accent bg-transparent p-0 pb-1 text-[22px] font-semibold leading-tight text-fg focus:outline-none sm:text-[26px]"
+                className="note-view__title w-full border-0 border-b border-accent bg-transparent p-0 pb-1 text-[clamp(22px,2.2vw,26px)] font-semibold leading-tight text-fg focus:outline-none"
               />
             ) : (
               <button
                 type="button"
                 onClick={beginTitleEdit}
                 title="Click to rename"
-                className="-mx-1 block w-full break-words rounded px-1 text-left text-[22px] font-semibold leading-tight text-fg hover:bg-hover sm:text-[26px]"
+                className="note-view__title -mx-1 block w-full rounded px-1 text-left text-[clamp(22px,2.2vw,26px)] font-semibold leading-tight text-fg hover:bg-hover"
               >
                 {title}
               </button>
@@ -263,7 +260,7 @@ export function NoteView({
               </div>
             )}
 
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px] text-fg-muted">
+            <div className="note-view__metadata mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px] text-fg-muted">
               <span>{fullDateTime(rec.created)}</span>
               <span aria-hidden>·</span>
               <span>{roughDuration(rec.durationS)}</span>
@@ -310,6 +307,11 @@ export function NoteView({
                 {rec.captureNote}
               </Notice>
             )}
+            {rec.compressionStatus === "failed" && (
+              <Notice tone="warn" className="mt-2">
+                The recording is safe, but its compressed copy needs a retry. {rec.compressionError ?? "Compression failed."}
+              </Notice>
+            )}
 
             {listenOpen && (
               <PlayerBar
@@ -347,7 +349,7 @@ export function NoteView({
             }}
             className="flex flex-col"
           >
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+            <div className="note-view__toolbar mb-4 border-b border-border pb-3">
               <TabList>
                 <Tab value="notes">
                   <NotebookPen size={13} />
@@ -359,7 +361,7 @@ export function NoteView({
                 </Tab>
               </TabList>
 
-              <div className="flex items-center gap-1.5">
+              <div className="note-view__toolbar-actions">
                 {!rec.archived && <Popover>
                   <PopoverTrigger asChild>
                     <Button size="sm" variant="ghost">
@@ -538,28 +540,6 @@ export function NoteView({
         </div>
       </article>
 
-      {askOpen && (
-        <aside
-          aria-label="Ask about this recording"
-          className="fixed inset-0 z-40 flex flex-col bg-app px-4 py-4 md:static md:z-auto md:w-[340px] md:shrink-0 md:border-l md:border-border"
-        >
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="flex items-center gap-1.5 text-[13px] font-semibold text-fg">
-              <Sparkles size={13} className="text-accent" aria-hidden />
-              Ask this recording
-            </h2>
-            <IconButton label="Close" onClick={() => onToggleAsk(false)}>
-              <X size={15} />
-            </IconButton>
-          </div>
-          <div className="min-h-0 flex-1">
-            <AskPanel
-              recordingId={rec.id}
-              canAsk={rec.transcriptMd.trim().length > 0 || rec.summaryMd.trim().length > 0}
-            />
-          </div>
-        </aside>
-      )}
     </div>
   );
 }

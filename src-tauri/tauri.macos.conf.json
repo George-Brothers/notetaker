@@ -6,8 +6,8 @@
         "title": "Notetaker",
         "width": 1180,
         "height": 800,
-        "minWidth": 500,
-        "minHeight": 480,
+        "minWidth": 560,
+        "minHeight": 520,
         "decorations": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
@@ -22,7 +22,6 @@
         "target/release/libsherpa-onnx-cxx-api.dylib"
       ],
       "minimumSystemVersion": "13.0",
-      "signingIdentity": "Notetaker Local Signing",
       "entitlements": "entitlements.plist"
     }
   }

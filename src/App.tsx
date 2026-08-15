@@ -12,7 +12,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { Moon, Settings as SettingsIcon, Sun } from "lucide-react";
+import { MoreHorizontal, Moon, Settings as SettingsIcon, Sparkles, Sun, X } from "lucide-react";
 import { useLibrary } from "./hooks/useLibrary";
 import { useCapture } from "./hooks/useCapture";
 import { useAutoUpdate } from "./hooks/useAutoUpdate";
@@ -28,8 +28,18 @@ import { FirstRun } from "./components/FirstRun";
 import { SetupNotice } from "./components/SetupNotice";
 import { CommandPalette } from "./components/CommandPalette";
 import { WindowControls } from "./components/WindowControls";
-import type { TrayModelState, TrayPanelSync } from "./components/TrayPanel";
-import { Button, Dialog, IconButton, Notice, TooltipProvider } from "./components/ui";
+import { AskPanel } from "./components/AskPanel";
+import { DesktopShell, type PaneSizes } from "./components/DesktopShell";
+import {
+  Button,
+  Dialog,
+  IconButton,
+  Notice,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  TooltipProvider,
+} from "./components/ui";
 import {
   api,
   type CaptureState,
@@ -42,8 +52,7 @@ import {
 import { isDesktop } from "./lib/transport";
 import { cn } from "./lib/cn";
 import { duration } from "./lib/format";
-import { isMacDesktop, listInputDevices, setAutostart, setTrayStatus } from "./lib/desktop";
-import type { InputDevice } from "./lib/desktop";
+import { isMacDesktop, setAutostart, setTrayStatus } from "./lib/desktop";
 import { formatAcceleratorParts } from "./lib/hotkeys";
 
 const FIRST_RUN_DISMISSED_KEY = "notetaker.firstRunDismissed";
@@ -174,13 +183,26 @@ function App() {
   const [settingsVersion, setSettingsVersion] = useState(0);
   const [showTrayNote, setShowTrayNote] = useState(false);
   const [showQuitGuard, setShowQuitGuard] = useState(false);
-  const [inputDevices, setInputDevices] = useState<InputDevice[]>([]);
-  const [modelState, setModelState] = useState<TrayModelState>("sleeping");
   const [highlights, setHighlights] = useState<string[]>([]);
   const [dictationStatus, setDictationStatus] = useState<DictationStatus>(EMPTY_DICTATION_STATUS);
 
   const appSettingsRef = useRef(appSettings);
   appSettingsRef.current = appSettings;
+  const persistPaneSizes = useCallback((sizes: PaneSizes) => {
+    const current = appSettingsRef.current;
+    if (!current) return;
+    const next: SettingsData = {
+      ...current,
+      libraryPaneWidth: sizes.library,
+      askPaneWidth: sizes.ask,
+    };
+    appSettingsRef.current = next;
+    setAppSettings(next);
+    void api.setSettings(next).catch(() => {
+      // Pane geometry is a disposable preference. Keep the live layout usable
+      // if an older shell or a read-only settings store rejects the write.
+    });
+  }, []);
   const libraryRef = useRef(lib);
   libraryRef.current = lib;
   const dictationStatusRef = useRef(dictationStatus);
@@ -191,11 +213,6 @@ function App() {
   const applyDictationStatus = useCallback((status: DictationStatus) => {
     dictationStatusRef.current = status;
     setDictationStatus(status);
-  }, []);
-
-  useEffect(() => {
-    if (!isDesktop()) return;
-    void listInputDevices().then((devices) => setInputDevices(devices ?? []));
   }, []);
 
   // Keep installed copies current without ever restarting during a recording.
@@ -267,7 +284,7 @@ function App() {
         if (visible) {
           const appName = prompting ? capture.pendingMeeting?.appName ?? null : capture.activeAppName;
           let liveTranscript: LiveTranscriptEvent[] = [];
-          if (capturing) {
+          if (capturing && appSettings?.liveTranscriptionDuringRecording === true) {
             try {
               liveTranscript = await api.liveTranscript();
             } catch {
@@ -310,7 +327,7 @@ function App() {
         // identically without the pill.
       }
     })();
-  }, [capture.status, capture.pendingMeeting, capture.activeAppName, appSettings?.overlay, appSettings?.overlayStyle, highlights, dictationStatus]);
+  }, [capture.status, capture.pendingMeeting, capture.activeAppName, appSettings?.overlay, appSettings?.overlayStyle, appSettings?.liveTranscriptionDuringRecording, highlights, dictationStatus]);
 
   // The shell starts the overlay protected, then follows the saved preference
   // once Settings has loaded. This is a real runtime toggle on platforms that
@@ -322,15 +339,6 @@ function App() {
       .then((overlay) => overlay?.setContentProtected(appSettings?.overlayHideFromShare ?? true))
       .catch(() => undefined);
   }, [appSettings?.overlayHideFromShare]);
-
-  // Push the same owner snapshot to the tray panel whenever its visible state
-  // changes. The panel's ready event below covers the race where it mounts
-  // after this effect has already fired.
-  useEffect(() => {
-    if (!isDesktop()) return;
-    const snapshot = traySyncRef.current;
-    if (snapshot) void emit("tray-panel-sync", snapshot).catch(() => {});
-  }, [capture.status, capture.activeAppName, lib.recordings, inputDevices, appSettings?.inputDevice, modelState]);
 
   // Loaded for the sidebar's empty-state hotkey hint, and to decide which
   // accelerators are registered OS-wide. Refetched on `settingsVersion`, which
@@ -444,34 +452,6 @@ function App() {
       setHighlights([]);
     }
   }, [capture.status.recordingId, capture.status.state]);
-  const traySyncRef = useRef<TrayPanelSync | null>(null);
-
-  const recentNotes = lib.recordings
-    .filter((recording) => recording.hasNotes)
-    .slice(0, 5)
-    .map((recording) => ({
-      id: recording.id,
-      title: recording.title,
-      created: recording.created,
-      durationS: recording.durationS,
-    }));
-  traySyncRef.current = {
-    capture: {
-      state: capture.status.state,
-      mode: capture.status.mode,
-      recordingId: capture.status.recordingId,
-      elapsedS: capture.status.elapsedS,
-      micLevel: capture.status.micLevel,
-      systemLevel: capture.status.systemLevel,
-      appName: capture.activeAppName,
-    },
-    recentNotes,
-    inputDevices,
-    selectedInputDevice: appSettings?.inputDevice ?? null,
-    modelState,
-    statusLine: captureStatusLine(capture.status),
-  };
-
   /**
    * Start or stop, whichever the current state calls for.
    *
@@ -649,12 +629,14 @@ function App() {
         }
         await getCurrentWindow().hide();
       }),
-      listen("tray-toggle-recording", () => toggleRecording()),
       // The tray's own controls. None of these shows the window — the point
       // of the tray is doing this without opening the app. Each one re-reads
       // live state from the ref: a menu can sit open while the state changes
       // under it, so the item pressed may no longer apply, and doing nothing
       // is better than doing the wrong thing.
+      // Keep the original toggle intent as a compatibility path for older
+      // tray shells; the richer tray now sends the explicit events below.
+      listen("tray-toggle-recording", () => toggleRecording()),
       listen<string>("tray-record", (e) => {
         const c = captureRef.current;
         if (c.status.state === "idle") {
@@ -675,56 +657,6 @@ function App() {
           .copyLastTranscript()
           .then((result) => setDictationStatus((current) => ({ ...current, message: result.message })))
           .catch(showDictationError);
-      }),
-      listen("tray-open", async () => {
-        const win = getCurrentWindow();
-        await win.show();
-        await win.unminimize();
-        await win.setFocus();
-      }),
-      listen<string>("tray-open-note", async (event) => {
-        await libraryRef.current.selectRecording(event.payload);
-        const win = getCurrentWindow();
-        await win.show();
-        await win.unminimize();
-        await win.setFocus();
-      }),
-      listen<string | null>("tray-mic-select", async (event) => {
-        const current = appSettingsRef.current;
-        if (!current) return;
-        const inputDevice = event.payload || null;
-        const priority = inputDevice
-          ? [inputDevice, ...current.audioDevicePriority.filter((id) => id !== inputDevice)]
-          : current.audioDevicePriority;
-        const next = { ...current, inputDevice, audioDevicePriority: priority };
-        try {
-          await api.setSettings(next);
-          setAppSettings(next);
-          setSettingsVersion((version) => version + 1);
-        } catch {
-          // The panel remains usable; Settings will show the previous value on
-          // its next open if the native write was refused.
-        }
-      }),
-      listen("tray-panel-ready", () => {
-        const snapshot = traySyncRef.current;
-        if (snapshot) void emit("tray-panel-sync", snapshot).catch(() => {});
-      }),
-      listen<{ state?: string }>("model-state-changed", (event) => {
-        switch (event.payload?.state) {
-          case "ready":
-            setModelState("ready");
-            break;
-          case "loading":
-            setModelState("loading");
-            break;
-          case "failed":
-            setModelState("error");
-            break;
-          default:
-            setModelState("sleeping");
-            break;
-        }
       }),
       // The overlay pill's intents — same owners as the tray's, plus the
       // prompt pair. `overlay-record` prefers the pending meeting (it carries
@@ -847,35 +779,64 @@ function App() {
         <header
           data-tauri-drag-region="deep"
           className={cn(
-            "flex shrink-0 items-center justify-between gap-3 border-b border-border bg-raised/80 py-1.5",
+            "app-header flex shrink-0 items-center justify-between gap-3 border-b border-border bg-raised/80 py-1.5",
             // macOS keeps its native traffic lights, overlaid top-left on this
             // strip — so the record bar steps right to clear them, and with no
             // custom controls in the corner the flush `pr-0` has no job.
             isMacDesktop() ? "pl-[84px] pr-2" : "pl-3 pr-0",
           )}
         >
-          <RecordBar
-            status={capture.status}
-            onStart={capture.start}
-            onPause={capture.pause}
-            onResume={capture.resume}
-            onStop={stopAndOpen}
-          />
+          <div className="app-header__record">
+            <RecordBar
+              status={capture.status}
+              onStart={capture.start}
+              onPause={capture.pause}
+              onResume={capture.resume}
+              onStop={stopAndOpen}
+            />
+          </div>
           {/* Hidden on a phone, where the rail's own header already names the
               app and 12px of tracking-out capitals would only crowd the pill. */}
-          <span className="pointer-events-none hidden select-none text-[12px] font-semibold tracking-[0.08em] text-fg-faint sm:block">
+          <span className="app-header__brand pointer-events-none select-none text-[12px] font-semibold tracking-[0.08em] text-fg-faint">
             NOTETAKER
           </span>
-          <div className="flex items-center gap-1">
-            <IconButton
-              label={theme.resolved === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              onClick={theme.toggle}
-            >
-              {theme.resolved === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-            </IconButton>
-            <IconButton label="Settings" onClick={openSettingsPanel}>
-              <SettingsIcon size={15} />
-            </IconButton>
+          <div className="app-header__actions">
+            <div className="app-header__secondary">
+              <IconButton
+                label={theme.resolved === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                onClick={theme.toggle}
+              >
+                {theme.resolved === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+              </IconButton>
+              <IconButton label="Settings" onClick={openSettingsPanel}>
+                <SettingsIcon size={15} />
+              </IconButton>
+            </div>
+            <Popover>
+              <PopoverTrigger asChild>
+                <IconButton label="More actions" className="app-header__overflow">
+                  <MoreHorizontal size={15} />
+                </IconButton>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-44">
+                <button
+                  type="button"
+                  onClick={theme.toggle}
+                  className="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-hover hover:text-fg"
+                >
+                  {theme.resolved === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+                  {theme.resolved === "dark" ? "Light mode" : "Dark mode"}
+                </button>
+                <button
+                  type="button"
+                  onClick={openSettingsPanel}
+                  className="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-left text-[13px] text-fg-muted hover:bg-hover hover:text-fg"
+                >
+                  <SettingsIcon size={14} />
+                  Settings
+                </button>
+              </PopoverContent>
+            </Popover>
             <WindowControls />
           </div>
         </header>
@@ -912,64 +873,89 @@ function App() {
           </Notice>
         )}
 
-        {/*
-          Two panes on a desktop, two *screens* on a phone.
-          The rail is 264px of a 1440px window and 63% of a 420px one, so below
-          `md` whichever of the two you are not looking at is removed rather
-          than squeezed — a note in a 155px column is not a note. Which one
-          shows is driven by whether a recording is open, so the back button is
-          just "close the recording".
-        */}
-        <div className="flex min-h-0 flex-1">
-          <Sidebar
-            className={lib.selectedId ? "hidden md:flex" : "flex w-full md:w-[264px]"}
-            tasks={lib.tasks}
-            activeView={lib.view}
-            onSelectView={lib.setView}
-            onCreateTask={lib.createTask}
-            recordings={lib.recordings}
-            selectedId={lib.selectedId}
-            onSelectRecording={lib.selectRecording}
-            query={lib.query}
-            onSearch={lib.search}
-            searchResults={lib.searchResults}
-            onOpenPalette={() => setPaletteOpen(true)}
-            sort={lib.sort}
-            onSetSort={lib.setSort}
-            filter={lib.filter}
-            onSetFilter={lib.setFilter}
-            modelsMissing={modelsMissing}
-            recordHotkeyLabel={
-              isDesktop() && appSettings
-                ? formatAcceleratorParts(appSettings.hotkeyToggleRecord).join("+")
-                : null
-            }
-          />
-
-          <main className={lib.selectedId ? "flex min-w-0 flex-1" : "hidden min-w-0 flex-1 md:flex"}>
-            <NoteView
-              detail={lib.detail}
-              loading={lib.detailLoading}
-              liveRecordingId={liveRecordingId(capture.status)}
-              onBack={lib.clearSelection}
+        <DesktopShell
+          mobilePane={lib.selectedId ? "primary" : "library"}
+          askOpen={askOpen && lib.detail !== null}
+          onAskOpenChange={setAskOpen}
+          initialLibraryWidth={appSettings?.libraryPaneWidth}
+          initialAskWidth={appSettings?.askPaneWidth}
+          onPaneSizesCommit={persistPaneSizes}
+          library={
+            <Sidebar
               tasks={lib.tasks}
-              templates={lib.templates}
-              askOpen={askOpen}
-              onToggleAsk={setAskOpen}
-              onRenameSpeaker={lib.renameSpeaker}
-              onSaveSummary={lib.saveSummary}
-              onRenameRecording={lib.renameRecording}
-              onAssignTask={lib.assignTask}
-              onArchiveRecording={lib.archiveRecording}
-              onRestoreRecording={lib.restoreRecording}
-              onDeleteRecording={lib.deleteRecording}
-              onSaveNotes={lib.saveNotes}
-              onSetTemplate={lib.setTemplate}
-              onToggleAction={lib.toggleAction}
-              onProcessNow={processNow}
+              activeView={lib.view}
+              onSelectView={lib.setView}
+              onCreateTask={lib.createTask}
+              recordings={lib.recordings}
+              selectedId={lib.selectedId}
+              onSelectRecording={lib.selectRecording}
+              query={lib.query}
+              onSearch={lib.search}
+              searchResults={lib.searchResults}
+              onOpenPalette={() => setPaletteOpen(true)}
+              sort={lib.sort}
+              onSetSort={lib.setSort}
+              filter={lib.filter}
+              onSetFilter={lib.setFilter}
+              modelsMissing={modelsMissing}
+              recordHotkeyLabel={
+                isDesktop() && appSettings
+                  ? formatAcceleratorParts(appSettings.hotkeyToggleRecord).join("+")
+                  : null
+              }
             />
-          </main>
-        </div>
+          }
+          primary={
+            <main>
+              <NoteView
+                detail={lib.detail}
+                loading={lib.detailLoading}
+                liveRecordingId={liveRecordingId(capture.status)}
+                onBack={lib.clearSelection}
+                tasks={lib.tasks}
+                templates={lib.templates}
+                askOpen={askOpen && lib.detail !== null}
+                onToggleAsk={setAskOpen}
+                onRenameSpeaker={lib.renameSpeaker}
+                onSaveSummary={lib.saveSummary}
+                onRenameRecording={lib.renameRecording}
+                onAssignTask={lib.assignTask}
+                onArchiveRecording={lib.archiveRecording}
+                onRestoreRecording={lib.restoreRecording}
+                onDeleteRecording={lib.deleteRecording}
+                onSaveNotes={lib.saveNotes}
+                onSetTemplate={lib.setTemplate}
+                onToggleAction={lib.toggleAction}
+                onProcessNow={processNow}
+              />
+            </main>
+          }
+          ask={
+            lib.detail ? (
+              <div className="ask-pane__inner">
+                <div className="ask-pane__header">
+                  <h2 className="flex items-center gap-1.5 text-[13px] font-semibold text-fg">
+                    <Sparkles size={13} className="shrink-0 text-accent" aria-hidden />
+                    <span className="truncate">Ask this recording</span>
+                  </h2>
+                  <IconButton
+                    label="Close Ask panel"
+                    data-ask-initial-focus
+                    onClick={() => setAskOpen(false)}
+                  >
+                    <X size={15} />
+                  </IconButton>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <AskPanel
+                    recordingId={lib.detail.id}
+                    canAsk={lib.detail.transcriptMd.trim().length > 0 || lib.detail.summaryMd.trim().length > 0}
+                  />
+                </div>
+              </div>
+            ) : null
+          }
+        />
 
         <CommandPalette
           open={paletteOpen}

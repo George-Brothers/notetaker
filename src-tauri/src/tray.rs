@@ -1,29 +1,23 @@
-//! The tray: Echo in the corner, state at a glance, essentials on right-click.
+//! Native status-item menu: Echo at a glance, essentials on right-click.
 //!
-//! The frontend drives state via `set_tray_status` (it already polls capture
-//! status for the record bar, so the elapsed time in the status line rides the
-//! same poll). Open/Quit act natively; record/pause/stop/Settings are
-//! forwarded to the webview, which owns the capture flow.
-//!
-//! One static menu whose items change text and enablement, never a rebuild:
-//! `set_state` arrives once a second while recording, and swapping the menu
-//! out from under a pointer that has it open closes it.
+//! The menu is intentionally a thin remote for the main webview. App.tsx owns
+//! capture state and the stop-before-quit safety guard; this module owns the
+//! native menu and emits intent events for those decisions. There is no tray
+//! webview, timer, or second state machine.
 
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    tray::{TrayIcon, TrayIconBuilder},
     AppHandle, Emitter, Manager, Runtime,
 };
-use tauri_plugin_positioner::{Position, WindowExt as PositionerWindowExt};
-
-use crate::windowing;
 
 pub const TRAY_ID: &str = "main-tray";
 
 /// Every item whose label or enablement follows capture state.
 pub struct TrayHandles<R: Runtime> {
     status: MenuItem<R>,
+    window: MenuItem<R>,
     record_meeting: MenuItem<R>,
     record_in_person: MenuItem<R>,
     pause: MenuItem<R>,
@@ -31,6 +25,50 @@ pub struct TrayHandles<R: Runtime> {
     highlight: MenuItem<R>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CaptureMenuState {
+    capturing: bool,
+    pause_label: &'static str,
+}
+
+fn capture_menu_state(state: &str) -> CaptureMenuState {
+    match state {
+        "recording" => CaptureMenuState {
+            capturing: true,
+            pause_label: "Pause",
+        },
+        "paused" => CaptureMenuState {
+            capturing: true,
+            pause_label: "Resume",
+        },
+        _ => CaptureMenuState {
+            capturing: false,
+            pause_label: "Pause",
+        },
+    }
+}
+
+fn window_menu_label(visible: bool) -> &'static str {
+    if visible {
+        "Hide Notetaker"
+    } else {
+        "Show Notetaker"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn icon_bytes(state: &str) -> &'static [u8] {
+    // The 36px representation is the @2x source for an 18pt status item. The
+    // matching @1x files live beside it for non-retina inspection and asset
+    // completeness; tray-icon sizes the NSImage to the native 18pt height.
+    match state {
+        "recording" => include_bytes!("../icons/tray/macos/recording@2x.png"),
+        "paused" => include_bytes!("../icons/tray/macos/paused@2x.png"),
+        _ => include_bytes!("../icons/tray/macos/idle@2x.png"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn icon_bytes(state: &str) -> &'static [u8] {
     match state {
         "recording" => include_bytes!("../icons/tray/recording.png"),
@@ -77,36 +115,53 @@ fn icon_image(state: &str) -> tauri::Result<Image<'static>> {
     Ok(source.to_owned())
 }
 
+fn set_window_menu_label<R: Runtime>(app: &AppHandle<R>, visible: bool) {
+    if let Some(handles) = app.try_state::<TrayHandles<R>>() {
+        let _ = handles.window.set_text(window_menu_label(visible));
+    }
+}
+
+fn sync_window_menu<R: Runtime>(app: &AppHandle<R>) {
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    set_window_menu_label(app, visible);
+}
+
 fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
+        set_window_menu_label(app, true);
     }
 }
 
-fn show_panel<R: Runtime>(app: &AppHandle<R>) {
-    let Some(panel) = app.get_webview_window("tray-panel") else {
+fn toggle_main<R: Runtime>(app: &AppHandle<R>) {
+    let Some(win) = app.get_webview_window("main") else {
         return;
     };
 
-    #[cfg(target_os = "macos")]
-    let position = Position::TrayCenter;
-    #[cfg(target_os = "windows")]
-    let position = Position::TrayBottomCenter;
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let position = Position::TrayCenter;
-
-    // The positioner callback must receive every tray event, and the move
-    // happens before show so the panel never flashes at the top-left corner.
-    let _ = panel.move_window(position);
-    windowing::show_panel(app, "tray-panel");
+    if win.is_visible().unwrap_or(false) {
+        let _ = win.hide();
+        set_window_menu_label(app, false);
+    } else {
+        show_main(app);
+    }
 }
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
     // Disabled: it is a reading, not a control. Menus have no other way to
     // show a line of state.
     let status = MenuItem::with_id(app, "tray-status", "Not recording", false, None::<&str>)?;
+    let window = MenuItem::with_id(
+        app,
+        "tray-toggle-window",
+        "Hide Notetaker",
+        true,
+        None::<&str>,
+    )?;
     let record_meeting = MenuItem::with_id(
         app,
         "tray-record-meeting",
@@ -137,13 +192,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
         true,
         None::<&str>,
     )?;
-    let open = MenuItem::with_id(app, "tray-open", "Open Notetaker", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "tray-settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "tray-quit", "Quit Notetaker", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
             &status,
+            &PredefinedMenuItem::separator(app)?,
+            &window,
             &PredefinedMenuItem::separator(app)?,
             &record_meeting,
             &record_in_person,
@@ -153,14 +209,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
             &highlight,
             &copy_last_transcript,
             &PredefinedMenuItem::separator(app)?,
-            &open,
-            &PredefinedMenuItem::separator(app)?,
             &settings,
             &quit,
         ],
     )?;
     app.manage(TrayHandles {
         status,
+        window,
         record_meeting,
         record_in_person,
         pause,
@@ -170,32 +225,22 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon_image("idle")?)
-        .icon_as_template(true)
+        // macOS template assets are monochrome alpha masks. On other desktop
+        // targets this is false so the existing colored Windows assets retain
+        // their state colors and light-taskbar treatment.
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Notetaker")
         .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_tray_icon_event(|tray, event| {
-            // Positioner must see every event. Calling this only for the
-            // left-click branch makes the native tray resolve coordinates
-            // from the top-left on macOS and Windows.
-            tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
-            // Left-click only: right-click opens the menu and must not also
-            // pop the window. Release only, too — Windows sends `Click` for
-            // both the press and the release, so matching on the button alone
-            // shows the window twice per click and four times on a double.
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                show_panel(tray.app_handle());
-            }
+        .show_menu_on_left_click(true)
+        .on_tray_icon_event(|tray, _event| {
+            // A window can also be hidden by the close policy or global hotkey;
+            // refresh the native label immediately before the next menu opens.
+            sync_window_menu(tray.app_handle());
         })
         .on_menu_event(|app, event| match event.id.as_ref() {
             // Recording actions deliberately do NOT show the window: the point
-            // of running them from the tray is not having to open the app.
-            // The webview stays the owner of the capture flow either way.
+            // of running them from the tray is not having to open the app. The
+            // main webview remains the owner of capture and its safety checks.
             "tray-record-meeting" => {
                 let _ = app.emit("tray-record", "meeting");
             }
@@ -214,19 +259,15 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
             "tray-copy-last-transcript" => {
                 let _ = app.emit("tray-copy-last-transcript", ());
             }
-            "tray-open" => show_main(app),
+            "tray-toggle-window" => toggle_main(app),
             "tray-settings" => {
                 show_main(app);
                 let _ = app.emit("tray-open-settings", ());
             }
-            // Quit asks the webview rather than exiting here. `app.exit(0)`
-            // skips destructors, so quitting mid-recording dropped the last
-            // unflushed buffer and left the take to be picked up as a crash
-            // recovery on the next launch instead of a clean stop-and-save.
-            // The frontend owns that decision — it is the same one the close
-            // button already makes — so this shows the window (the guard
-            // dialog has to be visible to be answered) and hands it over.
-            // The webview calls `plugin:process|exit` when it is done.
+            // Quit asks the webview rather than exiting here. app.exit(0)
+            // skips destructors, so quitting mid-recording could drop the last
+            // unflushed buffer. App.tsx applies the same stop-before-quit guard
+            // as the native close button and exits only when it is safe.
             "tray-quit" => {
                 show_main(app);
                 let _ = app.emit("tray-quit-requested", ());
@@ -236,16 +277,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
         .build(app)
 }
 
-/// Called by the frontend whenever capture state changes, and once a second
-/// while recording so the status line's elapsed time keeps up. `status_line`
-/// arrives ready-made ("Recording — 12:34") because the frontend already
-/// formats elapsed time for the record bar; Rust stays dumb about wording.
+/// Called by the frontend when capture state changes. The frontend already
+/// polls once per second while a capture is active; Rust does not add a timer.
 pub fn set_state<R: Runtime>(app: &AppHandle<R>, state: &str, status_line: &str) {
+    let menu_state = capture_menu_state(state);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        // Tauri's atomic setter keeps macOS from briefly rendering a normal
+        // image before applying template behavior. Every macOS state is a
+        // template image, including recording and paused.
         if let Ok(icon) = icon_image(state) {
-            let _ = tray.set_icon(Some(icon));
+            let _ = tray.set_icon_with_as_template(Some(icon), cfg!(target_os = "macos"));
         }
-        let _ = tray.set_icon_as_template(state != "recording");
         let _ = tray.set_tooltip(Some(match state {
             "recording" => "Notetaker — recording",
             "paused" => "Notetaker — paused",
@@ -253,15 +295,51 @@ pub fn set_state<R: Runtime>(app: &AppHandle<R>, state: &str, status_line: &str)
         }));
     }
     if let Some(handles) = app.try_state::<TrayHandles<R>>() {
-        let capturing = state == "recording" || state == "paused";
         let _ = handles.status.set_text(status_line);
-        let _ = handles.record_meeting.set_enabled(!capturing);
-        let _ = handles.record_in_person.set_enabled(!capturing);
-        let _ = handles.pause.set_enabled(capturing);
+        let _ = handles.record_meeting.set_enabled(!menu_state.capturing);
         let _ = handles
-            .pause
-            .set_text(if state == "paused" { "Resume" } else { "Pause" });
-        let _ = handles.stop.set_enabled(capturing);
-        let _ = handles.highlight.set_enabled(capturing);
+            .record_in_person
+            .set_enabled(!menu_state.capturing);
+        let _ = handles.pause.set_enabled(menu_state.capturing);
+        let _ = handles.pause.set_text(menu_state.pause_label);
+        let _ = handles.stop.set_enabled(menu_state.capturing);
+        let _ = handles.highlight.set_enabled(menu_state.capturing);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{capture_menu_state, window_menu_label};
+
+    #[test]
+    fn native_menu_maps_idle_recording_paused_states() {
+        assert_eq!(
+            capture_menu_state("idle"),
+            super::CaptureMenuState {
+                capturing: false,
+                pause_label: "Pause",
+            }
+        );
+        assert_eq!(
+            capture_menu_state("recording"),
+            super::CaptureMenuState {
+                capturing: true,
+                pause_label: "Pause",
+            }
+        );
+        assert_eq!(
+            capture_menu_state("paused"),
+            super::CaptureMenuState {
+                capturing: true,
+                pause_label: "Resume",
+            }
+        );
+        assert!(!capture_menu_state("finishing").capturing);
+    }
+
+    #[test]
+    fn native_menu_label_tracks_main_window_visibility() {
+        assert_eq!(window_menu_label(true), "Hide Notetaker");
+        assert_eq!(window_menu_label(false), "Show Notetaker");
     }
 }

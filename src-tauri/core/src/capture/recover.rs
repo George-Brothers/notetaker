@@ -1,5 +1,5 @@
-//! Recovering recordings whose capture died mid-write: repair the WAV header,
-//! finalize, and put them back in the queue.
+//! Recovering recordings whose capture died mid-write: repair the WAV header
+//! and put them back in the durable queue. Derived compression stays deferred.
 //!
 //! [`crate::capture::track::TrackWriter`] keeps a recording valid on disk by
 //! rewriting its WAV header every [`FLUSH_INTERVAL_SECS`], but the audio
@@ -22,9 +22,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::storage::{RecordingRef, Status, Store};
+use crate::storage::{CompressionStatus, Mode, RecordingRef, Status, Store};
 
-use super::flac::finalize_to_flac;
 use super::{MIC_TRACK, SAMPLE_RATE, SYSTEM_TRACK};
 
 /// Smallest byte count that could possibly be a WAV: the 12-byte RIFF/WAVE
@@ -204,36 +203,42 @@ fn read_layout(file: &mut File, len: u64, path: &Path) -> Result<Layout> {
     )
 }
 
-/// Repairs, finalizes, and requeues every recording left mid-capture, and
-/// returns the ids it recovered.
+/// Repairs and requeues every recording left mid-capture, and returns the ids
+/// it recovered. Compression is intentionally deferred to the normal durable
+/// queue; startup must not spend minutes encoding or decoding a recording
+/// before the user can use the app.
 ///
 /// Run at app start. A recording qualifies when it is still `Recorded` — the
 /// status capture leaves behind, and the one the queue has not taken yet — and
-/// at least one of its tracks is a `.wav` with no `.flac` beside it. That
-/// covers both halves of the problem: a session killed mid-lecture, and a
-/// session that stopped cleanly but never got to encode.
-///
-/// `keep_wav` is the user's setting, passed in rather than read here so that
-/// the caller owns the "may I reclaim this space" decision.
+/// at least one expected audio track exists. That covers a session killed
+/// mid-lecture, a session that stopped cleanly but never got queued, and a
+/// crash after FLAC publication but before its metadata commit.
 ///
 /// One bad recording never stops the sweep. A recording whose audio cannot be
 /// repaired keeps its file, gains a plain-English [`UNREPAIRABLE`] note, and is
 /// marked [`Status::Failed`] so it shows up in the UI as something to look at
 /// instead of being handed to a pipeline that would only fail on it again.
-pub fn recover_orphans(store: &Store, keep_wav: bool) -> Result<Vec<String>> {
+pub fn recover_orphans(store: &Store, _keep_wav: bool) -> Result<Vec<String>> {
     let mut recovered = Vec::new();
 
     for mut rec in store.scan()? {
+        cleanup_derived_temps(&rec.dir);
         if rec.meta.status != Status::Recorded {
             continue;
         }
-        let pending = pending_tracks(&rec.dir);
-        if pending.is_empty() {
+        let tracks = recovery_tracks(&rec);
+        if tracks.is_empty() {
             continue;
         }
 
-        match recover_one(&mut rec, &pending, keep_wav) {
-            Ok(()) => {
+        match recover_one(&rec, &tracks) {
+            Ok((duration_s, compression)) => {
+                rec.meta.duration_s = duration_s;
+                rec.meta.status = Status::Queued;
+                rec.meta.queued_at = Some(chrono::Utc::now().to_rfc3339());
+                rec.meta.manual_processing = false;
+                rec.meta.compression = compression;
+                rec.meta.compression_error = None;
                 if let Err(e) = store.save_meta(&rec) {
                     // The audio is repaired on disk either way; only the
                     // bookkeeping failed, and the next start will redo it.
@@ -259,45 +264,82 @@ pub fn recover_orphans(store: &Store, keep_wav: bool) -> Result<Vec<String>> {
     Ok(recovered)
 }
 
-/// The `.wav` tracks of one recording that have no finished `.flac` beside
-/// them.
-fn pending_tracks(dir: &Path) -> Vec<PathBuf> {
-    [MIC_TRACK, SYSTEM_TRACK]
+/// The expected audio tracks that exist in a recording folder. A FLAC-only
+/// folder is included too: it covers a crash after derived audio was
+/// published but before the metadata commit.
+fn recovery_tracks(rec: &RecordingRef) -> Vec<PathBuf> {
+    let stems: &[&str] = match rec.meta.mode {
+        Mode::InPerson => &[MIC_TRACK],
+        Mode::Meeting => &[MIC_TRACK, SYSTEM_TRACK],
+    };
+    stems
         .iter()
-        .map(|stem| dir.join(format!("{stem}.wav")))
-        .filter(|wav| wav.is_file() && !wav.with_extension("flac").is_file())
+        .flat_map(|stem| {
+            [
+                rec.dir.join(format!("{stem}.wav")),
+                rec.dir.join(format!("{stem}.flac")),
+            ]
+        })
+        .filter(|path| path.is_file())
         .collect()
 }
 
-/// Repairs and finalizes one recording's tracks, then rewrites its duration.
+/// Removes only temporary FLAC files created by the verified same-directory
+/// publish protocol. User audio and notes have different names and are never
+/// touched by this cleanup.
+fn cleanup_derived_temps(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(".audio-") && name.contains(".tmp-") && name.ends_with(".flac") {
+            if let Err(error) = std::fs::remove_file(entry.path()) {
+                log::warn!("could not remove stale derived temp {}: {error}", entry.path().display());
+            }
+        }
+    }
+}
+
+/// Repairs one recording's tracks and reports its longest duration. It never
+/// encodes, deletes, or replaces a derived file.
 ///
-/// A failed *encode* is deliberately not a failed recovery. The repaired WAV
-/// is still there and `pipeline::run` reads `.wav` as happily as `.flac`, so
-/// the cost of a bad encode is disk space; refusing to requeue the recording
-/// over it would cost the transcript.
-fn recover_one(rec: &mut RecordingRef, wavs: &[PathBuf], keep_wav: bool) -> Result<()> {
+fn recover_one(rec: &RecordingRef, tracks: &[PathBuf]) -> Result<(f64, CompressionStatus)> {
     let mut longest = 0u64;
-    for wav in wavs {
-        longest = longest.max(repair_wav_header(wav)?);
-        if let Err(e) = finalize_to_flac(wav, keep_wav) {
-            log::warn!(
-                "{} was repaired but would not encode to FLAC, leaving the wav: {e:#}",
-                wav.display()
-            );
+    let mut all_flac = true;
+    for track in tracks {
+        let samples = if track.extension().and_then(|ext| ext.to_str()) == Some("wav") {
+            all_flac = false;
+            repair_wav_header(track)?
+        } else {
+            crate::pipeline::audio::load_mono_16k(track)?.len() as u64
+        };
+        longest = longest.max(samples);
+    }
+
+    let mode_tracks: &[&str] = match rec.meta.mode {
+        Mode::InPerson => &[MIC_TRACK],
+        Mode::Meeting => &[MIC_TRACK, SYSTEM_TRACK],
+    };
+    for stem in mode_tracks {
+        let wav = rec.dir.join(format!("{stem}.wav"));
+        let flac = rec.dir.join(format!("{stem}.flac"));
+        if !wav.is_file() && !flac.is_file() {
+            bail!("{stem} audio is missing")
         }
     }
 
-    rec.meta.duration_s = longest as f64 / SAMPLE_RATE as f64;
-    rec.meta.status = Status::Recorded;
-    // `meta.error` is left alone on purpose. A session that stopped cleanly
-    // may have put a true sentence there ("your microphone dropped out"), and
-    // the queue clears it on the way to `Queued` anyway.
-    Ok(())
+    Ok((longest as f64 / SAMPLE_RATE as f64, if all_flac {
+        CompressionStatus::Complete
+    } else {
+        CompressionStatus::Pending
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::flac::finalize_to_flac;
     use crate::capture::track::TrackWriter;
     use crate::capture::FLUSH_INTERVAL_SECS;
     use crate::pipeline::audio::load_mono_16k;
@@ -500,20 +542,37 @@ mod tests {
         );
 
         let meta = meta_on_disk(&store, &crashed.meta.id);
-        assert_eq!(meta.status, Status::Recorded, "the queue must pick this up");
+        assert_eq!(meta.status, Status::Queued, "recovery durably registers the work");
         assert!(
             (meta.duration_s - (FLUSH_INTERVAL_SECS as f64 + 1.0)).abs() < 1e-9,
             "duration must be the recovered length, got {}",
             meta.duration_s
         );
-        assert!(!crashed_wav.exists(), "keep_wav = false reclaims the space");
+        assert!(crashed_wav.exists(), "recovery must preserve the WAV source");
+        assert!(
+            !crashed.dir.join("audio-mic.flac").exists(),
+            "compression is deferred until the queue runs"
+        );
+        let compressed = crate::capture::flac::finalize_recording_tracks(
+            &store,
+            &store
+                .scan()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.meta.id == crashed.meta.id)
+                .unwrap(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(compressed.meta.compression, CompressionStatus::Complete);
         assert_eq!(
             load_mono_16k(&crashed.dir.join("audio-mic.flac"))
                 .unwrap()
                 .len(),
             frames.len(),
-            "the recovered audio must survive the encode intact"
+            "the queued compression must preserve every sample"
         );
+        assert!(!crashed_wav.exists());
 
         let healthy_meta = meta_on_disk(&store, &healthy.meta.id);
         assert_eq!(
@@ -567,7 +626,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
 
-        let rec = seed(&store, "Interrupted standup", Status::Recorded);
+        let mut rec = seed(&store, "Interrupted standup", Status::Recorded);
+        rec.meta.mode = Mode::Meeting;
+        store.save_meta(&rec).unwrap();
         let mic = rec.dir.join("audio-mic.wav");
         let system = rec.dir.join("audio-system.wav");
         write_wav(&mic, &tone(1.0, 0.5));
@@ -578,25 +639,16 @@ mod tests {
         let ids = recover_orphans(&store, true).unwrap();
 
         assert_eq!(ids, vec![rec.meta.id.clone()]);
-        assert_eq!(
-            load_mono_16k(&rec.dir.join("audio-mic.flac"))
-                .unwrap()
-                .len(),
-            SAMPLE_RATE as usize
-        );
-        assert_eq!(
-            load_mono_16k(&rec.dir.join("audio-system.flac"))
-                .unwrap()
-                .len(),
-            2 * SAMPLE_RATE as usize
-        );
+        assert!(!rec.dir.join("audio-mic.flac").exists());
+        assert!(!rec.dir.join("audio-system.flac").exists());
         assert!(
             mic.exists() && system.exists(),
             "keep_wav = true keeps both"
         );
         assert!(
             (meta_on_disk(&store, &rec.meta.id).duration_s - 2.0).abs() < 1e-9,
-            "duration is the longer track — one can die before the other"
+            "duration is the longer track — one can die before the other: {}",
+            meta_on_disk(&store, &rec.meta.id).duration_s
         );
     }
 
@@ -634,15 +686,19 @@ mod tests {
         let store = Store::new(dir.path());
         assert!(recover_orphans(&store, false).unwrap().is_empty());
 
-        // A recording whose FLAC already exists is finished, wav or no wav.
+        // A recording whose FLAC exists but whose queue commit did not land is
+        // still requeued; recovery never assumes metadata and derived files
+        // committed together.
         let rec = seed(&store, "Finished", Status::Recorded);
         write_wav(&rec.dir.join("audio-mic.wav"), &tone(0.3, 0.4));
         finalize_to_flac(&rec.dir.join("audio-mic.wav"), true).unwrap();
-        assert!(recover_orphans(&store, false).unwrap().is_empty());
+        assert_eq!(recover_orphans(&store, false).unwrap(), vec![rec.meta.id.clone()]);
         assert!(
             rec.dir.join("audio-mic.wav").exists(),
-            "a second pass must not re-finalize and delete a kept wav"
+            "recovery must not retire the WAV before the queue runs"
         );
-        assert_eq!(meta_on_disk(&store, &rec.meta.id).duration_s, 0.0);
+        assert!(rec.dir.join("audio-mic.flac").exists());
+        assert_eq!(meta_on_disk(&store, &rec.meta.id).status, Status::Queued);
+        assert!((meta_on_disk(&store, &rec.meta.id).duration_s - 0.3).abs() < 1e-9);
     }
 }
