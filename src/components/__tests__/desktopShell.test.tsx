@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, cleanup } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { DesktopShell, effectivePaneSizes, layoutModeForWidth } from "../DesktopShell";
+import type { PaneSizes } from "../DesktopShell";
 import { RecordBar } from "../RecordBar";
 import { NoteView } from "../NoteView";
 import { TooltipProvider } from "../ui";
@@ -26,7 +27,7 @@ function renderShell({
   mobilePane?: "library" | "primary";
   initialLibraryWidth?: number;
   initialAskWidth?: number;
-  onPaneSizesCommit?: ReturnType<typeof vi.fn>;
+  onPaneSizesCommit?: (sizes: PaneSizes) => void;
 } = {}) {
   return render(
     <DesktopShell
