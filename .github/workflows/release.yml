@@ -229,6 +229,13 @@ jobs:
 
           tag = os.environ["RELEASE_TAG"]
           base = f"https://github.com/George-Brothers/notetaker-releases/releases/download/{tag}"
+          notes = (
+              "Notetaker 0.1.12 makes recording lighter, safer, and less intrusive. "
+              "Live transcription is now opt-in and bounded; Stop returns after the "
+              "recording is durably saved while compression and AI processing continue "
+              "later. This release also adds native-feeling macOS status integration, "
+              "refined icons, and resizable responsive panes for smaller displays."
+          )
 
           def entry(pattern):
               [artifact] = glob.glob(pattern)
@@ -238,7 +245,7 @@ jobs:
 
           manifest = {
               "version": tag.lstrip("v"),
-              "notes": "See the release notes on GitHub.",
+              "notes": notes,
               "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "platforms": {
                   "windows-x86_64": entry("artifacts/windows-release/*.exe"),
@@ -247,13 +254,13 @@ jobs:
           }
           with open("latest.json", "w") as f:
               json.dump(manifest, f, indent=2)
+          with open("release-notes.md", "w") as f:
+              f.write(notes + "\n")
           print(json.dumps(manifest, indent=2))
           EOF
 
-      # Published to the PUBLIC releases repo, not this one: the source repo is
-      # private, and assets on a private repo 404 for the installed apps'
-      # updater (no way to ship auth inside the binary without leaking it).
-      # RELEASES_TOKEN is a token with write access to notetaker-releases.
+      # Publish installers and updater metadata to the dedicated public release
+      # repository. RELEASES_TOKEN has write access to notetaker-releases.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -261,6 +268,7 @@ jobs:
           token: ${{ secrets.RELEASES_TOKEN }}
           tag_name: ${{ github.ref_name }}
           generate_release_notes: false
+          body_path: release-notes.md
           files: |
             artifacts/windows-release/*.exe
             artifacts/windows-release/*.sig
